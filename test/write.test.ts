@@ -28,7 +28,8 @@ describe('write routes', () => {
       newTab: async (workspaceId, body): Promise<Pane> => { fail(); const pane = { id: 'p2', tabId: 't2', workspaceId, title: body.label!, cwd: body.cwd, status: 'unknown' as const, revision: 0 }; tree.tabs.push({ id: 't2', workspaceId, label: body.label! }); tree.panes.push(pane); return pane; },
       newWorkspace: async (body): Promise<Workspace> => { fail(); const workspace = { id: 'w2', label: body.label!, cwd: body.cwd }; tree.workspaces.push(workspace); return workspace; },
       rename: async (target, label) => { fail(); if ('workspaceId' in target) tree.workspaces.find(x => x.id === target.workspaceId)!.label = label; else if ('tabId' in target) tree.tabs.find(x => x.id === target.tabId)!.label = label; else tree.panes.find(x => x.id === target.paneId)!.title = label; },
-      closePane: async id => { fail(); tree.panes = tree.panes.filter(x => x.id !== id); }, close: () => {},
+      closePane: async id => { fail(); tree.panes = tree.panes.filter(x => x.id !== id); },
+      closeWorkspace: async id => { fail(); tree.workspaces = tree.workspaces.filter(x => x.id !== id); tree.tabs = tree.tabs.filter(x => x.workspaceId !== id); tree.panes = tree.panes.filter(x => x.workspaceId !== id); }, close: () => {},
     };
     hub = new Hub({ refreshMs: 0, suggest: null }); hub.add('local', mux); await hub.state();
     const serve = Bun.serve;
@@ -56,6 +57,16 @@ describe('write routes', () => {
   test('renames and closes', async () => {
     expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', label: 'Renamed' })).status).toBe(204);
     expect((await request('/api/panes/local%2Ffake%2Fp1/close')).status).toBe(204);
+  });
+
+  test('closes a workspace and refreshes state', async () => {
+    expect((await request('/api/workspaces/local%2Ffake%2Fw1/close')).status).toBe(204);
+    const state = await (await handle(new Request('http://tautan.test/api/state'))).json() as { panes: Pane[]; workspaces: Tree['workspaces'] };
+    expect(state.workspaces.length).toBe(0);
+    expect(state.panes.length).toBe(0);
+    const missing = await request('/api/workspaces/local%2Ffake%2Fmissing/close');
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: 'unknown-workspace' });
   });
 
   test('trims the label before forwarding it', async () => {

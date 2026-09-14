@@ -46,7 +46,7 @@ describe.skipIf(!canListen)('web push', () => {
       read: async (_id: string, mode: ScreenMode): Promise<Screen> => ({ text: 'Need approval', ansi: false, revision: 1, mode }),
       sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: cb => { changed = cb; return () => {}; },
       newTab: async (): Promise<Pane> => tree.panes[0]!, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
-      rename: async () => {}, closePane: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+      rename: async () => {}, closePane: async () => {}, closeWorkspace: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
     };
     hub = new Hub({ refreshMs: 0 }); hub.add('local', mux);
     server = startHttp(hub, { port: 0, hostname: '127.0.0.1', staticDir: stateHome });
@@ -102,7 +102,7 @@ describe.skipIf(!canListen)('web push', () => {
       kind: 'herdr', id: 'timer', tree: async () => { calls++; return { workspaces: [], tabs: [], panes: [] }; },
       read: async () => { throw new Error('unused'); }, sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
       newTab: async () => { throw new Error('unused'); }, newWorkspace: async () => { throw new Error('unused'); }, rename: async () => {},
-      closePane: async () => {}, explain: async () => null, close: () => {},
+      closePane: async () => {}, closeWorkspace: async () => {}, explain: async () => null, close: () => {},
     } satisfies Mux;
     const timerHub = new Hub({ refreshMs: 50 }); timerHub.add('local', mux);
     try { await eventually(() => calls >= 2, 500); } finally { timerHub.close(); }

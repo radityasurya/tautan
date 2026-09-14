@@ -63,6 +63,15 @@ export function startHttp(hub: Hub, opts: {
       }
       try {
         if (req.method === 'GET' && url.pathname === '/api/state') return json(await hub.state());
+        const workspaceClose = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/close$/);
+        if (req.method === 'POST' && workspaceClose) {
+          let key: string;
+          try { key = decodeURIComponent(workspaceClose[1]!); } catch { return json({ error: 'unknown-workspace' }, 404); }
+          const workspace = (await hub.state()).workspaces.find(item => item.key === key);
+          if (!workspace) return json({ error: 'unknown-workspace' }, 404);
+          await hub.closeWorkspace(workspace.muxKey, workspace.id);
+          return new Response(null, { status: 204 });
+        }
         const workspaceDiff = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/diff$/);
         if (req.method === 'GET' && workspaceDiff) {
           let key: string;

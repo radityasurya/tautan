@@ -747,6 +747,22 @@ function addTab(s: Store, muxKey: string, workspaceId: string, o: NewTabBody): S
 function write(s: Store, url: URL, method: string, body: unknown): Response | undefined {
   if (method !== 'POST') return undefined;
 
+  const closeWs = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/close$/);
+  if (closeWs) {
+    const ws = s.state.workspaces.find((w) => w.key === decodeURIComponent(closeWs[1]!));
+    if (!ws) return json({ error: 'unknown-workspace' }, 404);
+    const bad = writableMux(s, ws.muxKey);
+    if (bad) return bad;
+    if (ws.label === FAIL) return json({ error: 'agent_not_ready' }, 502);
+    const gone = s.state.panes.filter((p) => p.muxKey === ws.muxKey && p.workspaceId === ws.id);
+    s.state.workspaces = s.state.workspaces.filter((w) => w !== ws);
+    s.state.tabs = s.state.tabs.filter((t) => !(t.muxKey === ws.muxKey && t.workspaceId === ws.id));
+    s.state.panes = gone.length ? s.state.panes.filter((p) => !gone.includes(p)) : s.state.panes;
+    for (const p of gone) delete s.screens[p.key];
+    for (const es of sources) es.push(s, { state: true });
+    return noContent();
+  }
+
   const mux = url.pathname.match(/^\/api\/muxes\/([^/]+)\/(tabs|workspaces)$/);
   if (mux) {
     const muxKey = decodeURIComponent(mux[1]!);

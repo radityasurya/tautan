@@ -47,6 +47,22 @@ export const ChevronRight = (p: Props) => (
   </Icon>
 );
 
+/** Collapse every group: two chevrons converging on the centre line. */
+export const CollapseAll = (p: Props) => (
+  <Icon {...p}>
+    <path d="M6 5l6 6 6-6" />
+    <path d="M6 19l6-6 6 6" />
+  </Icon>
+);
+
+/** Expand every group: the same two chevrons, pointing outward. */
+export const ExpandAll = (p: Props) => (
+  <Icon {...p}>
+    <path d="M6 9l6-6 6 6" />
+    <path d="M6 15l6 6 6-6" />
+  </Icon>
+);
+
 /** The 2×2 grid that opens the Switch drawer. */
 export const Switch2 = (p: Props) => (
   <Icon {...p}>

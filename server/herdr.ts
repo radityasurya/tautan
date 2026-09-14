@@ -156,6 +156,7 @@ export class HerdrMux implements Mux {
     else await this.rpc('pane.rename', { pane_id: target.paneId, label });
   }
   async closePane(paneId: string): Promise<void> { await this.rpc('pane.close', { pane_id: paneId }); }
+  async closeWorkspace(workspaceId: string): Promise<void> { await this.rpc('workspace.close', { workspace_id: workspaceId }); }
 
   private paneRecord(pane: Json): Pane {
     const agent = pane.display_agent ?? pane.agent;

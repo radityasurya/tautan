@@ -1,13 +1,38 @@
 import { useState } from 'react';
-import type { State } from '../shared/types.ts';
+import type { State, StatePane } from '../shared/types.ts';
 import { Drawer, DrawerContent, DrawerTitle } from '@/components/ui/drawer.tsx';
 import { navigate } from './app.tsx';
-import { Dot, unseen } from './home.tsx';
+import { Dot, timeAgo, unseen } from './home.tsx';
 import { Search } from './icons.tsx';
 
+/** One Pane row, shared by every section: dot, agent, title, and how long ago it changed. */
+function PaneRow({ pane, currentKey, onPick }: { pane: StatePane; currentKey: string; onPick: () => void }) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={() => {
+          navigate(`#/pane/${encodeURIComponent(pane.key)}`);
+          onPick();
+        }}
+        aria-current={pane.key === currentKey ? 'true' : undefined}
+        className={`flex min-h-11 w-full items-center gap-2.5 rounded-chip px-3 text-left ${
+          pane.key === currentKey ? 'bg-muted/20' : 'active:bg-bg'
+        }`}
+      >
+        <Dot status={pane.status} seen={!unseen(pane)} />
+        <span className="shrink-0 text-body text-muted">{pane.agent ?? 'shell'}</span>
+        <span className="min-w-0 flex-1 truncate text-body">{pane.title}</span>
+        <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">{timeAgo(pane.statusChangedAt)}</span>
+      </button>
+    </li>
+  );
+}
+
 /**
- * Two taps to any Pane on any Host: search, Host chips, then every Workspace with its
- * Panes under the Tab they belong to. Opened from the Pane status line and the Switch icon.
+ * Two taps to any Pane on any Host: search, Host chips, then the same shape Home uses —
+ * Needs you first, Running under it, everything else grouped by Workspace. Opened from the
+ * Pane status line.
  */
 export function SwitchDrawer({
   open,
@@ -27,24 +52,34 @@ export function SwitchDrawer({
 
   const hostOf = (muxKey: string) => state?.muxes.find((m) => m.key === muxKey)?.hostId;
   const needle = q.trim().toLowerCase();
+  const pick = () => {
+    onPick?.();
+    onClose();
+  };
+  const matches = (state?.panes ?? []).filter((p) => {
+    if (host && hostOf(p.muxKey) !== host) return false;
+    if (!needle) return true;
+    const w = state?.workspaces.find((item) => item.muxKey === p.muxKey && item.id === p.workspaceId);
+    return `${p.agent ?? 'shell'} ${p.title} ${w?.label ?? ''}`.toLowerCase().includes(needle);
+  });
+
+  // The same two pinned sections Home draws, over the whole Host-filtered list.
+  const needsYou = matches.filter((p) => unseen(p) && (p.status === 'blocked' || p.status === 'done'));
+  const running = matches
+    .filter((p) => p.status === 'working')
+    .sort((a, b) => (b.statusChangedAt ?? 0) - (a.statusChangedAt ?? 0));
+  const rest = matches.filter((p) => !needsYou.includes(p) && p.status !== 'working');
   const groups = (state?.workspaces ?? [])
-    .filter((w) => !host || hostOf(w.muxKey) === host)
     .map((w) => {
       const mux = state?.muxes.find((m) => m.key === w.muxKey);
       return {
         w,
         mux,
         host: state?.hosts.find((h) => h.id === mux?.hostId),
-        panes: (state?.panes ?? []).filter(
-          (p) =>
-            p.muxKey === w.muxKey &&
-            p.workspaceId === w.id &&
-            (!needle || `${p.agent ?? 'shell'} ${p.title} ${w.label}`.toLowerCase().includes(needle)),
-        ),
+        panes: rest.filter((p) => p.muxKey === w.muxKey && p.workspaceId === w.id),
       };
     })
     .filter((g) => g.panes.length > 0);
-
   return (
     <Drawer open={open} onOpenChange={(next) => !next && onClose()} repositionInputs={false}>
       <DrawerContent aria-describedby={undefined} className="h-[85dvh] max-h-[85dvh] px-3">
@@ -80,8 +115,28 @@ export function SwitchDrawer({
           ))}
         </div>
 
-        <div className="mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          {groups.length === 0 && <p className="px-3 py-6 text-body text-muted">Nothing matches “{q}”.</p>}
+        <div className="mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain pb-2">
+          {matches.length === 0 && <p className="px-3 py-6 text-body text-muted">Nothing matches “{q}”.</p>}
+          {needsYou.length > 0 && (
+            <section>
+              <h3 className="label-caps px-3 pt-3.5 pb-1">Needs you</h3>
+              <ul>
+                {needsYou.map((p) => (
+                  <PaneRow key={p.key} pane={p} currentKey={currentKey} onPick={pick} />
+                ))}
+              </ul>
+            </section>
+          )}
+          {running.length > 0 && (
+            <section>
+              <h3 className="label-caps px-3 pt-3.5 pb-1">Running</h3>
+              <ul>
+                {running.map((p) => (
+                  <PaneRow key={p.key} pane={p} currentKey={currentKey} onPick={pick} />
+                ))}
+              </ul>
+            </section>
+          )}
           {groups.map(({ w, mux, host: h, panes }) => (
             <section key={w.key}>
               <h3 className="label-caps flex px-3 pt-3.5 pb-1">
@@ -93,27 +148,7 @@ export function SwitchDrawer({
               </h3>
               <ul>
                 {panes.map((p) => (
-                  <li key={p.key}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigate(`#/pane/${encodeURIComponent(p.key)}`);
-                        onPick?.();
-                        onClose();
-                      }}
-                      aria-current={p.key === currentKey ? 'true' : undefined}
-                      className={`flex min-h-11 w-full items-center gap-2.5 rounded-chip px-3 text-left ${
-                        p.key === currentKey ? 'bg-muted/20' : 'active:bg-bg'
-                      }`}
-                    >
-                      <span aria-hidden className="w-6 shrink-0 font-mono text-[11px] text-muted">
-                        {p.tabId}
-                      </span>
-                      <Dot status={p.status} seen={!unseen(p)} />
-                      <span className="shrink-0 text-body text-muted">{p.agent ?? 'shell'}</span>
-                      <span className="truncate text-body">{p.title}</span>
-                    </button>
-                  </li>
+                  <PaneRow key={p.key} pane={p} currentKey={currentKey} onPick={pick} />
                 ))}
               </ul>
             </section>

@@ -170,7 +170,7 @@ export function MenuSheet({
   title: string;
   onClose: () => void;
   items: { label: string; onClick?: () => void; hint?: string; sub?: string; danger?: boolean; disabled?: boolean }[];
-  /** Anything the menu shows before its rows, such as the Pane sheet's theme chips. */
+  /** Anything the menu shows before its rows, such as the Pane sheet's theme picker. */
   head?: ReactNode;
 }) {
   return (
@@ -395,21 +395,25 @@ export function ConfirmCloseSheet({
   onClose,
   onConfirm,
   title,
+  kind = 'Pane',
 }: {
   open: boolean;
   onClose: () => void;
   onConfirm: Submit<void>;
   title: string;
+  kind?: 'Pane' | 'Workspace';
 }) {
   const { busy, error, submit, retry } = useWrite<void>(open, onConfirm, onClose);
   return (
     <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Close Pane</DialogTitle>
+          <DialogTitle>Close {kind}</DialogTitle>
           <DialogDescription className="text-fg">Close “{title}”?</DialogDescription>
         </DialogHeader>
-        <p className="mt-1 text-body text-muted">The Pane and anything running in it stops.</p>
+        <p className="mt-1 text-body text-muted">
+          {kind === 'Workspace' ? 'The Workspace and everything running in it stops.' : 'The Pane and anything running in it stops.'}
+        </p>
         {error && <ErrorLine error={error} busy={busy} onRetry={retry} />}
         <DialogFooter>
           <button

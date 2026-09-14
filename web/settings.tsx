@@ -4,6 +4,7 @@ import { api, getTheme, setTheme, THEMES } from './app.tsx';
 import type { Theme } from './app.tsx';
 import { InstallHint, Toggle } from './hosts.tsx';
 import { disablePush, enablePush, pushOn } from './push.ts';
+import { ChevronDown } from './icons.tsx';
 import type { ReactNode } from 'react';
 import type { Settings as HubSettings, SuggestSettingBody } from '../shared/types.ts';
 
@@ -31,37 +32,34 @@ const SWATCH: Record<Theme, string | null> = {
 const android = /Android/.test(navigator.userAgent);
 
 /**
- * The theme strip: one chip per theme, applied on tap. Settings owns the screen version and
- * the Pane's ⋯ sheet reuses it, so a theme is one tap away from the screen you are reading.
+ * The theme picker: one dropdown, applied on pick. A native `<select>` — iOS opens its
+ * own picker wheel, which is the Apple-style dropdown this wants for free. Settings owns
+ * the screen version and the Pane's ⋯ sheet reuses it. The swatch shows the current theme.
  */
-export function ThemeChips() {
+export function ThemePicker() {
   const [theme, choose] = useState(getTheme);
   return (
-    <div role="group" aria-label="Theme" className="hscroll flex gap-2 px-4 pb-1">
-      {THEMES.map((t) => (
-        <button
-          key={t}
-          type="button"
-          // The strip is wider than the phone, so the current theme must not start off-screen.
-          ref={(el) => {
-            if (el && theme === t) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-          }}
-          aria-pressed={theme === t}
-          onClick={() => {
-            setTheme(t);
-            choose(t);
-          }}
-          className={`press flex shrink-0 items-center gap-1.5 rounded-chip px-3 py-1.5 text-caption whitespace-nowrap ${
-            theme === t ? 'bg-accent font-semibold text-bg' : 'bg-surface font-medium text-muted'
-          }`}
-        >
-          {SWATCH[t] && (
-            <span aria-hidden className="size-2.5 rounded-full border border-border" style={{ background: SWATCH[t]! }} />
-          )}
-          {LABELS[t]}
-        </button>
-      ))}
-    </div>
+    <label className="mx-4 flex min-h-11 items-center gap-2 rounded-composer border border-border bg-bg pr-3 pl-3.5">
+      <select
+        value={theme}
+        aria-label="Theme"
+        onChange={(e) => {
+          setTheme(e.target.value as Theme);
+          choose(e.target.value as Theme);
+        }}
+        className="min-w-0 flex-1 appearance-none bg-transparent py-2.5 text-body text-fg focus:outline-none"
+      >
+        {THEMES.map((t) => (
+          <option key={t} value={t}>
+            {LABELS[t]}
+          </option>
+        ))}
+      </select>
+      {SWATCH[theme] && (
+        <span aria-hidden className="size-2.5 shrink-0 rounded-full border border-border" style={{ background: SWATCH[theme]! }} />
+      )}
+      <ChevronDown className="shrink-0 text-muted" />
+    </label>
   );
 }
 
@@ -101,7 +99,9 @@ export function Settings() {
       <TopBar title="Settings" />
 
       <h2 className="label-caps px-4 pt-3.5 pb-2">Theme</h2>
-      <ThemeChips />
+      <div className="pb-1">
+        <ThemePicker />
+      </div>
 
       <h2 className="label-caps px-4 pt-6 pb-1">Notifications</h2>
       <Toggle

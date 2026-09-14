@@ -45,7 +45,7 @@ function HostCard({
         <span className={`min-w-0 truncate text-caption text-muted ${host.target ? 'font-mono' : ''}`}>
           {host.target ?? 'this machine'}
         </span>
-        {host.online && (
+        {host.online && muxes.length > 1 && (
           <span className="ml-auto shrink-0 text-caption tabular-nums text-muted">{count(panes.length, 'pane')}</span>
         )}
       </div>
@@ -71,34 +71,35 @@ function HostCard({
         <p className="text-[13px] break-words text-danger">{host.error ?? 'unreachable'}</p>
       )}
 
-      {/* Retry when it is down, Edit and Remove when tautan owns the entry, the source otherwise. */}
-      {(!host.online || config || host.source === 'machines') && (
-        <div className="-mx-1 flex items-center gap-1">
-          {!host.online && (
-            <button
-              type="button"
-              onClick={retry}
-              disabled={retrying}
-              className="flex h-9 items-center rounded-chip border border-border bg-bg px-3.5 text-[13px] font-medium active:bg-surface disabled:opacity-50"
-            >
-              {retrying ? 'Retrying…' : 'Retry now'}
+      {/* The bottom row is always there, so a Host without actions says why: this machine
+          or the machine list owns it, and tautan may not edit those entries. */}
+      <div className="-mx-1 flex items-center gap-1">
+        {!host.online && (
+          <button
+            type="button"
+            onClick={retry}
+            disabled={retrying}
+            className="flex h-9 items-center rounded-chip border border-border bg-bg px-3.5 text-[13px] font-medium active:bg-surface disabled:opacity-50"
+          >
+            {retrying ? 'Retrying…' : 'Retry now'}
+          </button>
+        )}
+        {config && (
+          <>
+            <button type="button" onClick={() => onEdit(config)} className={`${action} text-muted`}>
+              Edit
             </button>
-          )}
-          {config && (
-            <>
-              <button type="button" onClick={() => onEdit(config)} className={`${action} text-muted`}>
-                Edit
-              </button>
-              <button type="button" onClick={() => onRemove(config)} className={`${action} text-danger`}>
-                Remove
-              </button>
-            </>
-          )}
-          {host.source === 'machines' && (
-            <span className="ml-auto pl-2 text-right text-caption text-muted">from herdr machine list</span>
-          )}
-        </div>
-      )}
+            <button type="button" onClick={() => onRemove(config)} className={`${action} text-danger`}>
+              Remove
+            </button>
+          </>
+        )}
+        {!config && (
+          <span className="ml-auto pl-2 text-right text-caption text-muted">
+            {host.source === 'machines' ? 'from herdr machine list' : 'this machine · not editable'}
+          </span>
+        )}
+      </div>
     </li>
   );
 }
@@ -110,7 +111,6 @@ export function Hosts({ state }: { state: State | null }) {
   const [edit, setEdit] = useState<HostConfig | null>(null);
   const [add, setAdd] = useState(() => opensWith('add-host') || opensWith('addhost'));
   const [note, setNote] = useState('');
-  const hub = state?.hosts.find((h) => h.source === 'local' || !h.target);
 
   const read = () =>
     api<Settings>('/api/settings', undefined, 'GET')
@@ -124,10 +124,28 @@ export function Hosts({ state }: { state: State | null }) {
   };
 
   const open = add || edit !== null;
+  const counts =
+    state &&
+    `${count(state.hosts.length, 'host')} · ${count(state.panes.length, 'pane')}`;
 
   return (
     <div className="mx-auto max-w-2xl pt-[env(safe-area-inset-top)] pb-28">
-      <TopBar title="Hosts" right={hub && <span className="text-caption text-muted">hub · {hub.label}</span>} />
+      <TopBar
+        title="Hosts"
+        right={
+          <>
+            <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>
+            <button
+              type="button"
+              aria-label="Add Host"
+              onClick={() => setAdd(true)}
+              className="-mr-2.5 flex size-11 items-center justify-center text-accent"
+            >
+              <Plus size={22} />
+            </button>
+          </>
+        }
+      />
 
       <ul className="flex flex-col gap-3 px-4 pt-2">
         {state?.hosts.map((h) => (
@@ -145,17 +163,6 @@ export function Hosts({ state }: { state: State | null }) {
             }}
           />
         ))}
-        <li>
-          <button
-            type="button"
-            onClick={() => setAdd(true)}
-            className="flex w-full items-center gap-2.5 rounded-card border border-dashed border-border px-4 py-3.5 text-left font-medium text-accent active:bg-surface"
-          >
-            <Plus size={18} />
-            Add Host
-            <span className="ml-auto text-caption font-normal text-muted">ssh target · herdr or tmux</span>
-          </button>
-        </li>
       </ul>
 
       {note && (

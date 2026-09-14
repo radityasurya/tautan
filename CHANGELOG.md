@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+Home and Hosts, after on-device feedback:
+
+- **Home pins Running beside Needs you.** Unseen `blocked`/`done` Panes lift out as before,
+  and `working` Panes now lift into a **Running** section, most recently changed first. A
+  Workspace whose Panes all sit in a pinned section keeps its header, and its summary counts
+  every Pane it holds.
+- **Collapse all / Expand all** in the Home top bar, next to the counts.
+- **Workspace actions are visible.** The group header grows a ⋯ button beside the existing
+  long-press, and the menu gains **Close Workspace** (`POST /api/workspaces/:key/close`,
+  herdr only; tmux answers 501).
+- **Pane rows swipe.** On a herdr Mux, drag a row left to reveal Rename and Close, Apple
+  style; a tap on an open row closes it. Long-press opens the same actions as a menu, which
+  is also the desktop path. tmux rows offer nothing.
+- **Hosts lists itself.** The top bar carries `<hosts> · <panes>` counts and a **+** for Add
+  Host (the dashed card is gone). A Host with one Mux no longer prints its Pane count
+  twice, and every card's bottom row says who owns the entry — `this machine · not editable`,
+  `from herdr machine list`, or Edit and Remove for a `hosts.json` entry.
+- **Theme picker is a dropdown.** A native `<select>` (iOS opens its own picker wheel) with
+  the current theme's swatch, in Settings and in the Pane's ⋯ sheet.
+- **Switch drawer mirrors Home.** Needs you, then Running, then Workspace groups; every row
+  says how long ago its Status last changed.
+
 ## 0.1.1 — 2026-09-12
 
 Release process only; the app is unchanged from 0.1.0.

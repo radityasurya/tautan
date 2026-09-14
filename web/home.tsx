@@ -4,10 +4,10 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import type {
   NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
-import { api, Link, navigate, opensWith, reducedMotion } from './app.tsx';
-import { ChevronDown, ChevronRight, Plus } from './icons.tsx';
+import { api, haptic, Link, navigate, opensWith, reducedMotion } from './app.tsx';
+import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus } from './icons.tsx';
 import { Skeleton } from '@/components/ui/skeleton.tsx';
-import { MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
+import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
 
 // ---- status ----
@@ -103,34 +103,120 @@ function summary(panes: StatePane[]): string {
 
 // ---- rows ----
 
-function Row({ pane, first }: { pane: StatePane; first?: boolean }) {
+/** The two revealed actions, in px: Rename and Close, 72 each. */
+const REVEAL = 144;
+
+/** What a row can do when its Mux writes. Passed in by Home, which owns the sheets. */
+export interface RowActions {
+  onMenu: (pane: StatePane) => void;
+  onRename: (pane: StatePane) => void;
+  onClose: (pane: StatePane) => void;
+}
+
+/**
+ * Apple-style swipe on a Pane row: drag left to reveal Rename and Close. Touch, not
+ * pointer — a horizontal drag makes Chromium fire `pointercancel`, so `pointerup` never
+ * arrives (the same lesson as the Tab strip). `touch-action: pan-y` keeps vertical
+ * scrolls the page's. A tap on an open row closes it instead of navigating. Long-press
+ * opens the same actions as a menu, which is also the desktop path.
+ */
+function Row({ pane, first, actions }: { pane: StatePane; first?: boolean; actions?: RowActions }) {
   const fresh = unseen(pane);
   const word = pane.status === 'blocked' ? 'Blocked' : pane.status === 'done' ? 'Done' : '';
   const when = timeAgo(pane.statusChangedAt);
+  const press = useLongPress(() => actions?.onMenu(pane));
+  const [x, setX] = useState(0);
+  const [live, setLive] = useState(false);
+  const drag = useRef({ x: 0, y: 0, from: 0, at: 0, axis: '' });
+
+  const body = (
+    <Link
+      to={`#/pane/${encodeURIComponent(pane.key)}`}
+      aria-label={[pane.agent ?? 'shell', pane.title, pane.status, fresh ? 'unseen' : 'seen', when]
+        .filter(Boolean)
+        .join(', ')}
+      onClick={(e) => {
+        if (x !== 0) {
+          e.preventDefault();
+          setLive(false);
+          setX(0);
+        }
+      }}
+      className="press flex min-h-14 items-center gap-3 px-4 py-2.5 active:bg-surface [-webkit-touch-callout:none]"
+      {...(actions ? press : {})}
+    >
+      <Dot status={pane.status} seen={!fresh} />
+      <span aria-hidden className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="shrink-0 text-body text-muted">{pane.agent ?? 'shell'}</span>
+          <span className={`truncate text-body ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
+        </span>
+        <span className={`truncate text-caption text-muted ${pane.lastLine ? '' : 'font-mono'}`}>
+          {word && <span className={statusText[pane.status]}>{word} · </span>}
+          {preview(pane)}
+        </span>
+      </span>
+      <span aria-hidden className="shrink-0 font-mono text-caption tabular-nums text-muted">
+        {when}
+      </span>
+    </Link>
+  );
+
+  if (!actions) return <li className={first ? '' : 'border-t border-border/60'}>{body}</li>;
   return (
-    <li className={first ? '' : 'border-t border-border/60'}>
-      <Link
-        to={`#/pane/${encodeURIComponent(pane.key)}`}
-        aria-label={[pane.agent ?? 'shell', pane.title, pane.status, fresh ? 'unseen' : 'seen', when]
-          .filter(Boolean)
-          .join(', ')}
-        className="press flex min-h-14 items-center gap-3 px-4 py-2.5 active:bg-surface"
+    <li className={`relative overflow-hidden ${first ? '' : 'border-t border-border/60'}`}>
+      <div className="absolute inset-y-0 right-0 flex" inert={x === 0 ? true : undefined}>
+        <button
+          type="button"
+          aria-label="Rename pane"
+          onClick={() => actions.onRename(pane)}
+          className="flex w-18 items-center justify-center bg-surface text-[13px] font-medium text-fg active:bg-bg"
+        >
+          Rename
+        </button>
+        <button
+          type="button"
+          aria-label="Close pane"
+          onClick={() => actions.onClose(pane)}
+          className="flex w-18 items-center justify-center bg-danger text-[13px] font-medium text-bg active:opacity-90"
+        >
+          Close
+        </button>
+      </div>
+      <div
+        className={`relative bg-bg ${live ? '' : 'transition-transform duration-200 ease-out motion-reduce:transition-none'}`}
+        style={{ transform: `translateX(${x}px)`, touchAction: 'pan-y' }}
+        onTouchStart={(e) => {
+          const t = e.touches[0];
+          drag.current = { x: t?.clientX ?? 0, y: t?.clientY ?? 0, from: x, at: x, axis: '' };
+        }}
+        onTouchMove={(e) => {
+          const t = e.touches[0];
+          const d = drag.current;
+          const dx = (t?.clientX ?? 0) - d.x;
+          const dy = (t?.clientY ?? 0) - d.y;
+          if (!d.axis) {
+            if (Math.hypot(dx, dy) < 8) return;
+            d.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+          }
+          if (d.axis !== 'x') return;
+          setLive(true);
+          d.at = Math.min(0, Math.max(-REVEAL, d.from + dx));
+          setX(d.at);
+        }}
+        onTouchEnd={() => {
+          // `at`, not the rendered `x`: a fast flick can end before the last move re-renders.
+          if (drag.current.axis === 'x') {
+            const open = drag.current.at < -REVEAL / 2;
+            if (open && drag.current.at !== -REVEAL) haptic();
+            setX(open ? -REVEAL : 0);
+          }
+          drag.current.axis = '';
+          setLive(false);
+        }}
       >
-        <Dot status={pane.status} seen={!fresh} />
-        <span aria-hidden className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="flex min-w-0 items-baseline gap-2">
-            <span className="shrink-0 text-body text-muted">{pane.agent ?? 'shell'}</span>
-            <span className={`truncate text-body ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
-          </span>
-          <span className={`truncate text-caption text-muted ${pane.lastLine ? '' : 'font-mono'}`}>
-            {word && <span className={statusText[pane.status]}>{word} · </span>}
-            {preview(pane)}
-          </span>
-        </span>
-        <span aria-hidden className="shrink-0 font-mono text-caption tabular-nums text-muted">
-          {when}
-        </span>
-      </Link>
+        {body}
+      </div>
     </li>
   );
 }
@@ -154,7 +240,7 @@ function useLongPress(fn: () => void) {
   };
 }
 
-/** The Workspace group header: tap collapses, long-press opens the group menu. */
+/** The Workspace group header: tap collapses, long-press or ⋯ opens the group menu. */
 function GroupHeader({
   label,
   host,
@@ -172,18 +258,26 @@ function GroupHeader({
 }) {
   const press = useLongPress(onMenu);
   return (
-    <h2>
+    <h2 className="flex items-end">
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
         {...press}
-        className="label-caps flex w-full items-center px-4 pt-6 pb-1.5 text-left [-webkit-touch-callout:none]"
+        className="label-caps flex min-w-0 flex-1 items-center px-4 pt-6 pb-1.5 text-left [-webkit-touch-callout:none]"
       >
         {open ? <ChevronDown className="mr-1.5 shrink-0" /> : <ChevronRight className="mr-1.5 shrink-0" />}
-        {label}
-        {host && <span className="ml-1.5 font-medium tracking-normal normal-case text-muted">· {host}</span>}
-        <span className="ml-auto pl-2 font-medium tracking-normal normal-case text-muted">{summary}</span>
+        <span className="truncate">{label}</span>
+        {host && <span className="ml-1.5 shrink-0 font-medium tracking-normal normal-case text-muted">· {host}</span>}
+        <span className="ml-auto shrink-0 pl-2 font-medium tracking-normal normal-case text-muted">{summary}</span>
+      </button>
+      <button
+        type="button"
+        aria-label={`${label} actions`}
+        onClick={onMenu}
+        className="press -mr-1 mb-0.5 flex size-11 shrink-0 items-center justify-center text-muted"
+      >
+        <More size={18} />
       </button>
     </h2>
   );
@@ -201,6 +295,10 @@ export function Home({ state }: { state: State | null }) {
   const [newTab, setNewTab] = useState<StateWorkspace | null>(null);
   const [menu, setMenu] = useState<StateWorkspace | null>(null);
   const [rename, setRename] = useState<StateWorkspace | null>(null);
+  const [close, setClose] = useState<StateWorkspace | null>(null);
+  const [paneMenu, setPaneMenu] = useState<StatePane | null>(null);
+  const [paneRename, setPaneRename] = useState<StatePane | null>(null);
+  const [paneClose, setPaneClose] = useState<StatePane | null>(null);
   // The Workspace this screen just created: it stays listed until State fills it with a
   // Pane, and scrolls itself into view the first time State carries it.
   const [created, setCreated] = useState<string | null>(null);
@@ -230,6 +328,11 @@ export function Home({ state }: { state: State | null }) {
   /** Only herdr writes. tmux answers 501, so tautan never offers the action. */
   const writable = (muxKey?: string) => state?.muxes.find((m) => m.key === muxKey)?.kind === 'herdr';
   const needsYou = (state?.panes ?? []).filter((p) => visible(p.muxKey) && unseen(p) && (p.status === 'blocked' || p.status === 'done'));
+  /** Working Panes pinned beside Needs you, most recently changed first. */
+  const running = (state?.panes ?? [])
+    .filter((p) => visible(p.muxKey) && p.status === 'working')
+    .sort((a, b) => (b.statusChangedAt ?? 0) - (a.statusChangedAt ?? 0));
+  const pinned = new Set([...needsYou, ...running].map((p) => p.key));
   const groups = (state?.workspaces ?? [])
     .filter((w) => visible(w.muxKey))
     .map((w) => {
@@ -237,10 +340,13 @@ export function Home({ state }: { state: State | null }) {
       return {
         w,
         host: state?.hosts.find((h) => h.id === hostId),
-        panes: panesOf(w).filter((p) => !needsYou.includes(p)),
+        all: panesOf(w),
+        panes: panesOf(w).filter((p) => !pinned.has(p.key)),
       };
     })
-    .filter((g) => g.panes.length > 0 || g.host?.online === false || g.w.key === created);
+    // A Workspace whose Panes all sit in a pinned section keeps its header — its summary
+    // still says what it holds, and the group menu stays reachable.
+    .filter((g) => g.panes.length > 0 || g.all.length > 0 || g.host?.online === false || g.w.key === created);
 
   const tabIn = newTab ?? (opensWith('newtab') ? (groups[0]?.w ?? null) : null);
   // A new Workspace lands on the Mux the list already shows, next to the Workspace it was
@@ -265,6 +371,10 @@ export function Home({ state }: { state: State | null }) {
     setCreated(workspaceKey);
   };
   const counts = state && `${state.hosts.length} host${state.hosts.length === 1 ? '' : 's'} · ${state.panes.length} panes`;
+  const keys = groups.map((g) => g.w.key);
+  const allShut = keys.length > 0 && keys.every((k) => collapsed.includes(k));
+  const rowActions = (p: StatePane): RowActions | undefined =>
+    writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
   return (
     <div className="mx-auto max-w-2xl pt-[env(safe-area-inset-top)] pb-28">
@@ -273,6 +383,16 @@ export function Home({ state }: { state: State | null }) {
         right={
           <>
           <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>
+          {state && keys.length > 0 && (
+            <button
+              type="button"
+              aria-label={allShut ? 'Expand all' : 'Collapse all'}
+              onClick={() => write(allShut ? collapsed.filter((k) => !keys.includes(k)) : [...new Set([...collapsed, ...keys])])}
+              className="-mr-1 flex size-11 items-center justify-center text-muted"
+            >
+              {allShut ? <ExpandAll size={20} /> : <CollapseAll size={20} />}
+            </button>
+          )}
           {beside && (
             <button
               type="button"
@@ -317,7 +437,7 @@ export function Home({ state }: { state: State | null }) {
             </li>
           ))}
         </ul>
-      ) : needsYou.length === 0 && groups.length === 0 ? (
+      ) : needsYou.length === 0 && running.length === 0 && groups.length === 0 ? (
         <div className="flex flex-col items-start gap-3 px-4 pt-8">
           <p className="text-body text-muted">No panes yet.</p>
           <Link to="#/hosts" className="text-body font-medium text-accent">
@@ -331,13 +451,24 @@ export function Home({ state }: { state: State | null }) {
               <h2 className="label-caps px-4 pt-3.5 pb-1.5">Needs you</h2>
               <ul>
                 {needsYou.map((p, i) => (
-                  <Row key={p.key} pane={p} first={i === 0} />
+                  <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} />
                 ))}
               </ul>
             </section>
           )}
 
-          {groups.map(({ w, host: h, panes }) => {
+          {running.length > 0 && (
+            <section>
+              <h2 className="label-caps px-4 pt-3.5 pb-1.5">Running</h2>
+              <ul>
+                {running.map((p, i) => (
+                  <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} />
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {groups.map(({ w, host: h, panes, all }) => {
             const shut = collapsed.includes(w.key);
             return (
               <section
@@ -350,7 +481,7 @@ export function Home({ state }: { state: State | null }) {
                 <GroupHeader
                   label={w.label}
                   host={h?.label}
-                  summary={summary(panes)}
+                  summary={summary(all)}
                   open={!shut}
                   onToggle={() => toggle(w.key)}
                   onMenu={() => setMenu(w)}
@@ -358,7 +489,7 @@ export function Home({ state }: { state: State | null }) {
                 {!shut && (
                   <ul>
                     {panes.map((p, i) => (
-                      <Row key={p.key} pane={p} first={i === 0} />
+                      <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} />
                     ))}
                     {h?.online === false && (
                       <li>
@@ -412,6 +543,7 @@ export function Home({ state }: { state: State | null }) {
             ? [
                 { label: 'New Tab', onClick: () => setNewTab(menu) },
                 { label: 'Rename', onClick: () => setRename(menu) },
+                { label: 'Close Workspace', danger: true, onClick: () => menu && setClose(menu) },
               ]
             : []),
           { label: 'Diff', onClick: () => menu && navigate(`#/diff/${encodeURIComponent(menu.key)}`) },
@@ -426,6 +558,37 @@ export function Home({ state }: { state: State | null }) {
         onSubmit={(label) =>
           api<void>('/api/rename', { muxKey: rename!.muxKey, workspaceId: rename!.id, label } satisfies RenameBody)
         }
+      />
+      <ConfirmCloseSheet
+        open={close !== null}
+        kind="Workspace"
+        title={close?.label ?? ''}
+        onClose={() => setClose(null)}
+        onConfirm={() => api<void>(`/api/workspaces/${encodeURIComponent(close!.key)}/close`)}
+      />
+      <MenuSheet
+        open={paneMenu !== null}
+        title={paneMenu?.title ?? ''}
+        onClose={() => setPaneMenu(null)}
+        items={[
+          { label: 'Rename', onClick: () => paneMenu && setPaneRename(paneMenu) },
+          { label: 'Close Pane', danger: true, onClick: () => paneMenu && setPaneClose(paneMenu) },
+        ]}
+      />
+      <RenameSheet
+        open={paneRename !== null}
+        kind="Pane"
+        current={paneRename?.title ?? ''}
+        onClose={() => setPaneRename(null)}
+        onSubmit={(label) =>
+          api<void>('/api/rename', { muxKey: paneRename!.muxKey, paneId: paneRename!.id, label } satisfies RenameBody)
+        }
+      />
+      <ConfirmCloseSheet
+        open={paneClose !== null}
+        title={paneClose?.title ?? ''}
+        onClose={() => setPaneClose(null)}
+        onConfirm={() => api<void>(`/api/panes/${encodeURIComponent(paneClose!.key)}/close`)}
       />
     </div>
   );

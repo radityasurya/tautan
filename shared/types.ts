@@ -35,6 +35,7 @@ export interface Mux {
   newWorkspace(o: { cwd?: string; label?: string; branch?: string }): Promise<Workspace>;
   rename(t: { workspaceId: string } | { tabId: string } | { paneId: string }, label: string): Promise<void>;
   closePane(paneId: string): Promise<void>;
+  closeWorkspace(workspaceId: string): Promise<void>;
   explain(paneId: string): Promise<Explain | null>;
   close(): void;
 }
@@ -90,6 +91,7 @@ export interface NewWorkspaceResult { workspaceKey: string }
 /** POST /api/rename → 204; exactly one of workspaceId | tabId | paneId */
 export type RenameBody = { muxKey: string; label: string } & ({ workspaceId: string } | { tabId: string } | { paneId: string });
 /** POST /api/panes/:key/close → 204. Errors on all four: `{ error: string }` — 400 body, 403 origin, 404 unknown, 501 'unsupported', 502 herdr error code. */
+/** POST /api/workspaces/:key/close → 204; `key` is the workspaceKey. Same error set as the Pane close. */
 /** POST /api/panes/:key/attach */
 export interface AttachResult { path: string; bytes: number; display: string }
 export type DiffScope = 'working' | 'staged' | 'base';

@@ -12,7 +12,7 @@ import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, statusText } from './home.tsx';
 import { Attach, Back, ChevronDown, Down, Keyboard, Mic, More, Plus, Send, Speaker } from './icons.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
-import { ThemeChips } from './settings.tsx';
+import { ThemePicker } from './settings.tsx';
 import { SwitchDrawer } from './switch.tsx';
 import { AGENT_KEYS, SHELL_KEYS } from './keys.ts';
 import { quickReplies } from './replies.ts';
@@ -1015,12 +1015,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         open={showMore}
         title={pane?.title ?? 'Pane'}
         onClose={() => setShowMore(false)}
-        head={
-          <>
-            <h3 className="label-caps px-4 pb-2">Theme</h3>
-            <ThemeChips />
-          </>
-        }
+        head={<ThemePicker />}
         items={[
           { label: wrap ? 'Wrap: on' : 'Wrap: off', onClick: () => setWrap(!wrap) },
           { label: fit ? 'Fit to width: on' : 'Fit to width: off', hint: grid, onClick: () => setFit(!fit) },

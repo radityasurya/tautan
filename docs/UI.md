@@ -55,15 +55,21 @@ and the check/cross agents print; the rest falls through to the system stack.
 
 ## Agents (`#/`) — `web/home.tsx`
 
-The screen title is `tautan`, with `<hosts> · <panes>` counts and a `+` that
-opens New Workspace. Host chips appear under the header only when there is
-more than one Host.
+The screen title is `tautan`, with `<hosts> · <panes>` counts, a collapse/expand-all
+toggle, and a `+` that opens New Workspace. Host chips appear under the header only when
+there is more than one Host.
 
-Unseen `blocked` and `done` Panes lift out into a **Needs you** section;
-everything else groups by Workspace, most urgent Status first. A group header
-is a button: tap collapses (persisted in `localStorage`), long-press (500 ms,
-cancelled by 10 px of movement) opens the group menu. Collapsed, it summarises
-its most urgent Status, for example `2 blocked`.
+Unseen `blocked` and `done` Panes lift out into a **Needs you** section; `working`
+Panes lift out into a **Running** section under it, most recently changed first.
+Everything else groups by Workspace, most urgent Status first. A group whose Panes are all
+lifted keeps its header, so its menu stays reachable. A group header is a button: tap
+collapses (persisted in `localStorage`), long-press (500 ms, cancelled by 10 px of movement)
+or the ⋯ button opens the group menu. Collapsed, it summarises the most urgent Status of
+*all* its Panes, for example `2 blocked`.
+
+On a herdr Mux a Pane row swipes left to reveal **Rename** and **Close** (a tap on an open
+row closes it instead of navigating), and long-press opens the same two as a menu — the
+desktop path. tmux rows have no actions: the Mux does not write.
 
 On a new device, an empty local Seen map is seeded from the first snapshot's
 current Pane revisions, so old `done` work does not immediately fill **Needs you**.
@@ -425,9 +431,9 @@ The forwarder flags and the socket paths are in
 
 ## Settings (`#/settings`) — `web/settings.tsx`
 
-Theme chips (`ThemeChips`: System plus six themes, each with its own `--bg` as
-the swatch; the current one scrolls itself into view; the Pane's ⋯ sheet shows
-the same strip), a push toggle, a Haptics toggle on
+Theme picker (`ThemePicker`: a native `<select>` of System plus six themes — iOS opens
+its own picker wheel — with the current theme's `--bg` as the swatch beside it; the Pane's
+⋯ sheet shows the same picker), a push toggle, a Haptics toggle on
 Android only, the iOS install hint, a **Smart replies** toggle, and the **Access**
 rows. Hosts live on their own tab, not here.
 
@@ -487,8 +493,8 @@ title and the meta line.
 - **New Workspace**: directory, label, an **As git worktree** switch, and the
   branch field it reveals.
 - **Rename**: one field, for a Workspace, Tab or Pane.
-- **More**: the ⋯ menu — the theme chips (`ThemeChips` from `web/settings.tsx`,
-  the same strip the Settings screen shows), then Wrap, **Fit to width** with the
+- **More**: the ⋯ menu — the theme picker (`ThemePicker` from `web/settings.tsx`,
+  the same dropdown the Settings screen shows), then Wrap, **Fit to width** with the
   grid size as its hint, **Theme colors**, **Mouse taps**, Diff, Rename, Close Pane, and a
   disabled `Resize to phone` marked `v2`.
 - **Close Pane** is a Dialog, not a drawer, so a destructive action cannot be

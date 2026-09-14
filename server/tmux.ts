@@ -179,6 +179,7 @@ export class TmuxMux implements Mux {
   async newWorkspace(_o: { cwd?: string; label?: string; branch?: string }): Promise<Workspace> { throw new Error('unsupported'); }
   async rename(_target: { workspaceId: string } | { tabId: string } | { paneId: string }, _label: string): Promise<void> { throw new Error('unsupported'); }
   async closePane(_paneId: string): Promise<void> { throw new Error('unsupported'); }
+  async closeWorkspace(_workspaceId: string): Promise<void> { throw new Error('unsupported'); }
   async explain(_paneId: string): Promise<Explain | null> { return null; }
   close(): void {
     this.stopPolling(); this.listeners.clear(); this.revisions.clear(); this.lastReadAt.clear();

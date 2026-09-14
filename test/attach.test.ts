@@ -44,7 +44,7 @@ describe.skipIf(!canListen)('pane attachments', () => {
       read: async (_id: string, mode: ScreenMode): Promise<Screen> => ({ text: '', ansi: false, revision: 1, mode }),
       sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
       newTab: async (): Promise<Pane> => tree.panes[0]!, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
-      rename: async () => {}, closePane: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+      rename: async () => {}, closePane: async () => {}, closeWorkspace: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
     };
     hub = new Hub({ refreshMs: 0 }); hub.add(hostId, mux); await hub.state();
     server = startHttp(hub, { port: 0, hostname: '127.0.0.1', staticDir: cacheHome });

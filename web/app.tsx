@@ -139,14 +139,16 @@ export function navigate(to: string) {
   else run();
 }
 
-/** An `<a>` so the URL is real and long-press still offers "open in new tab". */
-export function Link({ to, ...rest }: { to: string } & AnchorHTMLAttributes<HTMLAnchorElement>) {
+/** An `<a>` so the URL is real and long-press still offers "open in new tab". A caller's
+ *  `onClick` runs first and may `preventDefault()` to keep the tap for itself. */
+export function Link({ to, onClick, ...rest }: { to: string } & AnchorHTMLAttributes<HTMLAnchorElement>) {
   return (
     <a
       href={to}
       {...rest}
       onClick={(e) => {
-        if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+        onClick?.(e);
+        if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey) return;
         e.preventDefault();
         navigate(to);
       }}

@@ -9,7 +9,8 @@ design canvas you can edit: **[tautan Screens](https://claude.ai/code/artifact/e
 
 Linear and Notion density on a phone: one accent, three surfaces, no boxed cards, 56 px
 two-line rows, small-caps section labels. Status is a dot; filled means unseen, a hollow ring
-means seen. The urgent list ("Needs you") is pinned above the Workspace groups. A Pane is a
+means seen. The urgent list ("Needs you") and a "Running" list are pinned above the Workspace
+groups. A Pane is a
 full-screen push with the multiplexer's own rendered grid, a sticky blocked card built from
 herdr's detection, a key bar ordered by real use, and a composer labelled with the agent's
 glyph. A floating tab bar carries the three root destinations and hides while you type.
@@ -35,7 +36,7 @@ screen shares that column's width, so nothing stretches to the window.
 | Bar | Contents | Behaviour |
 |---|---|---|
 | Column | One wrapper for the whole screen. From `lg` up its width is `clamp(420px, <grid width + 34px>, 100vw)`, measured from the `<pre>`; below `lg` it is the window | The header, the Tab strip, the grid, the blocked card and the dock all sit in it and are centred together |
-| Top bar | One 44 px row + safe area, everything centred on it: 44 px back chevron · title (17 px, 600, truncates) · the status "● status · agent · workspace ⌄" in 12 px muted right after it, which is the Switch trigger · spacer · read aloud (agent Panes) · ⋯. The title keeps its own width up to 60 % of the row, so a narrow screen truncates the status text first | The bar carries no setting of its own: ⋯ holds the theme chips, then Wrap, Fit to width (hinted with the grid size), Theme colors, Diff, Rename, Close Pane |
+| Top bar | One 44 px row + safe area, everything centred on it: 44 px back chevron · title (17 px, 600, truncates) · the status "● status · agent · workspace ⌄" in 12 px muted right after it, which is the Switch trigger · spacer · read aloud (agent Panes) · ⋯. The title keeps its own width up to 60 % of the row, so a narrow screen truncates the status text first | The bar carries no setting of its own: ⋯ holds the theme picker, then Wrap, Fit to width (hinted with the grid size), Theme colors, Diff, Rename, Close Pane |
 | Tab strip | One section of two rows under the top bar. Row 1: **+** for a new Tab (herdr only), then one tab per Tab of the Workspace with status dot, label and Pane count when the Tab holds several; the active tab is underlined in accent on the section's hairline. Row 2: the Panes of the open Tab, as pills, only when it holds several; it hangs on that same hairline and starts where the Tab labels do, not under the + | Tap switches Tab; swipe on the strip too |
 | Blocked card | floats above the dock, `--elevated`, 1 px hairline | Only while Status is `blocked` |
 | Bottom dock | `--elevated`, 16 px top radius. Row 1: the keys toggle, filled (`--surface` and the hairline, accent while open), then the most-used keys, then a hairline, the quick-reply pills scrolling on the right behind a fade. Row 2: the whole key preset, which the toggle opens. Row 3: the composer, on agent Panes, with the agent's glyph inside the field | Key pills (Yes ↵, No esc) send at once; text pills (✦ generated, or static per agent) fill the composer for review. A Hint pill is a short label and the key's glyph — `auto mode ⇧⇥`, `cancel esc` — never the whole footer phrase. The key bar starts collapsed on an agent Pane, where the composer is what the keyboard should meet, and open on a shell Pane, which has nothing else |
