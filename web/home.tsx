@@ -377,7 +377,7 @@ export function Home({ state }: { state: State | null }) {
     writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
   return (
-    <div className="mx-auto max-w-2xl pt-[env(safe-area-inset-top)] pb-28">
+    <div className="mx-auto max-w-2xl pb-28">
       <TopBar
         title="tautan"
         right={

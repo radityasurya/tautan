@@ -6,8 +6,10 @@ import type {
   Explain, InputBody, NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
 import { AffordanceLayer, hintPills, useCell, useMouseForward } from './affordances.tsx';
-import { api, haptic, navigate, opensWith, post } from './app.tsx';
+import { Skeleton } from '@/components/ui/skeleton.tsx';
+import { api, haptic, Link, navigate, opensWith, post } from './app.tsx';
 import { Blocked } from './blocked.tsx';
+import { TopBar } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, statusText } from './home.tsx';
 import { Attach, Back, ChevronDown, Down, Keyboard, Mic, More, Plus, Send, Speaker } from './icons.tsx';
@@ -125,6 +127,20 @@ const rollUp = (panes: StatePane[]): Status => ROLL.find((s) => panes.some((p) =
 /** The Pane a Tab reopens to, so switching back lands where you left. */
 const lastPane = new Map<string, string>();
 
+/**
+ * The widest grid measured in each Workspace, by Workspace key. Every Pane of a Workspace
+ * reads the same entry, so switching Tab or Pane inside it keeps the column still from the
+ * first frame. `lastColumn` is the width on screen, held while a new Workspace measures.
+ * ponytail: never evicted; one number per Workspace ever opened in this tab.
+ */
+const widths = new Map<string, number>();
+let lastColumn = 0;
+/** Workspaces measured before a font swap; their next measurement replaces the widest. */
+const unsettled = new Set<string>();
+
+/** How long a switch keeps the last Pane's Screen before the skeleton takes the grid. */
+const HOLD_MS = 800;
+
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
 
 /** "Wider than the viewport" is a fade, not a scrollbar. The Diff screen reuses it. */
@@ -196,7 +212,19 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const host = state?.hosts.find((h) => h.id === mux?.hostId);
   /** Only herdr writes. tmux answers 501, so New Tab, Rename and Close are not offered. */
   const writable = mux?.kind === 'herdr';
-  const lines = useMemo(() => (screen ? parseAnsi(screen.text) : []), [screen]);
+  // A switch keeps the last Pane's Screen on the grid until this Pane's first `screen`
+  // event, so the grid swaps rather than blanks. After HOLD_MS with nothing, the skeleton.
+  const current = screen?.key === paneKey ? screen : null;
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    setWaited(false);
+    if (current) return;
+    const t = setTimeout(() => setWaited(true), HOLD_MS);
+    return () => clearTimeout(t);
+  }, [paneKey, !current]);
+  const held = !current && !waited ? screen : null;
+  const shown = current ?? held;
+  const lines = useMemo(() => (shown ? parseAnsi(shown.text) : []), [shown]);
 
   // Wrap is the default reading mode for an agent and never for a shell, where the columns
   // are the layout (htop, logs). Remembered per kind, not per Pane.
@@ -227,8 +255,9 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     setKeyBars((k) => ({ ...k, [kind]: v }));
   };
   const [scale, setScale] = useState(1);
-  /** The grid's own width, measured from the `<pre>`. It sizes the whole column. */
-  const [natural, setNatural] = useState(0);
+  /** The Workspace's widest grid, measured from the `<pre>`. It sizes the whole column. */
+  const wsKey = ws?.key ?? '';
+  const [, setMeasured] = useState(0);
   const [fade, setFade] = useState(false);
   const [fresh, setFresh] = useState(false);
   const [explain, setExplain] = useState<Explain | null>(null);
@@ -265,7 +294,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const [fonts, setFonts] = useState(false);
   useEffect(() => {
     void document.fonts?.ready.then(() => {
-      setNatural(0);
+      widths.forEach((_, k) => unsettled.add(k));
       setFonts(true);
     });
   }, []);
@@ -309,26 +338,31 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     setScale(fit ? Math.min(1, room / el.scrollWidth) : 1);
     // Wrapped text is sized by the column it sits in, so measuring it would feed the column
     // its own width back. The fallback column is the right width for reflowed prose anyway.
-    // The widest line wins and keeps winning: a column that resized on every frame of agent
-    // output would move the header, the Tabs and the dock with it.
-    if (!wrap) setNatural((n) => Math.max(n, el.scrollWidth));
+    // The widest line in the Workspace wins and keeps winning: a column that resized on every
+    // frame of agent output, or on every Tab switch, would move the header, the Tabs and the
+    // dock with it. A held Screen belongs to the last Pane, so it is never measured.
+    if (!wrap && current && lines.length && wsKey) {
+      const prev = widths.get(wsKey) ?? 0;
+      const next = unsettled.delete(wsKey) ? el.scrollWidth : Math.max(prev, el.scrollWidth);
+      if (next !== prev) {
+        widths.set(wsKey, next);
+        setMeasured(next);
+      }
+    }
     measure();
-  }, [fit, wrap, lines, viewportW, fonts]);
+  }, [fit, wrap, lines, viewportW, fonts, wsKey]);
 
   // Mark Seen once the screen settles: Seen is tautan's own flag, never written to the Mux.
   useEffect(() => {
-    if (!screen) return;
-    markSeen(paneKey, screen.revision);
-    const t = setTimeout(() => void post(paneKey, 'seen', { revision: screen.revision } satisfies SeenBody), 1000);
+    if (!current) return;
+    markSeen(paneKey, current.revision);
+    const t = setTimeout(() => void post(paneKey, 'seen', { revision: current.revision } satisfies SeenBody), 1000);
     return () => clearTimeout(t);
-  }, [paneKey, screen?.revision]);
+  }, [paneKey, current?.revision]);
 
   useEffect(() => {
     if (pane) lastPane.set(`${pane.muxKey}/${pane.tabId}`, pane.key);
   }, [pane?.key]);
-
-  /** A new Pane measures its own grid rather than inheriting the last one's column. */
-  useEffect(() => setNatural(0), [paneKey]);
 
   // Smart replies are the phone's own switch; Settings writes it and tells the Hub too.
   const [smart] = useState(() => localStorage.getItem('tautan.smart') === 'on');
@@ -492,7 +526,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     const synth = window.speechSynthesis;
     if (!synth) return;
     if (synth.speaking) return synth.cancel();
-    synth.speak(new SpeechSynthesisUtterance(lastBlock(screen?.text)));
+    synth.speak(new SpeechSynthesisUtterance(lastBlock(current?.text)));
   };
 
   // Touch, not pointer: the moment a horizontal drag starts, Chromium hands the gesture to
@@ -567,58 +601,68 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // phone is simply the window. See DESIGN.md "Terminal width on a phone".
   // 32 px is the scroller's own padding; the 2 px on top absorbs the fraction `scrollWidth`
   // rounds away, so the grid never overflows by a hair and raises the fade for nothing.
+  // The Workspace's widest grid; a Workspace not measured yet keeps the column on screen, so
+  // the 640 px fallback only ever shows before the first grid of the whole visit.
+  const natural = widths.get(wsKey) ?? lastColumn;
+  lastColumn = natural;
   const column = viewportW >= 1024 ? `clamp(420px, ${(natural || 640) + 34}px, 100vw)` : undefined;
+  const skeleton = !shown && waited;
 
   return (
-    <div className="mx-auto flex h-dvh w-full flex-col pt-[env(safe-area-inset-top)]" style={{ maxWidth: column }}>
-      {/* One 44 px row, everything centred on it: back · title · status, which is also the
-          Switch trigger · actions. The title never shrinks below its own text until it would
-          take more than 60 % of the row, so what gives way on a phone is the status text. */}
-      <header className="flex h-11 shrink-0 items-center px-1">
-        <a href="#/" aria-label="All panes" className="flex size-11 shrink-0 items-center justify-center text-accent">
-          <Back />
-        </a>
-        <h1 className="max-w-[60%] shrink-0 truncate text-title tracking-tight">{pane?.title ?? '…'}</h1>
-        {/* Status and the ⌄ are one trigger: one drawer, one name, one hit area. */}
-        <button
-          type="button"
-          aria-label="Switch Pane"
-          onClick={() => setShowSwitch(true)}
-          className="press flex h-11 min-w-0 items-center gap-1.5 pl-2 text-caption text-muted"
-        >
-          <Dot status={status} />
-          <span aria-live="polite" className={`shrink-0 ${statusText[status]}`}>
-            {status}
-          </span>
-          <span className="truncate">
-            · {agent ?? 'shell'} · {ws?.label}
-          </span>
-          <span aria-hidden className="flex shrink-0 items-center">
-            <ChevronDown />
-          </span>
-        </button>
-        {/* What is left after the Tab strip took + and the ⋯ sheet took Fit. */}
-        <div className="ml-auto flex items-center gap-0.5 pl-1">
-          {agent && (
+    <div
+      className="mx-auto flex h-dvh w-full flex-col transition-[max-width] duration-180 ease-out motion-reduce:transition-none"
+      style={{ maxWidth: column }}
+    >
+      {/* Home's bar, compact: back · title on the left; the status chip, read aloud and ⋯
+          on the right, the way Home puts its counts and + there. */}
+      <TopBar
+        size="compact"
+        leading={
+          <Link to="#/" aria-label="All panes" className="-ml-2.5 flex size-11 shrink-0 items-center justify-center text-accent">
+            <Back />
+          </Link>
+        }
+        title={pane?.title ?? '…'}
+        right={
+          <>
+            {/* Status and the ⌄ are one trigger: one drawer, one name, one hit area. It keeps
+                its own width up to 45 % of the row, and past that the agent name truncates. */}
             <button
               type="button"
-              aria-label="Read aloud"
-              onClick={speak}
-              className="press flex h-11 w-10 items-center justify-center text-muted"
+              aria-label="Switch Pane"
+              onClick={() => setShowSwitch(true)}
+              className="press mr-0.5 flex h-11 max-w-[45cqw] min-w-0 items-center gap-1.5 pl-2 text-caption text-muted"
             >
-              <Speaker />
+              <Dot status={status} />
+              <span aria-live="polite" className={`shrink-0 ${statusText[status]}`}>
+                {status}
+              </span>
+              <span className="truncate">· {agent ?? 'shell'}</span>
+              <span aria-hidden className="flex shrink-0 items-center">
+                <ChevronDown />
+              </span>
             </button>
-          )}
-          <button
-            type="button"
-            aria-label="More"
-            onClick={() => setShowMore(true)}
-            className="press flex h-11 w-10 items-center justify-center text-muted"
-          >
-            <More />
-          </button>
-        </div>
-      </header>
+            {agent && (
+              <button
+                type="button"
+                aria-label="Read aloud"
+                onClick={speak}
+                className="press -mr-1 flex size-11 items-center justify-center text-muted"
+              >
+                <Speaker />
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label="More"
+              onClick={() => setShowMore(true)}
+              className="press -mr-2.5 flex size-11 items-center justify-center text-muted"
+            >
+              <More />
+            </button>
+          </>
+        }
+      />
 
       {/* The strip is one section of two rows: the Workspace's Tabs, and the open Tab's
           Panes under them. Swipe here, never on the grid. */}
@@ -753,8 +797,9 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
                 {'\n'}
               </Fragment>
             ))}
-            {/* Inside the `<pre>`, so the Fit transform scales the boxes with the text. */}
-            {!wrap && affordances.length > 0 && (
+            {/* Inside the `<pre>`, so the Fit transform scales the boxes with the text. A held
+                Screen is the last Pane's, so its Affordances would type into the wrong Pane. */}
+            {!wrap && current && affordances.length > 0 && (
               <AffordanceLayer
                 paneKey={paneKey}
                 list={affordances}
@@ -765,6 +810,14 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
               />
             )}
           </pre>
+          {skeleton && (
+            <div aria-busy aria-label="Loading screen" className="flex flex-col gap-2 pt-1 pr-4">
+              <Skeleton className="h-3 w-2/3" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-11/12" />
+              <Skeleton className="h-3 w-3/4" />
+            </div>
+          )}
         </div>
         {fresh && (
           <button
@@ -1034,7 +1087,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
               setOverride((n) => n + 1);
             },
           },
-          ...(ws ? [{ label: 'Diff', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`) }] : []),
+          ...(ws ? [{ label: 'Diff', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }] : []),
           ...(writable
             ? [
                 { label: 'Rename', onClick: () => setRename(true) },

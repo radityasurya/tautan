@@ -95,7 +95,7 @@ export function Settings() {
   const provider = suggest.provider && [suggest.provider, suggest.model].filter(Boolean).join(' · ');
 
   return (
-    <div className="mx-auto max-w-2xl pt-[env(safe-area-inset-top)] pb-28">
+    <div className="mx-auto max-w-2xl pb-28">
       <TopBar title="Settings" />
 
       <h2 className="label-caps px-4 pt-3.5 pb-2">Theme</h2>

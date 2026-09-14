@@ -20,7 +20,7 @@ glyph. A floating tab bar carries the three root destinations and hides while yo
 | Screen | Mockup | What it shows |
 |---|---|---|
 | Agents · Mocha | ![Home](design/home-mocha.png) | Needs-you section, collapsible Workspace groups with Host suffix and a summary when collapsed, offline Host row, floating tab bar with badge |
-| Pane · Claude blocked | ![Pane agent](design/pane-agent.png) | Top bar: back, title, then the status and the Switch chevron on the same row, read aloud and ⋯. Tab strip under it: + then the Tabs, and the open Tab's Panes on a second row under the section's hairline. Grid with right-edge fade. Blocked card floating above the dock. Bottom dock: the keys toggle then the inline keys on the left, quick replies scrolling on the right, then the composer |
+| Pane · Claude blocked | ![Pane agent](design/pane-agent.png) | Top bar, Home's geometry: back and title on the left; the status chip that opens Switch, read aloud and ⋯ on the right. Tab strip under it: + then the Tabs, and the open Tab's Panes on a second row under the section's hairline. Grid with right-edge fade. Blocked card floating above the dock. Bottom dock: the keys toggle then the inline keys on the left, quick replies scrolling on the right, then the composer |
 | Pane · shell | ![Pane shell](design/pane-shell.png) | htop with Fit on, same top bar and Tab strip (tmux, so no +), the key bar expanded by default in the dock, no composer |
 | Hosts | ![Hosts](design/hosts.png) | One card per Host: state, Muxes with Pane counts, error with Retry, Add Host |
 | Switch drawer | ![Switch](design/switch.png) | From any Pane: search, Host chips, every Workspace with its Panes under their Tab labels. Two taps to any Pane on any Host |
@@ -35,8 +35,8 @@ screen shares that column's width, so nothing stretches to the window.
 
 | Bar | Contents | Behaviour |
 |---|---|---|
-| Column | One wrapper for the whole screen. From `lg` up its width is `clamp(420px, <grid width + 34px>, 100vw)`, measured from the `<pre>`; below `lg` it is the window | The header, the Tab strip, the grid, the blocked card and the dock all sit in it and are centred together |
-| Top bar | One 44 px row + safe area, everything centred on it: 44 px back chevron · title (17 px, 600, truncates) · the status "● status · agent · workspace ⌄" in 12 px muted right after it, which is the Switch trigger · spacer · read aloud (agent Panes) · ⋯. The title keeps its own width up to 60 % of the row, so a narrow screen truncates the status text first | The bar carries no setting of its own: ⋯ holds the theme picker, then Wrap, Fit to width (hinted with the grid size), Theme colors, Diff, Rename, Close Pane |
+| Column | One wrapper for the whole screen. From `lg` up its width is `clamp(420px, <grid width + 34px>, 100vw)`, where the grid width is the widest `<pre>` measured in this Workspace; below `lg` it is the window | The header, the Tab strip, the grid, the blocked card and the dock all sit in it and are centred together. Every Pane of a Workspace shares the width, so a Tab or Pane switch never moves the column; entering another Workspace eases `max-width` over 180 ms |
+| Top bar | Home's `TopBar` in its `compact` size: the same 56 px row + safe area, 16 px sides, 44 px icon targets, `--bg` at 90 % with blur. Home's grammar: title left, muted meta and actions right. Left: back chevron (accent) · title. Right: the status chip "● status · agent ⌄" (12 px muted, the Status word in its colour; the whole chip opens Switch) · read aloud (agent Panes) · ⋯. The title is 17 px, Home's compact size, not the 26 px rest size, because a Pane title is a sentence and has to share the row. The chip keeps its own width up to 45 % of the row, then its agent name truncates; the title takes the rest and truncates. No scroll shrink: the grid scrolls in its own box | The bar carries no setting of its own: ⋯ holds the theme chips, then Wrap, Fit to width (hinted with the grid size), Theme colors, Diff, Rename, Close Pane |
 | Tab strip | One section of two rows under the top bar. Row 1: **+** for a new Tab (herdr only), then one tab per Tab of the Workspace with status dot, label and Pane count when the Tab holds several; the active tab is underlined in accent on the section's hairline. Row 2: the Panes of the open Tab, as pills, only when it holds several; it hangs on that same hairline and starts where the Tab labels do, not under the + | Tap switches Tab; swipe on the strip too |
 | Blocked card | floats above the dock, `--elevated`, 1 px hairline | Only while Status is `blocked` |
 | Bottom dock | `--elevated`, 16 px top radius. Row 1: the keys toggle, filled (`--surface` and the hairline, accent while open), then the most-used keys, then a hairline, the quick-reply pills scrolling on the right behind a fade. Row 2: the whole key preset, which the toggle opens. Row 3: the composer, on agent Panes, with the agent's glyph inside the field | Key pills (Yes ↵, No esc) send at once; text pills (✦ generated, or static per agent) fill the composer for review. A Hint pill is a short label and the key's glyph — `auto mode ⇧⇥`, `cancel esc` — never the whole footer phrase. The key bar starts collapsed on an agent Pane, where the composer is what the keyboard should meet, and open on a shell Pane, which has nothing else |
@@ -57,9 +57,17 @@ in the Switch drawer. A Tab with one Pane opens straight to that Pane.
 | Between | Where | How |
 |---|---|---|
 | Hosts | Agents tab: Host chips under the header filter the list. Hosts tab: cards | tap |
-| Workspaces | Agents tab: collapsible groups, state remembered. From a Pane: tap the subtitle to open the Switch drawer | tap |
+| Workspaces | Agents tab: collapsible groups, state remembered. From a Pane: tap the status chip in the top bar to open the Switch drawer | tap |
 | Tabs | The Tab strip under the Pane's top bar; the Switch drawer shows the same grouping | tap tab, swipe |
 | Agents and shells | Tabs in the strip's first row; the open Tab's Pane pills in its second; swipe on the strip (never on the grid) | tap, swipe |
+
+Motion follows the kind of screen, not the route. Home ↔ Pane is a push (the View Transition
+in `navigate()`), in both directions. Pane → Pane from the Tab strip, a Pane pill, the Switch
+drawer or a swipe, and Diff ↔ Pane, swap the content in place with no transition: the top bar,
+the Tab strip, the pills and the dock stay mounted and still, and only their contents change.
+The grid keeps the last Pane's Screen until the new Pane's first `screen` event replaces it, and
+shows the skeleton only when nothing arrives within 800 ms. Reduced motion turns off the push
+and the column's width easing alike.
 
 ## Terminal width on a phone
 

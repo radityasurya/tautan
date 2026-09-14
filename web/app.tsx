@@ -56,7 +56,10 @@ export function useEvents(paneKey?: string) {
   const [connected, setConnected] = useState(true);
   const [attempt, setAttempt] = useState(0);
 
-  useEffect(() => setScreen(null), [paneKey]);
+  // Pane to Pane keeps the last Screen until the new Pane's first `screen` event, so the grid
+  // swaps instead of blanking; PaneScreen matches `screen.key` to tell the two apart. Leaving
+  // the Pane screens drops it, so the next Pane opened from Home never shows a stranger's grid.
+  useEffect(() => { if (!paneKey) setScreen(null); }, [paneKey]);
 
   useEffect(() => {
     // The Hub still serves `mode=recent`; tautan's UI only ever shows the visible grid, and
@@ -124,18 +127,23 @@ export function DebugOverlay() {
 const path = () => location.hash.slice(1) || '/';
 let apply: ((route: string) => void) | null = null;
 
+/** `pane` for `#/pane/<key>`, `` for `#/`: what kind of screen a hash route is. */
+const screenOf = (hash: string) => hash.replace(/^#?\/?/, '').split('/')[0];
+
 /**
  * Push a hash route. `pushState` keeps the history entry the iOS edge swipe and the
  * Android back button need, and the View Transition wraps the synchronous re-render.
+ * The push plays only when the kind of screen changes (Home ↔ Pane): Pane to Pane swaps
+ * the content in place, so the header, the Tab strip and the dock never move.
  */
-export function navigate(to: string) {
+export function navigate(to: string, { transition = screenOf(to) !== screenOf(location.hash) } = {}) {
   if (to === location.hash) return;
   const run = () => {
     history.pushState(null, '', to);
     flushSync(() => apply?.(path()));
   };
   const start = (document as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
-  if (start && !reducedMotion()) start.call(document, run);
+  if (start && transition && !reducedMotion()) start.call(document, run);
   else run();
 }
 

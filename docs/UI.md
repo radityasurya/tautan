@@ -85,14 +85,25 @@ label carries the fact. An offline Host adds a red row linking to Hosts. While
 
 ## Pane (`#/pane/<key>`) — `web/pane.tsx`
 
-Top bar: one 44 px row, every item centred on it — back · title · the status ·
-a spacer · **Read aloud** (agent Panes only) and **More**. The status sits right
-after the title in 12 px muted: Dot, the Status word (`aria-live="polite"`),
-Agent, Workspace and the ⌄, and the whole of it is the one button that opens the
-Switch drawer. The title keeps its own width until that would pass 60 % of the
-row, so what truncates on a phone is the status text, not the name of the Pane.
-No setting lives in the bar: Wrap, Fit and Theme colors are rows in the ⋯ sheet,
-and + belongs to the Tab strip.
+Top bar: Home's `TopBar` (`web/header.tsx`) with `size="compact"` and a
+`leading` back chevron, so its row is Home's exactly — 56 px, 16 px sides, 44 px
+icon targets, the same blur and hairline — without the scroll shrink, since the
+grid scrolls in its own box. Left: back · title (17 px, truncates). Right, in
+order: the status chip, **Read aloud** (agent Panes only) and **More**. The chip
+is 12 px muted: Dot, the Status word in its colour (`aria-live="polite"`), the
+Agent (`shell` when there is none) and the ⌄, and the whole of it is the one
+button that opens the Switch drawer. It keeps its own width up to 45 % of the
+row (`max-w-[45cqw]` against the row's `@container`), past which the Agent name
+truncates; the title takes what is left. The Workspace name is not in the bar:
+the Tab strip and the Switch drawer carry it. No setting lives in the bar: Wrap,
+Fit and Theme colors are rows in the ⋯ sheet, and + belongs to the Tab strip.
+
+Switching Pane inside the screen — a Tab, a Pane pill, a Switch drawer row, a
+swipe — calls `navigate()` without the View Transition, which plays only when
+the first path segment changes (`#/` ↔ `#/pane/…`). The screen stays mounted;
+the grid holds the last Pane's Screen until a `screen` event whose `key` is the
+new Pane arrives, and falls back to the skeleton after 800 ms. A held Screen is
+never measured, marked Seen, read aloud or given Affordances.
 
 Under the top bar the **Tab strip** is one section of two rows. Row 1 is **+**
 for a new Tab (herdr Muxes only) and then that Workspace's Tabs, each with a
@@ -117,9 +128,12 @@ More) reflows it client-side.
 `max-width: clamp(420px, <grid width + 34px>, 100vw)`. The grid width is the
 `<pre>`'s own `scrollWidth`, measured after every screen update, after a resize
 and once `document.fonts.ready` resolves, because the mono subset swaps in after
-first paint. The widest line measured on this Pane wins and keeps winning, so
-the column does not resize on every frame of agent output; a new Pane starts the
-measurement again. 34 px is the scroller's 16 + 16 px of padding plus 2 px for
+first paint. The widest grid measured in the Workspace wins and keeps winning
+(a module-level map by Workspace key), so the column does not resize on every
+frame of agent output nor on a Tab or Pane switch, and a new Pane reads the
+width on its first frame. A Workspace not measured yet keeps the width already
+on screen; once it measures, `max-width` eases over 180 ms. A font swap makes
+the next measurement replace the widest instead of adding to it. 34 px is the scroller's 16 + 16 px of padding plus 2 px for
 the fraction `scrollWidth` rounds away. Before the first measurement, and while
 Wrap is on — where the `<pre>` takes the column's own width and measuring it
 would feed back — the column falls back to 672 px, which is the right width for
