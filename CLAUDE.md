@@ -34,6 +34,11 @@ behind the two irreversible choices live in `docs/adr/`.
 - `pane.report_agent` with a `state` gives the reporter authority: herdr's screen rules still
   classify (`agent.explain` says blocked) but `agent_status` keeps the reported state. To
   simulate a blocked Agent, report `--state blocked` explicitly after printing the prompt.
+- herdr fires `pane.updated` on the title, cwd and Status, never on raw output: a shell
+  printing for ten seconds emits nothing (probed on 0.8.0, and 0.9's docs say the same;
+  `pane.output_matched` needs a pattern and a catch-all regex matches the existing screen at
+  once). A watched Pane is therefore polled by the Hub, fast after a change and backing off
+  to 2 s while quiet. There is no surface-stream subscription in either version.
 - The Hub never calls any `*.focus` method. Seen is tautan's own flag, never written to a Mux.
 - A real Claude Code permission box matches `live_blocked_form`, not `bash_permission_prompt`.
   `live_blocked_form` has priority 980 and reads `after_last_horizontal_rule`;

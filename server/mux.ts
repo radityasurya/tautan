@@ -33,7 +33,13 @@ export class Hub {
   private hosts = new Map<string, StateHost>();
   private closeCallbacks = new Set<() => void>();
   private listeners = new Set<HubListener>();
-  private screenTimers = new Map<HubListener, ReturnType<typeof setTimeout>>();
+  // herdr 0.8 fires `pane.updated` on title, cwd and Status, never on raw output: a shell
+  // printing for ten seconds emits nothing (probed 2026-09-14), and `pane.output_matched`
+  // only fires on a pattern. So a watched Pane is polled, fast after a change and backing
+  // off while quiet. ponytail: drop this if herdr gains a surface stream.
+  private static readonly WATCH_FAST = 250;
+  private static readonly WATCH_SLOW = 2_000;
+  private watchers = new Map<HubListener, { timer?: ReturnType<typeof setTimeout>; delay: number; last?: string }>();
   private cached?: State;
   private statuses = new Map<string, { status: string; at: number }>();
   private lastLines = new Map<string, { revision: number; line?: string; excerpt?: string; command?: string }>();
@@ -115,8 +121,7 @@ export class Hub {
       if (!listener.paneKey || !listener.onScreen) continue;
       const parsed = this.resolve(listener.paneKey);
       if (!parsed || parsed.muxKey !== muxKey || ids !== 'all' && !ids.includes(parsed.paneId)) continue;
-      clearTimeout(this.screenTimers.get(listener));
-      this.screenTimers.set(listener, setTimeout(() => { this.screenTimers.delete(listener); void this.sendScreen(listener); }, 150));
+      this.scheduleWatch(listener, 150);
     }
   }
 
@@ -353,12 +358,38 @@ export class Hub {
 
   subscribe(listener: HubListener): () => void {
     this.listeners.add(listener);
-    if (listener.paneKey && listener.onScreen) queueMicrotask(() => void this.sendScreen(listener));
-    return () => { this.listeners.delete(listener); clearTimeout(this.screenTimers.get(listener)); this.screenTimers.delete(listener); };
+    if (listener.paneKey && listener.onScreen) {
+      this.watchers.set(listener, { delay: Hub.WATCH_FAST });
+      queueMicrotask(() => void this.sendScreen(listener));
+    }
+    return () => {
+      this.listeners.delete(listener);
+      clearTimeout(this.watchers.get(listener)?.timer);
+      this.watchers.delete(listener);
+    };
   }
+
+  /** Poll the watched Pane again in `ms`, or sooner than already planned. */
+  private scheduleWatch(listener: HubListener, ms: number): void {
+    const watch = this.watchers.get(listener); if (!watch) return;
+    clearTimeout(watch.timer);
+    watch.timer = setTimeout(() => void this.sendScreen(listener), ms);
+  }
+
   private async sendScreen(listener: HubListener): Promise<void> {
-    if (!this.listeners.has(listener) || !listener.paneKey || !listener.onScreen) return;
-    try { listener.onScreen({ key: listener.paneKey, ...await this.read(listener.paneKey, listener.mode ?? 'visible') }); } catch {}
+    const watch = this.watchers.get(listener);
+    if (!watch || !this.listeners.has(listener) || !listener.paneKey || !listener.onScreen) return;
+    try {
+      const screen = await this.read(listener.paneKey, listener.mode ?? 'visible');
+      if (screen.text !== watch.last) {
+        watch.last = screen.text;
+        watch.delay = Hub.WATCH_FAST;
+        listener.onScreen({ key: listener.paneKey, ...screen });
+      } else {
+        watch.delay = Math.min(Hub.WATCH_SLOW, Math.round(watch.delay * 1.5));
+      }
+    } catch { watch.delay = Hub.WATCH_SLOW; }
+    if (this.watchers.has(listener)) this.scheduleWatch(listener, watch.delay);
   }
   private emitState(): void {
     const wait = Math.max(0, 500 - (Date.now() - this.lastStateAt));
@@ -372,6 +403,7 @@ export class Hub {
     for (const callback of this.closeCallbacks) callback();
     for (const entry of this.entries.values()) { entry.unsubscribe(); entry.mux.close(); clearTimeout(entry.timer); clearInterval(entry.interval); }
     clearTimeout(this.stateTimer); clearTimeout(this.seenTimer);
-    for (const timer of this.screenTimers.values()) clearTimeout(timer);
+    for (const watch of this.watchers.values()) clearTimeout(watch.timer);
+    this.watchers.clear();
   }
 }
