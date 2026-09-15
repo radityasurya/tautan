@@ -56,16 +56,23 @@ and the check/cross agents print; the rest falls through to the system stack.
 ## Agents (`#/`) — `web/home.tsx`
 
 The screen title is `tautan`, with `<hosts> · <panes>` counts, a collapse/expand-all
-toggle, and a `+` that opens New Workspace. Host chips appear under the header only when
-there is more than one Host.
+toggle, a `+` that opens New Workspace, and the search field under them. Host chips appear
+under the header only when there is more than one Host.
 
 Unseen `blocked` and `done` Panes lift out into a **Needs you** section; `working`
-Panes lift out into a **Running** section under it, most recently changed first.
-Everything else groups by Workspace, most urgent Status first. A group whose Panes are all
+Panes lift out into a **Running** section under it, most recently changed first. Both headers
+fold like a group header — chevron, count, persisted — and a search forces them open.
+Rows in a pinned section carry their Workspace label as context. Everything else groups by
+Workspace, most urgent Status first. A group whose Panes are all
 lifted keeps its header, so its menu stays reachable. A group header is a button: tap
 collapses (persisted in `localStorage`), long-press (500 ms, cancelled by 10 px of movement)
 or the ⋯ button opens the group menu. Collapsed, it summarises the most urgent Status of
 *all* its Panes, for example `2 blocked`.
+
+A **search field** sits under the title, always. It matches the agent, the title and the
+Workspace label — the same rule the Switch drawer uses — and filters every section; an
+empty section hides, except an unreachable Host, which stays. **Collapse all** folds the
+pinned sections with the groups.
 
 On a herdr Mux a Pane row swipes left to reveal **Rename** and **Close** (a tap on an open
 row closes it instead of navigating), and long-press opens the same two as a menu — the

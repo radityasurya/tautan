@@ -8,6 +8,9 @@ Home and Hosts, after on-device feedback:
   and `working` Panes now lift into a **Running** section, most recently changed first. A
   Workspace whose Panes all sit in a pinned section keeps its header, and its summary counts
   every Pane it holds.
+- **Home searches.** A search field under the title filters every section by agent, title or
+  Workspace label — the same rule the Switch drawer uses. The pinned section headers fold
+  like group headers, with their count, and a search forces them open.
 - **Collapse all / Expand all** in the Home top bar, next to the counts.
 - **Workspace actions are visible.** The group header grows a ⋯ button beside the existing
   long-press, and the menu gains **Close Workspace** (`POST /api/workspaces/:key/close`,

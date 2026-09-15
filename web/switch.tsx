@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { State, StatePane } from '../shared/types.ts';
 import { Drawer, DrawerContent, DrawerTitle } from '@/components/ui/drawer.tsx';
 import { navigate } from './app.tsx';
-import { Dot, timeAgo, unseen } from './home.tsx';
+import { Dot, matchPane, timeAgo, unseen } from './home.tsx';
 import { Search } from './icons.tsx';
 
 /** One Pane row, shared by every section: dot, agent, title, and how long ago it changed. */
@@ -56,12 +56,8 @@ export function SwitchDrawer({
     onPick?.();
     onClose();
   };
-  const matches = (state?.panes ?? []).filter((p) => {
-    if (host && hostOf(p.muxKey) !== host) return false;
-    if (!needle) return true;
-    const w = state?.workspaces.find((item) => item.muxKey === p.muxKey && item.id === p.workspaceId);
-    return `${p.agent ?? 'shell'} ${p.title} ${w?.label ?? ''}`.toLowerCase().includes(needle);
-  });
+  // One match rule with Home's search: agent, title, Workspace label.
+  const matches = (state?.panes ?? []).filter((p) => (!host || hostOf(p.muxKey) === host) && matchPane(p, needle, state));
 
   // The same two pinned sections Home draws, over the whole Host-filtered list.
   const needsYou = matches.filter((p) => unseen(p) && (p.status === 'blocked' || p.status === 'done'));

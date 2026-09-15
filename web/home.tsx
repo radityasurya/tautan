@@ -5,7 +5,7 @@ import type {
   NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
 import { api, haptic, Link, navigate, opensWith, reducedMotion } from './app.tsx';
-import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus } from './icons.tsx';
+import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus, Search } from './icons.tsx';
 import { Skeleton } from '@/components/ui/skeleton.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
@@ -92,6 +92,14 @@ export function commonAgent(panes: StatePane[]): string {
 /** Blocked reason, else the last non-empty screen line, else the directory. */
 const preview = (p: StatePane) => p.lastLine ?? basename(p.cwd) ?? '';
 
+/** Does a row's own text — agent, title, Workspace label — carry the needle? Shared with
+ *  the Switch drawer, so one search means one match everywhere. */
+export function matchPane(pane: StatePane, needle: string, state?: State | null): boolean {
+  if (!needle) return true;
+  const workspace = state?.workspaces.find((w) => w.muxKey === pane.muxKey && w.id === pane.workspaceId);
+  return `${pane.agent ?? 'shell'} ${pane.title} ${workspace?.label ?? ''}`.toLowerCase().includes(needle);
+}
+
 /** The most urgent status present, as the collapsed group's one-line summary. */
 function summary(panes: StatePane[]): string {
   for (const s of Object.keys(RANK) as Status[]) {
@@ -120,7 +128,7 @@ export interface RowActions {
  * scrolls the page's. A tap on an open row closes it instead of navigating. Long-press
  * opens the same actions as a menu, which is also the desktop path.
  */
-function Row({ pane, first, actions }: { pane: StatePane; first?: boolean; actions?: RowActions }) {
+function Row({ pane, first, actions, context }: { pane: StatePane; first?: boolean; actions?: RowActions; context?: string }) {
   const fresh = unseen(pane);
   const word = pane.status === 'blocked' ? 'Blocked' : pane.status === 'done' ? 'Done' : '';
   const when = timeAgo(pane.statusChangedAt);
@@ -154,6 +162,7 @@ function Row({ pane, first, actions }: { pane: StatePane; first?: boolean; actio
         <span className={`truncate text-caption text-muted ${pane.lastLine ? '' : 'font-mono'}`}>
           {word && <span className={statusText[pane.status]}>{word} · </span>}
           {preview(pane)}
+          {context && <span className="text-muted/70"> · {context}</span>}
         </span>
       </span>
       <span aria-hidden className="shrink-0 font-mono text-caption tabular-nums text-muted">
@@ -283,10 +292,32 @@ function GroupHeader({
   );
 }
 
+/** A pinned section header — Needs you, Running — collapsible like a Workspace group. */
+function PinnedHeader({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
+  return (
+    <h2>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className="label-caps flex w-full items-center px-4 pt-3.5 pb-1.5 text-left"
+      >
+        {open ? <ChevronDown className="mr-1.5 shrink-0" /> : <ChevronRight className="mr-1.5 shrink-0" />}
+        {label}
+        <span className="ml-auto shrink-0 pl-2 font-medium tracking-normal normal-case tabular-nums text-muted">{count}</span>
+      </button>
+    </h2>
+  );
+}
+
 // ---- screen ----
 
 const COLLAPSED = 'tautan.collapsed';
 const readCollapsed = (): string[] => JSON.parse(localStorage.getItem(COLLAPSED) ?? '[]') as string[];
+/** Fold keys for the two pinned sections. A Workspace key always carries a `/`, so these
+ *  never collide with one. */
+const NEEDS = '@needs';
+const RUNNING = '@running';
 
 export function Home({ state }: { state: State | null }) {
   const [host, setHost] = useState<string | null>(null);
@@ -299,6 +330,7 @@ export function Home({ state }: { state: State | null }) {
   const [paneMenu, setPaneMenu] = useState<StatePane | null>(null);
   const [paneRename, setPaneRename] = useState<StatePane | null>(null);
   const [paneClose, setPaneClose] = useState<StatePane | null>(null);
+  const [q, setQ] = useState('');
   // The Workspace this screen just created: it stays listed until State fills it with a
   // Pane, and scrolls itself into view the first time State carries it.
   const [created, setCreated] = useState<string | null>(null);
@@ -327,10 +359,13 @@ export function Home({ state }: { state: State | null }) {
   const visible = (muxKey: string) => !host || hostOf(muxKey) === host;
   /** Only herdr writes. tmux answers 501, so tautan never offers the action. */
   const writable = (muxKey?: string) => state?.muxes.find((m) => m.key === muxKey)?.kind === 'herdr';
-  const needsYou = (state?.panes ?? []).filter((p) => visible(p.muxKey) && unseen(p) && (p.status === 'blocked' || p.status === 'done'));
+  const needle = q.trim().toLowerCase();
+  const hit = (p: StatePane) => matchPane(p, needle, state);
+  const wsLabel = (p: StatePane) => state?.workspaces.find((w) => w.muxKey === p.muxKey && w.id === p.workspaceId)?.label;
+  const needsYou = (state?.panes ?? []).filter((p) => visible(p.muxKey) && unseen(p) && (p.status === 'blocked' || p.status === 'done') && hit(p));
   /** Working Panes pinned beside Needs you, most recently changed first. */
   const running = (state?.panes ?? [])
-    .filter((p) => visible(p.muxKey) && p.status === 'working')
+    .filter((p) => visible(p.muxKey) && p.status === 'working' && hit(p))
     .sort((a, b) => (b.statusChangedAt ?? 0) - (a.statusChangedAt ?? 0));
   const pinned = new Set([...needsYou, ...running].map((p) => p.key));
   const groups = (state?.workspaces ?? [])
@@ -341,12 +376,15 @@ export function Home({ state }: { state: State | null }) {
         w,
         host: state?.hosts.find((h) => h.id === hostId),
         all: panesOf(w),
-        panes: panesOf(w).filter((p) => !pinned.has(p.key)),
+        panes: panesOf(w).filter((p) => !pinned.has(p.key) && hit(p)),
       };
     })
     // A Workspace whose Panes all sit in a pinned section keeps its header — its summary
-    // still says what it holds, and the group menu stays reachable.
-    .filter((g) => g.panes.length > 0 || g.all.length > 0 || g.host?.online === false || g.w.key === created);
+    // still says what it holds, and the group menu stays reachable. While searching, an
+    // empty section is noise instead, so it goes.
+    .filter((g) => g.panes.length > 0 || (!needle && g.all.length > 0) || g.host?.online === false || g.w.key === created);
+  /** A search must show what it found, so a folded section opens while the needle is set. */
+  const openSection = (key: string) => !!needle || !collapsed.includes(key);
 
   const tabIn = newTab ?? (opensWith('newtab') ? (groups[0]?.w ?? null) : null);
   // A new Workspace lands on the Mux the list already shows, next to the Workspace it was
@@ -371,7 +409,9 @@ export function Home({ state }: { state: State | null }) {
     setCreated(workspaceKey);
   };
   const counts = state && `${state.hosts.length} host${state.hosts.length === 1 ? '' : 's'} · ${state.panes.length} panes`;
-  const keys = groups.map((g) => g.w.key);
+  // Collapse all folds the pinned sections with the groups; the two only exist when they
+  // hold rows, which is exactly when folding them means something.
+  const keys = [...groups.map((g) => g.w.key), ...(needsYou.length ? [NEEDS] : []), ...(running.length ? [RUNNING] : [])];
   const allShut = keys.length > 0 && keys.every((k) => collapsed.includes(k));
   const rowActions = (p: StatePane): RowActions | undefined =>
     writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
@@ -404,6 +444,35 @@ export function Home({ state }: { state: State | null }) {
             </button>
           )}
           </>
+        }
+        below={
+          state ? (
+            <div className="px-4 pb-2">
+              <label className="flex min-h-11 items-center gap-2.5 rounded-composer border border-border bg-bg px-3.5 text-muted focus-within:border-accent">
+                <Search size={18} />
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Search panes"
+                  aria-label="Search panes"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="min-w-0 flex-1 bg-transparent py-2.5 text-body text-fg placeholder:text-muted focus:outline-none"
+                />
+                {q && (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => setQ('')}
+                    className="press flex size-7 shrink-0 items-center justify-center"
+                  >
+                    <span aria-hidden className="text-muted">×</span>
+                  </button>
+                )}
+              </label>
+            </div>
+          ) : undefined
         }
       />
 
@@ -439,32 +508,38 @@ export function Home({ state }: { state: State | null }) {
         </ul>
       ) : needsYou.length === 0 && running.length === 0 && groups.length === 0 ? (
         <div className="flex flex-col items-start gap-3 px-4 pt-8">
-          <p className="text-body text-muted">No panes yet.</p>
-          <Link to="#/hosts" className="text-body font-medium text-accent">
-            Add a Host
-          </Link>
+          <p className="text-body text-muted">{needle ? `Nothing matches “${q.trim()}”.` : 'No panes yet.'}</p>
+          {!needle && (
+            <Link to="#/hosts" className="text-body font-medium text-accent">
+              Add a Host
+            </Link>
+          )}
         </div>
       ) : (
         <>
           {needsYou.length > 0 && (
             <section>
-              <h2 className="label-caps px-4 pt-3.5 pb-1.5">Needs you</h2>
-              <ul>
-                {needsYou.map((p, i) => (
-                  <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} />
-                ))}
-              </ul>
+              <PinnedHeader label="Needs you" count={needsYou.length} open={openSection(NEEDS)} onToggle={() => toggle(NEEDS)} />
+              {openSection(NEEDS) && (
+                <ul>
+                  {needsYou.map((p, i) => (
+                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} />
+                  ))}
+                </ul>
+              )}
             </section>
           )}
 
           {running.length > 0 && (
             <section>
-              <h2 className="label-caps px-4 pt-3.5 pb-1.5">Running</h2>
-              <ul>
-                {running.map((p, i) => (
-                  <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} />
-                ))}
-              </ul>
+              <PinnedHeader label="Running" count={running.length} open={openSection(RUNNING)} onToggle={() => toggle(RUNNING)} />
+              {openSection(RUNNING) && (
+                <ul>
+                  {running.map((p, i) => (
+                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} />
+                  ))}
+                </ul>
+              )}
             </section>
           )}
 
