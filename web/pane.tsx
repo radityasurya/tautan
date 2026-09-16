@@ -14,6 +14,7 @@ import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, statusText } from './home.tsx';
 import { Attach, Back, ChevronDown, Down, Keyboard, Mic, More, Plus, Send, Speaker } from './icons.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
+import { IconButton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
 import { SwitchDrawer } from './switch.tsx';
 import { AGENT_KEYS, SHELL_KEYS } from './keys.ts';
@@ -841,7 +842,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
 
       {explain && (
         <div className={`transition-opacity duration-150 ${status === 'blocked' ? 'opacity-100' : 'opacity-0'}`}>
-          <Blocked explain={explain} />
+          <Blocked explain={explain} agent={agent} onSend={(ks) => keys(ks)} />
         </div>
       )}
 

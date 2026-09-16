@@ -1,4 +1,5 @@
 import type { Explain } from '../shared/types.ts';
+import { ApprovalCardPattern } from './halaska-kit';
 import { Ansi } from './pane.tsx';
 
 const BOX = /[─-╿▀-▟]/g;
@@ -16,31 +17,35 @@ const content = (detection: string) =>
     .filter((l) => plain(l).trim());
 
 /**
- * What herdr saw, and the keys it says the prompt takes. The first key is the primary
- * action. Sending is the caller's job: this card never talks to the Hub.
+ * The blocked moment as the kit's approval card: herdr's offered keys become the radio
+ * rows, Approve sends the chosen key, Skip holds. The detection excerpt rides under the
+ * card, still in the agent's own colours. Sending is the caller's job: this card never
+ * talks to the Hub.
  */
-// Actions live in the quick-reply pills under the card; the card only says what is asked.
-export function Blocked({ explain }: { explain: Explain }) {
+export function Blocked({ explain, agent, onSend }: { explain: Explain; agent?: string; onSend: (keys: string[]) => void }) {
   const [head = 'Blocked', ...rest] = content(explain.detection);
   const title = plain(head).trim();
+  const options = (explain.hintKeys.length ? explain.hintKeys : [{ key: 'enter', label: 'Continue' }])
+    .slice(0, 4)
+    .map((h) => ({ id: h.key, title: h.label, sub: h.key }));
 
   return (
-    <section
-      role="region"
-      aria-label="Blocked"
-      className="rise mx-3 mb-2.5 flex flex-col gap-2.5 rounded-card border border-border bg-elevated px-3.5 py-3 shadow-elevated"
-    >
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="truncate text-[13px] font-semibold">{title}</h2>
-        <span className="shrink-0 font-mono text-[11px] text-muted">{explain.ruleId}</span>
-      </div>
-
+    <section role="region" aria-label="Blocked" className="rise mx-3 mb-2.5 flex flex-col gap-2.5">
+      <ApprovalCardPattern
+        eyebrow={agent ? `${agent} needs your call` : 'Needs your call'}
+        badgeLabel="Blocked"
+        question={title}
+        options={options}
+        approveLabel="Send"
+        skipLabel="Hold"
+        approvedText={(o: { title: string }) => `Sent · ${o.title}`}
+        onApprove={(o: { id: string }) => onSend([o.id])}
+      />
       {rest.length > 0 && (
-        <pre className="overflow-hidden font-mono text-caption text-ellipsis whitespace-pre-wrap text-muted">
+        <pre className="overflow-hidden rounded-card bg-elevated px-3.5 py-2.5 font-mono text-caption text-ellipsis whitespace-pre-wrap text-muted shadow-elevated">
           <Ansi text={rest.slice(0, 2).join('\n')} />
         </pre>
       )}
-
     </section>
   );
 }
