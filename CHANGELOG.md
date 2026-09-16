@@ -1,31 +1,29 @@
 # Changelog
 
-## Unreleased
+## Unreleased — Halaska Kit
 
-Home and Hosts, after on-device feedback:
+The whole UI moves onto Halaska Kit (MIT, one file, `web/halaska-kit.jsx`): Geist type, the
+kit palettes and controls, and its agentic UX patterns. Routing, state, the Hub contract and
+the terminal grid are unchanged; the grid keeps its tautan-box mono and its own ANSI
+palettes.
 
-- **Home pins Running beside Needs you.** Unseen `blocked`/`done` Panes lift out as before,
-  and `working` Panes now lift into a **Running** section, most recently changed first. A
-  Workspace whose Panes all sit in a pinned section keeps its header, and its summary counts
-  every Pane it holds.
-- **Home searches.** A search field under the title filters every section by agent, title or
-  Workspace label — the same rule the Switch drawer uses. The pinned section headers fold
-  like group headers, with their count, and a search forces them open.
-- **Collapse all / Expand all** in the Home top bar, next to the counts.
-- **Workspace actions are visible.** The group header grows a ⋯ button beside the existing
-  long-press, and the menu gains **Close Workspace** (`POST /api/workspaces/:key/close`,
-  herdr only; tmux answers 501).
-- **Pane rows swipe.** On a herdr Mux, drag a row left to reveal Rename and Close, Apple
-  style; a tap on an open row closes it. Long-press opens the same actions as a menu, which
-  is also the desktop path. tmux rows offer nothing.
-- **Hosts lists itself.** The top bar carries `<hosts> · <panes>` counts and a **+** for Add
-  Host (the dashed card is gone). A Host with one Mux no longer prints its Pane count
-  twice, and every card's bottom row says who owns the entry — `this machine · not editable`,
-  `from herdr machine list`, or Edit and Remove for a `hosts.json` entry.
-- **Theme picker is a dropdown.** A native `<select>` (iOS opens its own picker wheel) with
-  the current theme's swatch, in Settings and in the Pane's ⋯ sheet.
-- **Switch drawer mirrors Home.** Needs you, then Running, then Workspace groups; every row
-  says how long ago its Status last changed.
+- **Theming drops to light/dark/system.** The kit palette is the one source of colour;
+  `applyTheme()` re-points tautan's CSS tokens at it, so the custom rows and bars follow the
+  kit. The four Catppuccin themes are gone; vaul and the Radix dialog go with the shadcn
+  components that wrapped them.
+- **Home:** kit IconButton, SearchInput, Chip filters, Skeleton rows, EmptyState.
+- **Hosts:** Cards with StatusDot, Button and LinkButton actions, a controlled-TextInput sheet.
+- **Settings:** the theme Select, SwitchToggle settings rows.
+- **Sheets:** the kit Sheet and AlertDialog everywhere, with controlled inputs; the wrapper
+  unmounts a closed panel so nothing focusable lives off-screen.
+- **Pane:** the blocked card is `ApprovalCardPattern` — herdr's offered keys as radio rows,
+  Approve sends the chosen key, Hold waits — plus IconButton header actions. The composer,
+  key bar and reply pills stay tautan's own; kit inputs cannot express them.
+- **Diff:** scope as a SegmentedControl. **Switch:** a kit Sheet with Home's search rule.
+
+Also kept from the on-device feedback round: Home pins a **Running** section beside
+**Needs you**, folds pinned sections like groups, and searches under the title; Workspace
+menus can close the Workspace; Hosts counts itself and names who owns each entry.
 
 ## 0.1.1 — 2026-09-12
 

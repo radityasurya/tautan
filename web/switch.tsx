@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import type { State, StatePane } from '../shared/types.ts';
-import { Drawer, DrawerContent, DrawerTitle } from '@/components/ui/drawer.tsx';
+import { Sheet } from './sheets.tsx';
 import { navigate } from './app.tsx';
 import { Dot, matchPane, timeAgo, unseen } from './home.tsx';
-import { Search } from './icons.tsx';
+import { Chip, SearchInput } from './halaska-kit';
 
 /** One Pane row, shared by every section: dot, agent, title, and how long ago it changed. */
 function PaneRow({ pane, currentKey, onPick }: { pane: StatePane; currentKey: string; onPick: () => void }) {
@@ -77,41 +77,18 @@ export function SwitchDrawer({
     })
     .filter((g) => g.panes.length > 0);
   return (
-    <Drawer open={open} onOpenChange={(next) => !next && onClose()} repositionInputs={false}>
-      <DrawerContent aria-describedby={undefined} className="h-[85dvh] max-h-[85dvh] px-3">
-        <DrawerTitle className="sr-only">Switch Pane</DrawerTitle>
+    <Sheet open={open} title="Switch Pane" onClose={onClose}>
+      <SearchInput value={q} onChange={setQ} placeholder="Switch to…" shortcut={null} style={{ width: '100%' }} />
 
-        <label className="mt-1 flex min-h-11 items-center gap-2.5 rounded-composer border border-border bg-bg px-3.5 text-muted">
-          <Search />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Switch to…"
-            aria-label="Switch to"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            className="min-w-0 flex-1 bg-transparent py-2.5 text-body text-fg placeholder:text-muted focus:outline-none"
-          />
-        </label>
+      <div role="group" aria-label="Filter by Host" className="hscroll mt-3 flex shrink-0 gap-2">
+        {[{ id: null, label: 'All', online: true }, ...(state?.hosts ?? [])].map((h) => (
+          <Chip key={h.id ?? 'all'} selected={host === h.id} onToggle={() => setHost(h.id)}>
+            {h.label}
+          </Chip>
+        ))}
+      </div>
 
-        <div role="group" aria-label="Filter by Host" className="hscroll mt-3 flex shrink-0 gap-2">
-          {[{ id: null, label: 'All', online: true }, ...(state?.hosts ?? [])].map((h) => (
-            <button
-              key={h.id ?? 'all'}
-              type="button"
-              aria-pressed={host === h.id}
-              onClick={() => setHost(h.id)}
-              className={`shrink-0 rounded-chip px-3 py-1.5 text-caption ${
-                host === h.id ? 'bg-accent font-semibold text-bg' : 'bg-bg font-medium text-muted'
-              } ${h.online ? '' : 'line-through'}`}
-            >
-              {h.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-2 min-h-0 flex-1 overflow-y-auto overscroll-contain pb-2">
+        <div className="mt-2 overflow-y-auto overscroll-contain pb-2" style={{ maxHeight: "calc(100dvh - 240px)" }}>
           {matches.length === 0 && <p className="px-3 py-6 text-body text-muted">Nothing matches “{q}”.</p>}
           {needsYou.length > 0 && (
             <section>
@@ -150,7 +127,6 @@ export function SwitchDrawer({
             </section>
           ))}
         </div>
-      </DrawerContent>
-    </Drawer>
+    </Sheet>
   );
 }

@@ -5,7 +5,7 @@ import type { DiffFile, DiffResult, DiffScope, State } from '../shared/types.ts'
 import { api } from './app.tsx';
 import { Back, ChevronDown, ChevronRight, Refresh } from './icons.tsx';
 import { FADE } from './pane.tsx';
-import { Skeleton } from '@/components/ui/skeleton.tsx';
+import { SegmentedControl, Skeleton } from './halaska-kit';
 
 const SCOPES: [DiffScope, string][] = [
   ['working', 'Changes'],
@@ -273,20 +273,12 @@ export function Diff({ workspaceKey, state }: { workspaceKey: string; state: Sta
         </button>
       </header>
 
-      <div role="group" aria-label="Scope" className="hscroll flex shrink-0 gap-2 px-4 pt-1 pb-2">
-        {SCOPES.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            aria-pressed={scope === value}
-            onClick={() => setScope(value)}
-            className={`press shrink-0 rounded-chip px-3 py-1.5 text-caption ${
-              scope === value ? 'bg-accent font-semibold text-bg' : 'bg-surface font-medium text-muted'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      <div aria-label="Scope" className="shrink-0 px-4 pt-1 pb-2">
+        <SegmentedControl
+          options={SCOPES.map(([, label]) => label)}
+          value={SCOPES.find(([value]) => value === scope)![1]}
+          onChange={(label: string) => setScope(SCOPES.find(([, l]) => l === label)![0])}
+        />
       </div>
 
       {scope === 'base' && data?.base && <p className="shrink-0 px-4 pb-2 text-caption text-muted">vs {data.base}</p>}

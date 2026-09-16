@@ -90,8 +90,12 @@ behind the two irreversible choices live in `docs/adr/`.
 ## Conventions
 
 - Runtime is Bun; the package manager is pnpm. Scripts are in `package.json`.
-- Add a dependency only when a few lines cannot do the job. There is no router, state
-  library, or UI kit by decision.
+- Add a dependency only when a few lines cannot do the job. There is no router or state
+  library by decision. The UI kit **is** a decision with a record: Halaska Kit
+  (`web/halaska-kit.jsx`, MIT) since 2026-09-15 — components and palette come from the kit
+  (`usePal`/`tokens`), Tailwind stays for layout, and `applyTheme()` re-points tautan's CSS
+  tokens at the kit palette so the custom rows follow it. Kit is light/dark only; the grid's
+  ANSI palettes stay in `theme.css`.
 - Terminal output is rendered as spans from `shared/ansi.ts`, never through `innerHTML`.
 - Mark a deliberate shortcut with a `// ponytail:` comment naming its ceiling and upgrade path.
 - Commit messages end with a `Co-Authored-By` trailer for the agent that wrote the change.

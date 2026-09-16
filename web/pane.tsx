@@ -6,7 +6,7 @@ import type {
   Explain, InputBody, NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
 import { AffordanceLayer, hintPills, useCell, useMouseForward } from './affordances.tsx';
-import { Skeleton } from '@/components/ui/skeleton.tsx';
+
 import { api, haptic, Link, navigate, opensWith, post } from './app.tsx';
 import { Blocked } from './blocked.tsx';
 import { TopBar } from './header.tsx';
@@ -14,7 +14,7 @@ import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, statusText } from './home.tsx';
 import { Attach, Back, ChevronDown, Down, Keyboard, Mic, More, Plus, Send, Speaker } from './icons.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
-import { IconButton } from './halaska-kit';
+import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
 import { SwitchDrawer } from './switch.tsx';
 import { AGENT_KEYS, SHELL_KEYS } from './keys.ts';
@@ -816,10 +816,10 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
           </pre>
           {skeleton && (
             <div aria-busy aria-label="Loading screen" className="flex flex-col gap-2 pt-1 pr-4">
-              <Skeleton className="h-3 w-2/3" />
-              <Skeleton className="h-3 w-full" />
-              <Skeleton className="h-3 w-11/12" />
-              <Skeleton className="h-3 w-3/4" />
+              <Skeleton width="66%" height={12} />
+              <Skeleton width="100%" height={12} />
+              <Skeleton width="92%" height={12} />
+              <Skeleton width="75%" height={12} />
             </div>
           )}
         </div>
