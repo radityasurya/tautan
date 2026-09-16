@@ -1,16 +1,12 @@
 import { TopBar } from './header.tsx';
-import { useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import { useEffect, useState } from 'react';
 import type { HostConfig, ProbeResult, Settings, State, StateHost } from '../shared/types.ts';
 import { api, opensWith } from './app.tsx';
 import { Install, Plus } from './icons.tsx';
 import { ErrorLine, Sheet, useWrite } from './sheets.tsx';
-import { Button, Caption, TextInput, usePal } from './halaska-kit';
+import { Button, Card, Caption, IconButton, LinkButton, StatusDot, SwitchToggle, TextInput, usePal } from './halaska-kit';
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
-
-/** A small text action inside a Host card: Edit, Remove. */
-const action = 'flex h-9 items-center rounded-chip px-2 text-[13px] font-medium active:bg-surface disabled:opacity-50';
 
 function HostCard({
   host,
@@ -27,6 +23,7 @@ function HostCard({
   onRemove: (entry: HostConfig) => void;
 }) {
   const [retrying, setRetrying] = useState(false);
+  const pal = usePal();
   const muxes = state.muxes.filter((m) => m.hostId === host.id);
   const panes = state.panes.filter((p) => muxes.some((m) => m.key === p.muxKey));
 
@@ -39,68 +36,65 @@ function HostCard({
   };
 
   return (
-    <li className="flex flex-col gap-2.5 rounded-card bg-elevated px-4 py-3.5">
-      <div className="flex items-center gap-2.5">
-        <span aria-hidden className={`size-2 shrink-0 rounded-full ${host.online ? 'bg-ok' : 'bg-danger'}`} />
-        <span className="shrink-0 font-semibold">{host.label}</span>
-        <span className={`min-w-0 truncate text-caption text-muted ${host.target ? 'font-mono' : ''}`}>
-          {host.target ?? 'this machine'}
-        </span>
-        {host.online && muxes.length > 1 && (
-          <span className="ml-auto shrink-0 text-caption tabular-nums text-muted">{count(panes.length, 'pane')}</span>
-        )}
-      </div>
-
-      {host.online ? (
-        <ul className="flex flex-col gap-1.5">
-          {muxes.map((m) => {
-            const mine = panes.filter((p) => p.muxKey === m.key);
-            const blocked = mine.filter((p) => p.status === 'blocked').length;
-            return (
-              <li key={m.key} className="flex items-center gap-2.5 text-[13px] text-muted">
-                <span className="font-mono text-fg">{m.kind}</span>
-                {m.label !== m.kind && <span className="min-w-0 truncate">{m.label}</span>}
-                <span className="ml-auto shrink-0 tabular-nums">
-                  {count(mine.length, 'pane')}
-                  {blocked > 0 && ` · ${blocked} blocked`}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      ) : (
-        <p className="text-[13px] break-words text-danger">{host.error ?? 'unreachable'}</p>
-      )}
-
-      {/* The bottom row is always there, so a Host without actions says why: this machine
-          or the machine list owns it, and tautan may not edit those entries. */}
-      <div className="-mx-1 flex items-center gap-1">
-        {!host.online && (
-          <button
-            type="button"
-            onClick={retry}
-            disabled={retrying}
-            className="flex h-9 items-center rounded-chip border border-border bg-bg px-3.5 text-[13px] font-medium active:bg-surface disabled:opacity-50"
-          >
-            {retrying ? 'Retrying…' : 'Retry now'}
-          </button>
-        )}
-        {config && (
-          <>
-            <button type="button" onClick={() => onEdit(config)} className={`${action} text-muted`}>
-              Edit
-            </button>
-            <button type="button" onClick={() => onRemove(config)} className={`${action} text-danger`}>
-              Remove
-            </button>
-          </>
-        )}
-        {!config && (
-          <span className="ml-auto pl-2 text-right text-caption text-muted">
-            {host.source === 'machines' ? 'from herdr machine list' : 'this machine · not editable'}
+    <li>
+      <Card>
+        <div className="flex items-center gap-2.5">
+          <StatusDot status={host.online ? 'online' : 'error'} />
+          <span className="shrink-0 font-semibold">{host.label}</span>
+          <span className={`min-w-0 truncate text-caption text-muted ${host.target ? 'font-mono' : ''}`}>
+            {host.target ?? 'this machine'}
           </span>
+          {host.online && muxes.length > 1 && (
+            <span className="ml-auto shrink-0 text-caption tabular-nums text-muted">{count(panes.length, 'pane')}</span>
+          )}
+        </div>
+
+        {host.online ? (
+          <ul className="flex flex-col gap-1.5">
+            {muxes.map((m) => {
+              const mine = panes.filter((p) => p.muxKey === m.key);
+              const blocked = mine.filter((p) => p.status === 'blocked').length;
+              return (
+                <li key={m.key} className="flex items-center gap-2.5 text-[13px] text-muted">
+                  <span className="font-mono text-fg">{m.kind}</span>
+                  {m.label !== m.kind && <span className="min-w-0 truncate">{m.label}</span>}
+                  <span className="ml-auto shrink-0 tabular-nums">
+                    {count(mine.length, 'pane')}
+                    {blocked > 0 && ` · ${blocked} blocked`}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="text-[13px] break-words text-danger">{host.error ?? 'unreachable'}</p>
         )}
-      </div>
+
+        {/* The bottom row is always there, so a Host without actions says why: this machine
+            or the machine list owns it, and tautan may not edit those entries. */}
+        <div className="flex items-center gap-1">
+          {!host.online && (
+            <Button variant="outline" size="sm" onClick={retry} loading={retrying}>
+              {retrying ? 'Retrying…' : 'Retry now'}
+            </Button>
+          )}
+          {config && (
+            <>
+              <LinkButton size="sm" onClick={() => onEdit(config)}>
+                Edit
+              </LinkButton>
+              <LinkButton size="sm" onClick={() => onRemove(config)} style={{ color: pal.danger }}>
+                Remove
+              </LinkButton>
+            </>
+          )}
+          {!config && (
+            <span className="ml-auto pl-2 text-right text-caption text-muted">
+              {host.source === 'machines' ? 'from herdr machine list' : 'this machine · not editable'}
+            </span>
+          )}
+        </div>
+      </Card>
     </li>
   );
 }
@@ -136,14 +130,7 @@ export function Hosts({ state }: { state: State | null }) {
         right={
           <>
             <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>
-            <button
-              type="button"
-              aria-label="Add Host"
-              onClick={() => setAdd(true)}
-              className="-mr-2.5 flex size-11 items-center justify-center text-accent"
-            >
-              <Plus size={22} />
-            </button>
+            <IconButton size={40} label="Add Host" onClick={() => setAdd(true)} icon={<Plus size={20} />} style={{ color: 'var(--accent)' }} />
           </>
         }
       />
@@ -241,7 +228,7 @@ export function AddHostSheet({
         <TextInput value={session} onChange={setSession} label="herdr Mux" placeholder="default · leave empty to discover" />
 
         <Button variant="secondary" size="lg" fullWidth loading={probing} onClick={probe}>
-          {probing ? 'Probing\u2026' : 'Probe'}
+          {probing ? 'Probing…' : 'Probe'}
         </Button>
         {result && <ProbeLine result={result} />}
 
@@ -256,7 +243,7 @@ export function AddHostSheet({
             submit({ id: editing?.id ?? hostId(label.trim() || undefined, target.trim()), label: label.trim() || undefined, target: target.trim(), session: session.trim() || undefined })
           }
         >
-          {busy ? 'Saving\u2026' : editing ? 'Save Host' : 'Add Host'}
+          {busy ? 'Saving…' : editing ? 'Save Host' : 'Add Host'}
         </Button>
       </div>
     </Sheet>
@@ -283,6 +270,7 @@ function ProbeLine({ result }: { result: ProbeResult & { code?: string } }) {
 const why = (code: string) =>
   code === 'target' ? 'Enter a target like user@host' : code === 'network' ? 'No connection to the Hub' : code;
 
+/** One setting row: label and hint on the left, the kit SwitchToggle on the right. */
 export function Toggle({
   label,
   hint,
@@ -298,25 +286,12 @@ export function Toggle({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <div className={`flex min-h-12 items-center gap-3 px-4 py-2 ${disabled ? 'opacity-55' : ''}`}>
+    <div className={`flex min-h-12 items-center gap-3 px-4 py-2 ${disabled ? 'pointer-events-none opacity-55' : ''}`}>
       <span className="min-w-0 flex-1">
         <span className="block text-body">{label}</span>
         {hint && <span className="mt-px block text-caption text-muted">{hint}</span>}
       </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        disabled={disabled}
-        onClick={() => onChange(!checked)}
-        className={`h-6.5 w-11 shrink-0 rounded-full p-[3px] transition-colors ${checked ? 'bg-accent' : 'bg-border'}`}
-      >
-        <span
-          aria-hidden
-          className={`block size-5 rounded-full transition-transform ${checked ? 'translate-x-[18px] bg-bg' : 'bg-fg'}`}
-        />
-      </button>
+      <SwitchToggle checked={checked} onChange={disabled ? undefined : onChange} />
     </div>
   );
 }
