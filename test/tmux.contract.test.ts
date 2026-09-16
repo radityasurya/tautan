@@ -76,6 +76,10 @@ describe.skipIf(!tmuxAvailable)('TmuxMux contract', () => {
   test('all key-bar names are accepted', async () => {
     const originalTabId = (await mux.tree()).panes.find(item => item.id === paneId)!.tabId;
     await tmux(['new-window', '-d', '-n', 'keys', 'exec sh']);
+    // ctrl+c and ctrl+d at the end of the list can kill the window's shell while it is
+    // still starting (the default-shell wrap is not instant), which would fail the NEXT
+    // send with `can't find pane`. A retained pane keeps every key name checkable.
+    await tmux(['set-option', '-t', 'keys', 'remain-on-exit', 'on']);
     const keyPane = (await mux.tree()).panes.find(pane => pane.tabId !== originalTabId)?.id;
     expect(keyPane).toBeTruthy();
     const names = [...new Set([...AGENT_KEYS, ...SHELL_KEYS].map(([name]) => name)), 'backspace', 'space', 'shift+tab'];

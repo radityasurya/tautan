@@ -19,7 +19,13 @@ behind the two irreversible choices live in `docs/adr/`.
   config restores saved sessions on start.
 - Start throwaway herdr with isolated `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and
   `HERDR_SOCKET_PATH`; copy `~/.local/state/herdr/agent-detection/remote` into the isolated
-  state tree when contract tests need the downloaded agent manifests.
+  state tree when contract tests need the downloaded agent manifests. herdr 0.9 panes run
+  the user's `$SHELL`, so the isolated `HOME` also needs one empty `.zshrc` — otherwise
+  zsh-newuser-install eats the first typed command (`test/harness.ts` writes it).
+- tmux window commands run through the default shell (`zsh -c`), and that wrap takes real
+  time when the user's `~/.zshenv` is slow — a `ctrl+c` landing inside the window kills the
+  young pane. `test/tmux.contract.test.ts` sets `remain-on-exit on` on the key-test window
+  so the pane stays addressable whatever the shell does.
 - `HERDR_SOCKET_PATH` overrides local Mux discovery in the Hub, which is useful for tests.
 - Remote Host SSH is deliberately non-interactive (`BatchMode=yes`). Forwarders also need
   `ExitOnForwardFailure=yes`, `StreamLocalBindUnlink=yes`, server-alive probes, and a

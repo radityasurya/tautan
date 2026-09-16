@@ -1,4 +1,4 @@
-import { access, cp, mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { access, cp, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import os from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +33,10 @@ export async function startThrowawayHerdr(): Promise<{ sock: string; dir: string
   const manifests = join(os.homedir(), '.local/state/herdr/agent-detection/remote');
   await mkdir(join(state, 'herdr/agent-detection'), { recursive: true });
   await mkdir(join(dir, 'runtime'), { recursive: true });
+  // herdr 0.9 panes run the user's $SHELL. With zsh and an empty HOME that is the
+  // zsh-newuser-install prompt, which eats the first typed command; one empty .zshrc
+  // keeps the pane a plain shell.
+  await writeFile(join(dir, '.zshrc'), '# tautan contract test\n');
   // Agent manifests are downloaded state, so an isolated HOME otherwise has none.
   try { await cp(manifests, join(state, 'herdr/agent-detection/remote'), { recursive: true }); } catch {}
   const sock = join(dir, 'h.sock');
