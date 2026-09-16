@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { flushSync } from 'react-dom';
-import type { AnchorHTMLAttributes } from 'react';
+import type { AnchorHTMLAttributes, ReactNode } from 'react';
 import type { ScreenEvent, State } from '../shared/types.ts';
 import { Diff } from './diff.tsx';
 import { Home, seedSeen, unseen } from './home.tsx';
@@ -10,33 +10,62 @@ import { mockOpen } from './mock.ts';
 import { PaneScreen } from './pane.tsx';
 import { setBadge } from './push.ts';
 import { Settings } from './settings.tsx';
+import { ThemeProvider, tokens } from './halaska-kit';
 
 // ---- theme ----
-
-export const THEMES = ['system', 'light', 'dark', 'latte', 'frappe', 'macchiato', 'mocha'] as const;
+// The UI is Halaska Kit: two palettes, light and dark, plus the accent context. The
+// terminal grid keeps its own ANSI palettes (`--ansi-*` in theme.css), so `data-theme`
+// still carries the resolved light/dark for it.
+export const THEMES = ['system', 'light', 'dark'] as const;
 export type Theme = (typeof THEMES)[number];
+type KitTheme = 'light' | 'dark';
 
 const dark = matchMedia('(prefers-color-scheme: dark)');
 
 export function getTheme(): Theme {
-  // `?mock&theme=latte` forces a theme, so a screenshot can reach one without touching storage.
+  // `?mock&theme=dark` forces a theme, so a screenshot can reach one without touching storage.
   const forced = new URLSearchParams(location.search).get('theme') as Theme | null;
   if (forced && THEMES.includes(forced)) return forced;
   const t = localStorage.getItem('tautan.theme') as Theme | null;
   return t && THEMES.includes(t) ? t : 'system';
 }
 
+const resolve = (t: Theme): KitTheme => (t === 'system' ? (dark.matches ? 'dark' : 'light') : t);
+
 export function setTheme(theme: Theme) {
   localStorage.setItem('tautan.theme', theme);
   applyTheme(theme);
+  dispatchEvent(new CustomEvent('tautan:theme'));
 }
 
 function applyTheme(theme: Theme) {
-  document.documentElement.dataset.theme = theme === 'system' ? (dark.matches ? 'dark' : 'light') : theme;
+  const kit = resolve(theme);
+  document.documentElement.dataset.theme = kit;
+  const pal = tokens[kit];
+  document.body.style.background = pal.bg;
+  document.body.style.color = pal.text;
 }
 
 applyTheme(getTheme());
 dark.addEventListener('change', () => applyTheme(getTheme()));
+
+/** The resolved kit theme, as state, so <ThemeProvider> follows the picker and the OS. */
+export function useKitTheme(): KitTheme {
+  const [kit, setKit] = useState(() => resolve(getTheme()));
+  useEffect(() => {
+    const on = () => {
+      applyTheme(getTheme());
+      setKit(resolve(getTheme()));
+    };
+    dark.addEventListener('change', on);
+    addEventListener('tautan:theme', on);
+    return () => {
+      dark.removeEventListener('change', on);
+      removeEventListener('tautan:theme', on);
+    };
+  }, []);
+  return kit;
+}
 
 export const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -239,6 +268,7 @@ function TabBar({ route, badge }: { route: string; badge: number }) {
 
 export function App() {
   const route = useRoute();
+  const kitTheme = useKitTheme();
   const paneKey = route.startsWith('/pane/') ? decodeURIComponent(route.slice('/pane/'.length)) : undefined;
   const diffKey = route.startsWith('/diff/') ? decodeURIComponent(route.slice('/diff/'.length)) : undefined;
   const { state, screen, connected } = useEvents(paneKey);
@@ -251,10 +281,10 @@ export function App() {
   }, [state]);
 
   return (
-    <>
+    <ThemeProvider theme={kitTheme}>
       <DebugOverlay />
       {!connected && (
-        <div role="status" className="fixed inset-x-0 top-0 z-50 h-0.5 animate-pulse bg-warn" title="Reconnecting">
+        <div role="status" className="fixed inset-x-0 top-0 z-50 h-0.5 animate-pulse" style={{ background: tokens[kitTheme].warning }} title="Reconnecting">
           <span className="sr-only">Reconnecting</span>
         </div>
       )}
@@ -270,7 +300,7 @@ export function App() {
         <Home state={state} />
       )}
       {!paneKey && !diffKey && <TabBar route={route} badge={needsYou} />}
-    </>
+    </ThemeProvider>
   );
 }
 

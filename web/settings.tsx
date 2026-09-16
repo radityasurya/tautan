@@ -12,10 +12,6 @@ const LABELS: Record<Theme, string> = {
   system: 'System',
   light: 'Light',
   dark: 'Dark',
-  latte: 'Latte',
-  frappe: 'Frappé',
-  macchiato: 'Macchiato',
-  mocha: 'Mocha',
 };
 
 /** Each chip carries its theme's own `--bg` as the swatch. System has no colour of its own. */
@@ -23,10 +19,6 @@ const SWATCH: Record<Theme, string | null> = {
   system: null,
   light: '#ffffff',
   dark: '#0e0e11',
-  latte: '#eff1f5',
-  frappe: '#303446',
-  macchiato: '#24273a',
-  mocha: '#1e1e2e',
 };
 
 const android = /Android/.test(navigator.userAgent);

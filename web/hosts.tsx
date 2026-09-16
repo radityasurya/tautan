@@ -4,7 +4,8 @@ import type { FormEvent } from 'react';
 import type { HostConfig, ProbeResult, Settings, State, StateHost } from '../shared/types.ts';
 import { api, opensWith } from './app.tsx';
 import { Install, Plus } from './icons.tsx';
-import { ErrorLine, Field, field, primary, Sheet, useWrite } from './sheets.tsx';
+import { ErrorLine, Sheet, useWrite } from './sheets.tsx';
+import { Button, Caption, TextInput, usePal } from './halaska-kit';
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
@@ -206,29 +207,27 @@ export function AddHostSheet({
   onSubmit: (entry: HostConfig) => Promise<void>;
 }) {
   const { busy, error, submit, retry } = useWrite(open, onSubmit, onClose);
-  const form = useRef<HTMLFormElement>(null);
+  const [label, setLabel] = useState('');
+  const [target, setTarget] = useState('');
+  const [session, setSession] = useState('');
   const [probing, setProbing] = useState(false);
   const [result, setResult] = useState<(ProbeResult & { code?: string }) | null>(null);
 
   // A reopened sheet starts clean, the same rule the write hook follows.
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      setLabel(editing?.label ?? '');
+      setTarget(editing?.target ?? '');
+      setSession(editing?.session ?? '');
       setProbing(false);
       setResult(null);
     }
-  }, [open]);
-
-  const read = () => {
-    const data = new FormData(form.current!);
-    const v = (name: string) => String(data.get(name) ?? '').trim() || undefined;
-    return { label: v('label'), target: v('target') ?? '', session: v('session') };
-  };
+  }, [open, editing]);
 
   const probe = () => {
-    const { target, session } = read();
     setProbing(true);
     setResult(null);
-    api<ProbeResult>('/api/hosts/probe', { target, session })
+    api<ProbeResult>('/api/hosts/probe', { target: target.trim(), session: session.trim() || undefined })
       .then(setResult)
       .catch((e: unknown) => setResult({ online: false, code: (e instanceof Error && e.message) || 'network' }))
       .finally(() => setProbing(false));
@@ -236,59 +235,30 @@ export function AddHostSheet({
 
   return (
     <Sheet open={open} title={editing ? 'Edit Host' : 'Add Host'} onClose={onClose}>
-      <form
-        ref={form}
-        className="flex flex-col gap-3.5 pb-2"
-        onSubmit={(e: FormEvent<HTMLFormElement>) => {
-          e.preventDefault();
-          const { label, target, session } = read();
-          submit({ id: editing?.id ?? hostId(label, target), label, target, session });
-        }}
-      >
-        <Field
-          label="Label"
-          name="label"
-          defaultValue={editing?.label}
-          placeholder="Optional · taken from the target"
-          maxLength={40}
-        />
-        <Field
-          label="SSH target"
-          name="target"
-          required
-          defaultValue={editing?.target}
-          placeholder="user@host"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          className={`${field} font-mono text-[13px]`}
-        />
-        <Field
-          label="herdr Mux"
-          name="session"
-          defaultValue={editing?.session}
-          placeholder="default · leave empty to discover"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          className={`${field} font-mono text-[13px]`}
-        />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <TextInput value={label} onChange={setLabel} label="Label" placeholder="Optional · taken from the target" />
+        <TextInput value={target} onChange={setTarget} label="SSH target" placeholder="user@host" />
+        <TextInput value={session} onChange={setSession} label="herdr Mux" placeholder="default · leave empty to discover" />
 
-        <button
-          type="button"
-          onClick={probe}
-          disabled={probing}
-          className="flex h-11 w-full items-center justify-center rounded-composer border border-border bg-bg text-body font-medium active:bg-surface disabled:opacity-60"
-        >
-          {probing ? 'Probing…' : 'Probe'}
-        </button>
+        <Button variant="secondary" size="lg" fullWidth loading={probing} onClick={probe}>
+          {probing ? 'Probing\u2026' : 'Probe'}
+        </Button>
         {result && <ProbeLine result={result} />}
 
         {error && <ErrorLine error={error} busy={busy} onRetry={retry} />}
-        <button type="submit" disabled={busy} className={`${primary} disabled:opacity-60`}>
-          {busy ? 'Saving…' : editing ? 'Save Host' : 'Add Host'}
-        </button>
-      </form>
+        <Button
+          variant="primary"
+          size="lg"
+          fullWidth
+          loading={busy}
+          disabled={!target.trim()}
+          onClick={() =>
+            submit({ id: editing?.id ?? hostId(label.trim() || undefined, target.trim()), label: label.trim() || undefined, target: target.trim(), session: session.trim() || undefined })
+          }
+        >
+          {busy ? 'Saving\u2026' : editing ? 'Save Host' : 'Add Host'}
+        </Button>
+      </div>
     </Sheet>
   );
 }
