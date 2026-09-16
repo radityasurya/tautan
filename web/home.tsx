@@ -5,20 +5,21 @@ import type {
   NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
 import { api, haptic, Link, navigate, opensWith, reducedMotion } from './app.tsx';
-import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus, Search } from './icons.tsx';
-import { Skeleton } from '@/components/ui/skeleton.tsx';
+import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus } from './icons.tsx';
+import { Chip, EmptyState, IconButton, SearchInput, Skeleton, usePal } from './halaska-kit';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
 
 // ---- status ----
 
-const COLOR: Record<Status, string> = {
-  blocked: 'var(--warn)',
-  working: 'var(--accent)',
-  done: 'var(--ok)',
-  idle: 'var(--muted)',
-  unknown: 'var(--muted)',
-};
+/** Status → the kit palette. `idle` and `unknown` carry no urgency. */
+const COLOR = (pal: ReturnType<typeof usePal>): Record<Status, string> => ({
+  blocked: pal.warning,
+  working: pal.accent,
+  done: pal.success,
+  idle: pal.textTertiary,
+  unknown: pal.textTertiary,
+});
 
 export const statusText: Record<Status, string> = {
   blocked: 'text-warn',
@@ -31,7 +32,7 @@ export const statusText: Record<Status, string> = {
 /** 8 px by default. Filled means unseen; a 1.5 px ring means seen. Decoration only: the
  *  row's `aria-label` and the printed status word carry the fact. */
 export function Dot({ status, seen, size = 8 }: { status: Status; seen?: boolean; size?: number }) {
-  const c = COLOR[status];
+  const c = COLOR(usePal())[status];
   return (
     <span
       aria-hidden
@@ -422,55 +423,36 @@ export function Home({ state }: { state: State | null }) {
         title="tautan"
         right={
           <>
-          <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>
-          {state && keys.length > 0 && (
-            <button
-              type="button"
-              aria-label={allShut ? 'Expand all' : 'Collapse all'}
-              onClick={() => write(allShut ? collapsed.filter((k) => !keys.includes(k)) : [...new Set([...collapsed, ...keys])])}
-              className="-mr-1 flex size-11 items-center justify-center text-muted"
-            >
-              {allShut ? <ExpandAll size={20} /> : <CollapseAll size={20} />}
-            </button>
-          )}
-          {beside && (
-            <button
-              type="button"
-              aria-label="New Workspace"
-              onClick={() => setNewWorkspace(true)}
-              className="-mr-2.5 flex size-11 items-center justify-center text-accent"
-            >
-              <Plus size={22} />
-            </button>
-          )}
+            <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>
+            {state && keys.length > 0 && (
+              <IconButton
+                size={40}
+                label={allShut ? 'Expand all' : 'Collapse all'}
+                onClick={() => write(allShut ? collapsed.filter((k) => !keys.includes(k)) : [...new Set([...collapsed, ...keys])])}
+                icon={allShut ? <ExpandAll size={18} /> : <CollapseAll size={18} />}
+              />
+            )}
+            {beside && (
+              <IconButton
+                size={40}
+                label="New Workspace"
+                onClick={() => setNewWorkspace(true)}
+                icon={<Plus size={20} />}
+                style={{ color: usePal().accent }}
+              />
+            )}
           </>
         }
         below={
           state ? (
             <div className="px-4 pb-2">
-              <label className="flex min-h-11 items-center gap-2.5 rounded-composer border border-border bg-bg px-3.5 text-muted focus-within:border-accent">
-                <Search size={18} />
-                <input
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="Search panes"
-                  aria-label="Search panes"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  className="min-w-0 flex-1 bg-transparent py-2.5 text-body text-fg placeholder:text-muted focus:outline-none"
-                />
-                {q && (
-                  <button
-                    type="button"
-                    aria-label="Clear search"
-                    onClick={() => setQ('')}
-                    className="press flex size-7 shrink-0 items-center justify-center"
-                  >
-                    <span aria-hidden className="text-muted">×</span>
-                  </button>
-                )}
-              </label>
+              <SearchInput
+                value={q}
+                onChange={setQ}
+                placeholder="Search panes"
+                shortcut={null}
+                style={{ width: '100%', height: 40 }}
+              />
             </div>
           ) : undefined
         }
@@ -479,17 +461,9 @@ export function Home({ state }: { state: State | null }) {
       {state && state.hosts.length > 1 && (
         <div role="group" aria-label="Filter by Host" className="hscroll flex gap-2 px-4 pt-1.5 pb-0.5">
           {[{ id: null, label: 'All', online: true }, ...state.hosts].map((h) => (
-            <button
-              key={h.id ?? 'all'}
-              type="button"
-              aria-pressed={host === h.id}
-              onClick={() => setHost(h.id)}
-              className={`press shrink-0 rounded-chip px-3 py-1.5 text-caption ${
-                host === h.id ? 'bg-accent font-semibold text-bg' : 'bg-surface font-medium text-muted'
-              } ${h.online ? '' : 'line-through'}`}
-            >
+            <Chip key={h.id ?? 'all'} selected={host === h.id} onToggle={() => setHost(h.id)}>
               {h.label}
-            </button>
+            </Chip>
           ))}
         </div>
       )}
@@ -498,21 +472,28 @@ export function Home({ state }: { state: State | null }) {
         <ul aria-busy className="pt-6">
           {[0, 1, 2].map((i) => (
             <li key={i} className="flex min-h-14 items-center gap-3 px-4 py-2.5">
-              <Skeleton className="size-2 rounded-full" />
+              <Skeleton width={8} height={8} rounded />
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                <Skeleton className="h-3.5 w-1/2" />
-                <Skeleton className="h-3 w-3/4" />
+                <Skeleton width="50%" height={14} />
+                <Skeleton width="75%" height={12} />
               </div>
             </li>
           ))}
         </ul>
       ) : needsYou.length === 0 && running.length === 0 && groups.length === 0 ? (
-        <div className="flex flex-col items-start gap-3 px-4 pt-8">
-          <p className="text-body text-muted">{needle ? `Nothing matches “${q.trim()}”.` : 'No panes yet.'}</p>
-          {!needle && (
-            <Link to="#/hosts" className="text-body font-medium text-accent">
-              Add a Host
-            </Link>
+        <div className="pt-6">
+          {needle ? (
+            <EmptyState title={`Nothing matches “${q.trim()}”`} description="Try an agent, a title or a Workspace label." />
+          ) : (
+            <EmptyState
+              title="No panes yet"
+              description="Add a Host and its Muxes appear here."
+              action={
+                <Link to="#/hosts" className="text-body font-medium text-accent">
+                  Add a Host
+                </Link>
+              }
+            />
           )}
         </div>
       ) : (

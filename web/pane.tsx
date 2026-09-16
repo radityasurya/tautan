@@ -776,12 +776,15 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         >
           <pre
             ref={pre}
-            className={`relative font-mono text-caption lg:mx-auto ${
+            className={`relative text-caption lg:mx-auto ${
               // Wrapped text takes the column; unwrapped text keeps the grid's own width.
               // `w-max` would be max-content, which never wraps, so Wrap needs `w-full`.
               wrap ? 'w-full break-words whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre lg:min-w-0'
             }`}
+            // The grid keeps tautan-box first: box-drawing and Braille come from the subset,
+            // everything else falls through to Geist Mono.
             style={{
+              fontFamily: '"tautan-box", "Geist Mono", ui-monospace, monospace',
               // Never reflow wider than the Pane itself: the agent wrote for `cols` columns.
               maxWidth: wrap && pane?.cols ? `${pane.cols}ch` : undefined,
               ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left' } : null),

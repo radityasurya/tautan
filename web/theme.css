@@ -37,8 +37,8 @@
   --text-title--line-height: 1.25;
   --text-title--font-weight: 600;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: "tautan-box", ui-monospace, SFMono-Regular, Menlo, "Roboto Mono", monospace;
+  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "Geist Mono", "tautan-box", ui-monospace, SFMono-Regular, Menlo, "Roboto Mono", monospace;
 }
 
 /* Box drawing, Braille, arrows and the check/cross agents print. A subset, so the

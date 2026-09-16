@@ -41,7 +41,26 @@ export function setTheme(theme: Theme) {
 function applyTheme(theme: Theme) {
   const kit = resolve(theme);
   document.documentElement.dataset.theme = kit;
+  // The kit palette is the one source of colour. tautan's CSS tokens are re-pointed at it
+  // at runtime, so the custom rows, headers and bars follow Halaska without every one of
+  // them carrying kit inline styles. Tailwind keeps layout only.
   const pal = tokens[kit];
+  const root = document.documentElement.style;
+  const set = (name: string, value: string) => root.setProperty(name, value);
+  set('--bg', pal.bg);
+  set('--fg', pal.text);
+  set('--muted', pal.textSecondary);
+  set('--surface', pal.bgSubtle);
+  set('--elevated', kit === 'dark' ? 'rgba(42,42,42,0.92)' : '#ffffff');
+  set('--border', pal.border);
+  set('--accent', pal.accent);
+  set('--ok', pal.success);
+  set('--warn', pal.warning);
+  set('--danger', pal.danger);
+  set(
+    '--elevated-shadow',
+    kit === 'dark' ? '0 8px 40px rgba(0,0,0,0.5)' : `0 0 0 1px ${pal.border}, 0 8px 40px rgba(0,0,0,0.14)`,
+  );
   document.body.style.background = pal.bg;
   document.body.style.color = pal.text;
 }
