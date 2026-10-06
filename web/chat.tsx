@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { timeAgo } from './home.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown } from './markdown.tsx';
 import { ChevronRight } from './icons.tsx';
-import { Picture, Thumb, Unavailable, fileImage, fileView, safeImage } from './image.tsx';
+import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
 import type { Tool, Turn } from '../shared/chat.ts';
+import { deliver, dropPending, pendingSnapshot, settled, subscribePending, type Pending } from './pending.ts';
 
 export type LensMode = 'chat' | 'screen';
 
@@ -30,7 +31,9 @@ export function LensSwitch({ value, onChange }: { value: LensMode; onChange: (mo
     <div
       role="group"
       aria-label={`Pane view, ${value} selected`}
-      className="w-[104px] shrink-0 [&_button]:min-h-[38px]"
+      // One header height with the Status chip, Read aloud and More: 36 px, radius 10 like the chip.
+      // The kit sets its box inline, so the overrides need `!`.
+      className="w-[112px] shrink-0 [&>div]:h-9! [&>div]:rounded-composer! [&_button]:min-h-[30px] [&_button]:py-0! [&>div>div]:rounded-[7px]!"
     >
       <SegmentedControl
         options={OPTIONS}
@@ -43,6 +46,12 @@ export function LensSwitch({ value, onChange }: { value: LensMode; onChange: (mo
 
 /** Where a tool's image loads from, its label, and the full-size view; undefined when it is unsafe. */
 function toolImage(paneKey: string, tool: Tool): { src: string; alt: string; href?: string } | undefined {
+  // The Hub's copy from the transcript loads for any path; the file route refuses one outside the cwd.
+  // No viewer route serves it, so it opens in the Lightbox.
+  if (tool.imageId !== undefined) {
+    const name = (tool.image ?? tool.brief).split('/').filter(Boolean).at(-1) ?? 'image';
+    return { src: chatImage(paneKey, tool.imageId), alt: `Image read by Claude: ${name}` };
+  }
   if (!tool.image) return undefined;
   if (tool.via) {
     const src = /^https:/i.test(tool.image) ? safeImage(tool.image) : undefined;
@@ -50,6 +59,37 @@ function toolImage(paneKey: string, tool: Tool): { src: string; alt: string; hre
   }
   const name = tool.image.split('/').filter(Boolean).at(-1) ?? tool.image;
   return { src: fileImage(paneKey, tool.image), alt: `Image read by Claude: ${name}`, href: fileView(paneKey, tool.image) };
+}
+
+const CAPTION: Record<Pending['state'], string> = {
+  held: 'Held until the Agent is idle',
+  sending: 'Sending…',
+  sent: 'Sent',
+  late: 'Not in the transcript yet',
+  failed: 'Not sent',
+};
+
+/** A reply the transcript has not caught up with: dimmed, with what happened to it underneath. */
+function PendingTurn({ entry }: { entry: Pending }) {
+  const failed = entry.state === 'failed';
+  return (
+    <li className="flex flex-col items-end">
+      <div className={`min-w-0 max-w-[88%] whitespace-pre-wrap break-words rounded-card bg-accent/10 px-3 py-2.5 text-body text-fg ${failed ? '' : 'opacity-60'}`}>
+        {entry.text}
+      </div>
+      <span aria-live="polite" className={`mt-1 px-1 text-right text-[11px] ${failed ? 'text-danger' : 'text-muted'}`}>
+        {CAPTION[entry.state]}
+        {failed && (
+          <>
+            {' · '}
+            <button type="button" onClick={() => void deliver(entry.id)} className="press -my-2 inline-flex min-h-8 items-center font-semibold text-accent">
+              Retry
+            </button>
+          </>
+        )}
+      </span>
+    </li>
+  );
 }
 
 function Stamp({ at }: { at?: number }) {
@@ -73,6 +113,17 @@ export function Chat({
   const [data, setData] = useState<ChatResponse | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  const all = useSyncExternalStore(subscribePending, pendingSnapshot);
+  const waiting = all.filter((p) => p.paneKey === paneKey);
+  // The Hub re-reads the transcript on a revision, which may come late or not at all for a
+  // write; a fresh send asks again soon after, when the Agent has usually logged it.
+  const [nudge, setNudge] = useState(0);
+  const sentIds = waiting.filter((p) => p.state === 'sent').map((p) => p.id).join();
+  useEffect(() => {
+    if (!sentIds) return;
+    const timers = [600, 2000, 5000].map((ms) => setTimeout(() => setNudge((n) => n + 1), ms));
+    return () => timers.forEach(clearTimeout);
+  }, [sentIds]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -89,12 +140,22 @@ export function Chat({
         if (error.name !== 'AbortError') onUnavailable();
       });
     return () => controller.abort();
-  }, [paneKey, revision, onUnavailable]);
+  }, [paneKey, revision, nudge, onUnavailable]);
 
+  // A pending turn goes the moment its real turn is in the transcript.
+  useEffect(() => {
+    if (data) dropPending(settled(data.turns, waiting));
+  }, [data, waiting]);
+
+  // A new send is the user's own action: follow it down even when scrolled up.
+  const newest = waiting.at(-1)?.id;
+  const followed = useRef(newest);
   useLayoutEffect(() => {
     const el = box.current;
+    if (newest !== undefined && newest !== followed.current) pinned.current = true;
+    followed.current = newest;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [data]);
+  }, [data, newest]);
 
   // Images load after the turns render and grow the list; a pinned view follows them down.
   useEffect(() => {
@@ -123,7 +184,7 @@ export function Chat({
           <Skeleton className="ml-auto h-11 w-2/3 rounded-card" />
           <Skeleton className="h-20 w-5/6 rounded-card" />
         </div>
-      ) : data.turns.length === 0 ? (
+      ) : data.turns.length === 0 && !waiting.length ? (
         <p className="text-caption text-muted">No turns yet</p>
       ) : (
         <ol className="flex flex-col gap-4">
@@ -140,13 +201,13 @@ export function Chat({
                   >
                     {turn.text && <Markdown text={turn.text} />}
                     {turn.images?.length ? (
-                      <span className={`flex flex-wrap gap-2 ${turn.text ? 'mt-2' : ''}`}>
-                        {turn.images.map((image, n) => {
-                          const src = image.src && safeImage(image.src);
-                          return src
-                            ? <Picture key={n} src={src} alt={`Image you pasted, ${n + 1} of ${turn.images!.length}`} />
-                            : <Unavailable key={n} why="Image too large to show here" />;
-                        })}
+                      <span className={`block ${turn.text ? 'mt-2' : ''}`}>
+                        <Gallery
+                          images={turn.images.map((image, n, all) => ({
+                            src: image.src && safeImage(image.src),
+                            alt: all.length > 1 ? `Image you pasted, ${n + 1} of ${all.length}` : 'Image you pasted',
+                          }))}
+                        />
                       </span>
                     ) : null}
                   </div>
@@ -213,6 +274,7 @@ export function Chat({
               </li>
             );
           })}
+          {waiting.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} />)}
         </ol>
       )}
     </div>

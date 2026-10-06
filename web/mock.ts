@@ -537,11 +537,30 @@ export function assertMockInvariants(): void {
 /** web/public/icon-192.png, standing in for a screenshot pasted into the prompt. */
 const PASTED_PNG = 'data:image/png;base64,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';
 
+/** A numbered square standing in for one of several pasted slide screenshots. Browser only. */
+const swatches: string[] = [];
+function swatch(n: number): string {
+  if (swatches[n]) return swatches[n];
+  const canvas = Object.assign(document.createElement('canvas'), { width: 480, height: 320 });
+  const g = canvas.getContext('2d')!;
+  g.fillStyle = ['#2f5d8a', '#7a4a8c', '#3d7a5a', '#8a5a2f', '#5a5f6b', '#8a2f45'][n % 6]!;
+  g.fillRect(0, 0, 480, 320);
+  g.fillStyle = 'rgba(255,255,255,0.9)';
+  g.font = '600 40px system-ui, sans-serif';
+  g.fillText(`Slide ${n + 1}`, 32, 72);
+  g.fillRect(32, 240, 120 + 48 * n, 24);
+  return (swatches[n] = canvas.toDataURL('image/png'));
+}
+
+/** Replies typed into a Claude Pane, logged to the mock transcript `MOCK_LOG_MS` later. */
+const mockSent: Turn[] = [];
+const MOCK_LOG_MS = 3000;
+
 /** A Claude transcript as `GET /api/panes/:key/chat` returns it, with the Markdown Claude writes. */
 const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
   sessionId: '11111111-1111-1111-1111-111111111111',
   at: Date.now(),
-  turns: [
+  turns: ([
     {
       role: 'user', at: ago(9), tools: [],
       text: 'Why does a dim run keep its **bold** weight after `SGR 22`? See shared/ansi.ts and the screenshot. [Image #1]',
@@ -554,6 +573,8 @@ const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
       tools: [
         // Images the Hub file route serves from the Pane cwd.
         { name: 'Read', brief: '/home/dev/projects/tautan/docs/shots/dim-run.png', detail: '/home/dev/projects/tautan/docs/shots/dim-run.png', image: '/home/dev/projects/tautan/docs/shots/dim-run.png' },
+        // Outside the cwd, so the file route refuses it; the Hub serves the transcript's copy by imageId.
+        { name: 'Read', brief: '/tmp/claude-shot-0412.png', detail: '/tmp/claude-shot-0412.png', image: '/tmp/claude-shot-0412.png', imageId: 0 },
         { name: 'Read', brief: 'shared/ansi.ts', detail: '/home/dev/projects/tautan/shared/ansi.ts' },
         { name: 'Read', brief: 'test/ansi.test.ts', detail: '/home/dev/projects/tautan/test/ansi.test.ts' },
       ],
@@ -608,6 +629,12 @@ const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
       detail: '# Commit the slides generator\ncd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/generate-deck.ts \\\n  .claude/skills/slides/SKILL.md \\\n  && git commit -m "slides: generate the deck from the outline" \\\n  && pnpm test',
     }], at: ago(1) },
     {
+      // Six pasted screenshots: a grid of four tiles, the last one "+2".
+      role: 'user', at: ago(1), tools: [],
+      text: 'The deck renders like this now. Check the headline on each slide.',
+      images: [0, 1, 2, 3, 4, 5].map((n) => ({ src: swatch(n) })),
+    },
+    {
       // A z.ai (GLM) built-in tool, lifted out of the assistant text by shared/chat.ts.
       role: 'assistant', at: ago(1),
       text: 'Inspecting the flagged slide through the image tool.\n\nThe headline now leads: about 62 px against 20 px ticks, and nothing clips.',
@@ -624,7 +651,7 @@ const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
         output: '# Text Measurement Analysis\n\n## Approximate Cap Heights (pixel measurements)\n\n| Element | Cap Height | Notes |\n|---|---|---|\n| (1) Headline "Where the p99 goes" | **~45–48 px** | Cap height of "W"; full font size ~62–64 px |\n| (2) Badge/pill "Latency" | ~14 px | Uppercase, tracked |\n| (3) Axis ticks | ~15 px | Tabular numbers |\n\nThe headline is the largest text on the slide. No text is clipped or overlapping…',
       }],
     },
-  ],
+  ] satisfies Turn[] as Turn[]).concat(mockSent.filter((t) => t.at! <= Date.now())),
 });
 
 // ---- fake Hub ----
@@ -662,6 +689,8 @@ function input(s: Store, key: string, body: InputBody): void {
   const pane = s.state.panes.find((p) => p.key === key);
   if (!pane) return;
   if (body.text) append(s, key, `${BLUE}›${RESET} ${body.text}`, `${DIM}  … thinking${RESET}`);
+  // ponytail: one transcript for every Claude Pane, like mockChat itself.
+  if (body.text && pane.agent === 'claude') mockSent.push({ role: 'user', text: body.text, tools: [], at: Date.now() + MOCK_LOG_MS });
   for (const k of body.keys ?? []) {
     append(s, key, k === 'enter' ? '⏎' : `${DIM}[${k}]${RESET}`);
     if (pane.status === 'blocked' && (k === 'enter' || k === 'esc')) {
@@ -1087,6 +1116,18 @@ export function installMock(): void {
   };
   // The cast drops Bun's `fetch.preconnect`, which no browser has anyway.
   window.fetch = patched as typeof window.fetch;
+
+  // An <img> never goes through fetch, so the transcript image route is answered here: any
+  // `/api/panes/:key/chat/image/:id` loads the app icon. React sets `src` as a property in
+  // some builds and with setAttribute in others, so both are wrapped.
+  // ponytail: mock only, one stand-in picture; a per-id fixture when a screenshot needs two.
+  const stand = (value: string) => /^\/api\/panes\/[^/]+\/chat\/image\/\d+$/.test(value) ? '/icon-512.png' : value;
+  const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!;
+  Object.defineProperty(HTMLImageElement.prototype, 'src', { ...src, set(value: string) { src.set!.call(this, stand(String(value))); } });
+  const setAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name: string, value: string) {
+    setAttribute.call(this, name, name === 'src' ? stand(value) : value);
+  };
 
   window.EventSource = MockEventSource as unknown as typeof EventSource;
   window.XMLHttpRequest = MockXMLHttpRequest as unknown as typeof XMLHttpRequest;

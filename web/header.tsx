@@ -148,7 +148,7 @@ export function PaneHeader({
       type="button"
       aria-label="More"
       onClick={onMore}
-      className={`press flex shrink-0 items-center justify-center text-muted ${desktop ? 'size-9' : 'size-11'}`}
+      className={`press flex shrink-0 items-center justify-center text-muted ${desktop ? 'size-9' : 'h-10 w-11'}`}
     >
       <More size={desktop ? 18 : 20} />
     </button>
@@ -183,7 +183,7 @@ export function PaneHeader({
             type="button"
             aria-label={`Switch Pane, ${word(status)}`}
             onClick={onSwitch}
-            className={`press flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-2.5 text-[12px] ${TINT[status]}`}
+            className={`press flex h-9 shrink-0 items-center gap-1.5 rounded-composer px-3 text-[12px] ${TINT[status]}`}
           >
             <Dot status={status} size={7} />
             {statusWord}
@@ -203,7 +203,7 @@ export function PaneHeader({
                   <button
                     type="button"
                     onClick={quick.onReread}
-                    className="press h-8 shrink-0 rounded-chip border border-border px-3 text-[13px] font-medium text-accent"
+                    className="press h-9 shrink-0 rounded-composer border border-border px-3 text-[13px] font-medium text-accent"
                   >
                     Re-read
                   </button>
@@ -216,7 +216,7 @@ export function PaneHeader({
                     aria-label={`${c.label}, key ${c.key}`}
                     disabled={quick.sending}
                     onClick={() => quick.onAnswer(c.key)}
-                    className={`press flex h-8 disabled:opacity-50 shrink-0 items-center gap-1.5 rounded-chip px-3 text-[13px] ${
+                    className={`press flex h-9 disabled:opacity-50 shrink-0 items-center gap-1.5 rounded-composer px-3 text-[13px] ${
                       i === 0 ? 'bg-warn font-semibold' : 'border border-border text-danger'
                     }`}
                     style={i === 0 ? { color: ON_WARN } : undefined}
@@ -282,7 +282,7 @@ export function PaneHeader({
               disabled={!reviewReady}
               aria-busy={!reviewReady}
               onClick={onReview}
-              className="press h-8 disabled:opacity-50 shrink-0 rounded-chip bg-warn px-3 text-[13px] font-semibold"
+              className="press h-10 disabled:opacity-50 shrink-0 rounded-composer bg-warn px-3.5 text-[13px] font-semibold"
               style={{ color: ON_WARN }}
             >
               Review
@@ -302,7 +302,7 @@ export function PaneHeader({
                     aria-label={label}
                     aria-pressed={lens === mode}
                     onClick={() => onLens(mode)}
-                    className={`press flex h-8 w-9 items-center justify-center rounded-chip ${
+                    className={`press flex h-9 w-10 items-center justify-center rounded-chip ${
                       lens === mode ? 'bg-elevated text-fg shadow-sm' : 'text-muted'
                     }`}
                   >

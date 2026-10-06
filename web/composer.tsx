@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { Affordance, InputBody, Span, StatePane } from '../shared/types.ts';
 import { hintPills } from './affordances.tsx';
-import { api, haptic, post, reducedMotion } from './app.tsx';
+import { haptic, post, reducedMotion } from './app.tsx';
 import { Blocked, type ExplainResponse } from './blocked.tsx';
 import { Attach, Keyboard, Mic, Send } from './icons.tsx';
-import { AGENT_KEYS, SHELL_KEYS } from './keys.ts';
+import { capInput, modified, MODIFIERS, trayGroups, type Cap, type Modifier } from './keys.ts';
 import { CYCLE_MODE_KEYS, toolbarFromScreen, type Profile } from './profiles.ts';
 import { quickReplies, type Pill } from './replies.ts';
+import { deliver, dropPending, holdPending, trackPending } from './pending.ts';
 
 /** "Wider than the viewport" is a fade, not a scrollbar. The grid and the Diff screen reuse it. */
 export const FADE = 'linear-gradient(to right,#000 calc(100% - 24px),transparent)';
@@ -21,15 +22,25 @@ const store = {
   },
 };
 
-/** Every key cap label the presets spell out, for the key bar an App profile asks for. */
-const KEY_LABEL = new Map([...AGENT_KEYS, ...SHELL_KEYS]);
+/**
+ * The two trays above the input, remembered per kind. An Agent opens on its suggestions; a
+ * shell opens on its keys, and its recent commands live in the suggestions tray.
+ */
+type Tray = 'suggest' | 'keys';
+const TRAY_DEFAULT: Record<'agent' | 'shell', Record<Tray, boolean>> = {
+  agent: { suggest: true, keys: false },
+  shell: { suggest: false, keys: true },
+};
+const readTray = (kind: 'agent' | 'shell', tray: Tray): boolean => {
+  const v = store.get(`tautan.tray.${tray}.${kind}`);
+  return v === null ? TRAY_DEFAULT[kind][tray] : v === 'on';
+};
 
 // ponytail: drafts live in memory only, so a reload loses them; sessionStorage if that bites.
 const drafts = new Map<string, string>();
 
+/** `id` is the pending entry's (web/pending.ts), so the Chat view shows it held as well. */
 interface HeldMessage { id: number; text: string }
-// ponytail: a module counter, only a React key and a remove handle; it never leaves the tab.
-let heldMessageId = 0;
 
 /** `1.2 MB` for the composer chip. */
 const human = (n: number) =>
@@ -198,10 +209,12 @@ const Kbd = ({ children }: { children: ReactNode }) => (
 );
 
 /**
- * The dock under the Screen, at both widths. Phone: the keys toggle, the inline keys, the
- * quick replies, then the input. Desktop (`lg`): suggestion chips above a bordered box whose
- * toolbar reads mode, model and context off the Screen. A blocked prompt puts its card where
- * the replies were; a Pane with no Agent gets a `$` prompt and its recent commands.
+ * The dock under the Screen, at both widths. Two toggles, Suggestions and Keys, each open
+ * their own tray above the input; both open stack them, both closed leave the input alone.
+ * Phone: the toggles sit left of the input. Desktop (`lg`): they lead the toolbar of a
+ * bordered box that reads mode, model and context off the Screen. A blocked prompt keeps its
+ * card on top and opens Suggestions; a Pane with no Agent gets a `$` prompt, and its recent
+ * commands are its suggestions.
  */
 export function Composer({
   paneKey,
@@ -236,17 +249,27 @@ export function Composer({
   const status = pane?.status ?? 'unknown';
   const kind = agent ? 'agent' : 'shell';
 
-  // The open key preset is one state per kind. Both start closed: the resting row already
-  // carries the keys a hand reaches for, and opening the grid hides the replies.
-  const [keyBars, setKeyBars] = useState(() => ({
-    agent: store.get('tautan.keys.agent') === 'on',
-    shell: store.get('tautan.keys.shell') === 'on',
+  const [trays, setTrays] = useState(() => ({
+    agent: { suggest: readTray('agent', 'suggest'), keys: readTray('agent', 'keys') },
+    shell: { suggest: readTray('shell', 'suggest'), keys: readTray('shell', 'keys') },
   }));
-  const showKeys = keyBars[kind];
-  const setShowKeys = (v: boolean) => {
+  // A blocked prompt opens the suggestions for as long as it asks, without touching the
+  // remembered choice. Closing them then dismisses only this prompt's opening.
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => setDismissed(false), [paneKey, status]);
+  const forced = status === 'blocked' && !dismissed;
+  const showSuggest = trays[kind].suggest || forced;
+  const showKeys = trays[kind].keys;
+  const keep = (tray: Tray, v: boolean) => {
+    store.set(`tautan.tray.${tray}.${kind}`, v ? 'on' : 'off');
+    setTrays((t) => ({ ...t, [kind]: { ...t[kind], [tray]: v } }));
+  };
+  const toggleTray = (tray: Tray) => {
     haptic();
-    store.set(`tautan.keys.${kind}`, v ? 'on' : 'off');
-    setKeyBars((k) => ({ ...k, [kind]: v }));
+    if (tray === 'keys') return keep('keys', !showKeys);
+    if (!showSuggest) return keep('suggest', true);
+    if (trays[kind].suggest) keep('suggest', false);
+    if (status === 'blocked') setDismissed(true);
   };
 
   // Smart replies are the phone's own switch; Settings writes it and tells the Hub too.
@@ -289,7 +312,7 @@ export function Composer({
   useEffect(() => {
     heldGeneration.current += 1;
     flushingHeld.current = false;
-    setHeldMessages([]);
+    setHeldMessages((list) => { dropPending(list.map((m) => m.id)); return []; });
     setSendingHeld(false);
   }, [paneKey]);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -312,9 +335,11 @@ export function Composer({
     const sent = text.trim();
     if (!sent) return;
     haptic();
+    // An Agent's reply also goes to the Chat view as a pending turn; a shell has no transcript.
     if (status === 'working') {
-      const message = { id: (heldMessageId += 1), text };
-      setHeldMessages((list) => [...list, message]);
+      setHeldMessages((list) => [...list, { id: trackPending(paneKey, text, true), text }]);
+    } else if (agent) {
+      void deliver(trackPending(paneKey, text));
     } else {
       void post(paneKey, 'input', { text, keys: ['enter'] } satisfies InputBody);
     }
@@ -333,12 +358,8 @@ export function Composer({
     setSendingHeld(true);
     haptic();
     for (const message of batch) {
-      try {
-        await api<void>(`/api/panes/${encodeURIComponent(paneKey)}/input`, {
-          text: message.text,
-          keys: ['enter'],
-        } satisfies InputBody);
-      } catch {
+      if (!(await deliver(message.id))) {
+        holdPending(message.id);
         break;
       }
       if (heldGeneration.current === generation) {
@@ -351,20 +372,23 @@ export function Composer({
     }
   };
 
-  const [ctrlArmed, setCtrlArmed] = useState(false);
-  useEffect(() => setCtrlArmed(false), [paneKey, kind]);
   const keys = (names: string[]) => {
     haptic();
-    if (names.length === 1 && names[0] === 'ctrl') {
-      setCtrlArmed((armed) => !armed);
-      return;
-    }
-    if (ctrlArmed) {
-      setCtrlArmed(false);
-      if (names.length === 1 && names[0] === 'esc') return;
-      if (names.length === 1 && !names[0]!.includes('+')) names = [`ctrl+${names[0]}`];
-    }
     void post(paneKey, 'input', { keys: names } satisfies InputBody);
+  };
+
+  // ctrl and alt are one-shot: armed, the next cap or typed character goes out with it.
+  const [armed, setArmed] = useState<Modifier | null>(null);
+  useEffect(() => setArmed(null), [paneKey, kind]);
+  const arm = (mod: Modifier) => {
+    haptic();
+    setArmed((a) => (a === mod ? null : mod));
+  };
+  const press = (cap: Cap) => {
+    haptic();
+    setArmed(null);
+    if (armed && cap.keys?.join() === 'esc') return; // esc while armed only disarms
+    void post(paneKey, 'input', capInput(cap, armed) satisfies InputBody);
   };
 
   /** A text pill is a draft, not an answer: it lands in the composer for review. */
@@ -555,17 +579,19 @@ export function Composer({
   // Hint that repeats the prompt's own `esc to cancel` is listed once.
   // On desktop the mode chip already sends the cycle key, so its Hint pill would say it twice.
   const modeInToolbar = desktop && !!agent && !!toolbar.mode;
+  // While the card is up it carries the prompt's own keys, so the tray does not repeat them.
   const pills: Pill[] = [
-    ...replies.filter((p) => p.kind === 'key'),
+    ...replies.filter((p) => p.kind === 'key' && !explain),
     ...hintPills(affordances, replies).filter((p) => !(modeInToolbar && p.keys?.join() === CYCLE_MODE_KEYS.join())),
     ...replies.filter((p) => p.kind === 'text'),
   ];
   const commands = agent ? [] : history;
-  // The App profile owns the key bar: htop and less carry the function keys their own footer
-  // advertises, an agent carries the agent set. A name the base sets do not carry prints as
-  // `F1`.
-  const preset = profile.keys.all.map((name) => [name, KEY_LABEL.get(name) ?? name.toUpperCase()] as [string, string]);
-  const inlineKeys = preset.filter(([name]) => profile.keys.inline.includes(name));
+  // Control, the App profile's own keys, Navigate, Edit; the Modifiers are drawn here.
+  const groups = useMemo(
+    () => trayGroups({ shell: !agent, claude: !!agent?.toLowerCase().includes('claude'), profileKeys: profile.keys.all }),
+    [agent, profile],
+  );
+  const waiting = pills.length + commands.length;
   const gutter = desktop ? '' : 'px-4';
 
   // ---- parts ----
@@ -620,91 +646,135 @@ export function Composer({
     </button>
   ));
 
-  const keysToggle = (
-    // Filled, not a ghost: a control among the caps, and accent while it is open.
+  // The two toggles: accent tint while open, a plain outline while closed.
+  const toggle = (on: boolean) =>
+    `press flex shrink-0 items-center justify-center gap-1.5 rounded-composer border font-medium ${
+      desktop ? 'h-8 px-2.5 text-[12px]' : 'h-11 min-w-11 px-2.5 text-[13px]'
+    } ${on ? 'border-accent/45 bg-accent/12 text-accent' : 'border-border bg-bg text-fg'}`;
+  const suggestToggle = (
     <button
       type="button"
-      aria-label={showKeys ? 'Close keys' : 'Keys'}
-      aria-expanded={showKeys}
-      aria-controls="pane-keys"
-      onClick={() => setShowKeys(!showKeys)}
-      className={`press flex shrink-0 items-center justify-center rounded-chip border ${desktop ? 'size-8' : 'size-9'} ${
-        showKeys ? 'border-accent bg-accent text-bg' : 'border-border bg-surface text-fg'
-      }`}
+      aria-label={`Suggestions, ${waiting} waiting`}
+      aria-pressed={showSuggest}
+      aria-controls="pane-suggestions"
+      onClick={() => toggleTray('suggest')}
+      className={toggle(showSuggest)}
     >
-      <Keyboard size={desktop ? 16 : 17} />
+      <span aria-hidden>✦</span>
+      {desktop && 'Suggestions'}
+      {waiting > 0 && <span className={`tabular-nums ${desktop ? 'opacity-70' : ''}`}>{waiting}</span>}
+    </button>
+  );
+  const keysToggle = (
+    <button
+      type="button"
+      aria-label="Keys"
+      aria-pressed={showKeys}
+      aria-controls="pane-keys"
+      onClick={() => toggleTray('keys')}
+      className={toggle(showKeys)}
+    >
+      <Keyboard size={desktop ? 15 : 17} />
+      {desktop && 'Keys'}
     </button>
   );
 
-  const capClass = (name: string) => (name === 'ctrl+c' ? 'text-danger' : 'text-fg');
-  const inlineCaps = inlineKeys.map(([name, label]) => (
+  const groupLabel = 'text-[10px] font-semibold uppercase tracking-[0.06em] text-muted';
+  const capClass = `press flex min-w-0 items-center justify-center rounded-chip border font-mono whitespace-nowrap ${
+    desktop ? 'h-7 min-w-8 px-2' : 'h-9 px-1'
+  }`;
+  // A lone glyph (⌫, ␣, ▲) needs a size step to read like the word caps beside it; a long
+  // label (`⇧⇥ mode`) takes two of the phone's six columns.
+  const capSize = (label: string) =>
+    `${[...label].length === 1 ? (desktop ? 'text-[13px]' : 'text-[15px]') : desktop ? 'text-[11px]' : 'text-[12px]'} ${
+      !desktop && label.length > 4 ? 'col-span-2' : ''
+    }`;
+  const capRow = desktop ? 'flex flex-wrap gap-1.5' : 'grid grid-cols-6 gap-1.5';
+  const capButton = (cap: Cap) => (
     <button
-      key={name}
+      key={cap.label}
       type="button"
-      aria-label={name}
-      onClick={() => keys([name])}
-      className={`press flex shrink-0 items-center justify-center border border-border font-mono text-[11px] active:bg-surface ${
-        desktop ? 'h-7 min-w-8 rounded-[6px] px-2' : 'h-9 min-w-10 rounded-chip px-2'
-      } ${capClass(name)}`}
+      aria-label={cap.name}
+      onClick={() => press(cap)}
+      className={`${capClass} ${capSize(cap.label)} border-border bg-surface active:bg-border ${cap.danger ? 'text-danger' : 'text-fg'}`}
     >
-      {label}
+      {cap.label}
     </button>
-  ));
+  );
 
-  // The open preset: a fixed six-column grid, every cap the App profile carries.
-  const grid = (
+  // Groups with a tiny label each: one wrapping row on desktop, a six-column grid per group
+  // on the phone, which scrolls inside the tray past 38% of the screen.
+  const keysTray = (
     <div
       id="pane-keys"
       role="group"
       aria-label="Keys"
-      className={`rise grid grid-cols-6 gap-1.5 ${gutter} ${desktop ? 'max-w-md' : ''}`}
+      className={`rise ${
+        desktop
+          ? 'flex flex-wrap gap-x-4 gap-y-2 rounded-composer border border-border bg-bg p-2'
+          : 'flex max-h-[38vh] flex-col gap-2 overflow-y-auto overscroll-contain px-4'
+      }`}
     >
-      {preset.map(([name, label]) => (
-        <button
-          key={name}
-          type="button"
-          aria-label={name === 'ctrl' ? `${ctrlArmed ? 'Disarm' : 'Arm'} Control` : name}
-          aria-pressed={name === 'ctrl' ? ctrlArmed : undefined}
-          onClick={() => keys([name])}
-          className={`press flex min-w-0 items-center justify-center truncate rounded-chip font-mono text-[12px] ${
-            desktop ? 'h-8' : 'h-10'
-          } ${name === 'ctrl' && ctrlArmed ? 'bg-accent/12 text-accent' : `bg-surface active:bg-border ${capClass(name)}`}`}
-        >
-          {label}
-        </button>
+      {groups.map((group) => (
+        <div key={group.label} role="group" aria-label={group.label} className="flex min-w-0 flex-col gap-1">
+          <span aria-hidden className={groupLabel}>{group.label}</span>
+          <div className={capRow}>{group.caps.map(capButton)}</div>
+        </div>
       ))}
+      <div role="group" aria-label="Modifiers" className="flex min-w-0 flex-col gap-1">
+        <span aria-hidden className={groupLabel}>Modifiers</span>
+        <div className={capRow}>
+          {MODIFIERS.map((mod) => (
+            <button
+              key={mod}
+              type="button"
+              aria-label={`${armed === mod ? 'Disarm' : 'Arm'} ${mod === 'ctrl' ? 'Control' : 'Alt'}`}
+              aria-pressed={armed === mod}
+              onClick={() => arm(mod)}
+              className={`${capClass} ${capSize(mod)} ${armed === mod ? 'border-accent/45 bg-accent/12 text-accent' : 'border-border bg-surface text-fg active:bg-border'}`}
+            >
+              {mod}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 
-  const divider = <span aria-hidden className="mx-0.5 my-1 w-px shrink-0 self-stretch bg-border" />;
+  /** The replies (or a shell's recent commands): wrapped on desktop, one scrolling row on the phone. */
+  const suggestTray = (
+    <div id="pane-suggestions" role="group" aria-label={agent ? 'Suggestions' : 'Recent commands'} className="rise">
+      {waiting === 0 ? (
+        <p className={`text-caption text-muted ${gutter}`}>{agent ? 'No suggestions yet' : 'Commands you run show up here'}</p>
+      ) : desktop ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span aria-hidden className={`${groupLabel} mr-1`}>{agent ? 'Suggested' : 'Recent'}</span>
+          {pillButtons}
+          {commandButtons}
+        </div>
+      ) : (
+        <div className="hscroll flex gap-1.5 px-4" style={{ maskImage: FADE, WebkitMaskImage: FADE }}>
+          {pillButtons}
+          {commandButtons}
+        </div>
+      )}
+    </div>
+  );
 
-  /** The row the replies live in: keys first, then the pills and recent commands. The phone
-   *  scrolls it; the desktop wraps it. */
-  const quickRow = (withKeys: boolean) => {
-    const rest = [...pillButtons, ...commandButtons];
-    if (!withKeys && !rest.length) return null;
-    return (
-      <div className={`flex items-stretch gap-1.5 ${desktop ? '' : 'pl-4'}`}>
-        {withKeys && (
-          <>
-            {keysToggle}
-            {inlineCaps}
-          </>
-        )}
-        {withKeys && rest.length > 0 && divider}
-        {rest.length > 0 && (
-          <div
-            role="group"
-            aria-label={agent ? 'Quick replies' : 'Recent commands'}
-            className={desktop ? 'flex min-w-0 flex-1 flex-wrap gap-2' : 'hscroll flex min-w-0 flex-1 gap-1.5 pr-4'}
-            style={desktop ? undefined : { maskImage: FADE, WebkitMaskImage: FADE }}
-          >
-            {rest}
-          </div>
-        )}
-      </div>
-    );
-  };
+  // While the Agent works, ^C stays one tap away next to Send, whatever the trays show.
+  const stopButton = status === 'working' && (
+    <button
+      type="button"
+      aria-label="Interrupt, control C"
+      title="Sends ^C"
+      onClick={() => keys(['ctrl+c'])}
+      className={`press flex shrink-0 items-center justify-center rounded-chip border border-border font-mono text-danger ${
+        desktop ? 'h-8 px-2 text-[11px]' : 'size-9 text-[12px]'
+      }`}
+    >
+      ^C
+    </button>
+  );
 
   const fileInput = (
     <input
@@ -758,7 +828,9 @@ export function Composer({
     </button>
   );
 
-  const placeholder = agent
+  const placeholder = armed
+    ? desktop ? `${armed} + the next key or letter` : `${armed} + next key`
+    : agent
     ? explain
       ? desktop ? `Or tell ${agent} what to do instead` : 'Or type an answer'
       : desktop ? `Reply to ${Agent} — / for commands, @ for files` : `Reply to ${Agent}…`
@@ -768,7 +840,18 @@ export function Composer({
       ref={input}
       rows={desktop && agent ? 2 : 1}
       value={text}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        const el = e.target;
+        const at = el.selectionStart;
+        // Armed, one typed character is a chord, not text: it goes out as ctrl+r and the field stays.
+        if (armed && el.value.length === text.length + 1 && at > 0 && el.value.slice(0, at - 1) + el.value.slice(at) === text) {
+          haptic();
+          setArmed(null);
+          void post(paneKey, 'input', { keys: [modified(armed, el.value[at - 1]!)] } satisfies InputBody);
+          return;
+        }
+        setText(el.value);
+      }}
       // Enter sends and Shift+Enter breaks the line; every other key, Ctrl included, is the
       // field's own.
       onKeyDown={(e) => {
@@ -783,7 +866,7 @@ export function Composer({
       spellCheck={agent ? undefined : false}
       aria-label={agent ? `Reply to ${agent}` : 'Command'}
       placeholder={placeholder}
-      className={`flex-1 resize-none self-center bg-transparent placeholder:text-muted focus:outline-none ${
+      className={`min-w-0 flex-1 resize-none self-center bg-transparent placeholder:truncate placeholder:text-muted focus:outline-none ${
         desktop && agent
           ? 'min-h-11 py-0 text-[15px] leading-[22px]'
           : `max-h-24 min-h-9 py-2 leading-5 ${agent ? 'text-body' : 'font-mono text-[14px]'}`
@@ -798,35 +881,41 @@ export function Composer({
     </span>
   );
 
-  const box = desktop && agent ? (
+  const box = desktop ? (
     <div className="flex flex-col rounded-card border border-border bg-bg focus-within:border-accent/60">
       <div className="flex gap-2.5 px-3 pt-3 pb-1.5">
         {glyph}
         {textarea}
       </div>
       <div role="toolbar" aria-label="Composer" className="flex flex-wrap items-center gap-1.5 px-2 pt-1.5 pb-2">
+        {suggestToggle}
         {keysToggle}
-        {attachButton}
-        <button
-          type="button"
-          aria-label="Type /"
-          title="Types / — the Agent shows its commands"
-          onClick={() => typeAtCaret('/')}
-          className="press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[15px] text-muted hover:text-fg"
-        >
-          /
-        </button>
-        <button
-          type="button"
-          aria-label="Type @"
-          title="Types @ — the Agent offers files"
-          onClick={() => typeAtCaret('@')}
-          className="press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[14px] text-muted hover:text-fg"
-        >
-          @
-        </button>
         <span aria-hidden className="mx-1 h-[18px] w-px shrink-0 bg-border" />
-        {toolbar.mode && (
+        {attachButton}
+        {agent && (
+          <>
+            <button
+              type="button"
+              aria-label="Type /"
+              title="Types / — the Agent shows its commands"
+              onClick={() => typeAtCaret('/')}
+              className="press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[15px] text-muted hover:text-fg"
+            >
+              /
+            </button>
+            <button
+              type="button"
+              aria-label="Type @"
+              title="Types @ — the Agent offers files"
+              onClick={() => typeAtCaret('@')}
+              className="press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[14px] text-muted hover:text-fg"
+            >
+              @
+            </button>
+          </>
+        )}
+        <span className="flex-1" />
+        {agent && toolbar.mode && (
           // The chip follows the Screen: the tap only sends the key, the next Screen says
           // which mode the Agent landed in.
           <button
@@ -839,62 +928,44 @@ export function Composer({
             <kbd className="rounded-[4px] border border-accent/35 px-[5px] font-mono text-[10.5px] font-normal">⇧⇥</kbd>
           </button>
         )}
-        {inlineCaps}
-        <span className="flex-1" />
-        {toolbar.context !== undefined && <ContextLeft left={toolbar.context} />}
-        {toolbar.model && (
+        {agent && toolbar.model && (
           <span title="Model, from the Screen" className="shrink-0 px-1.5 text-[12px] text-muted">
             {toolbar.model}
           </span>
         )}
+        {agent && toolbar.context !== undefined && <ContextLeft left={toolbar.context} />}
+        {stopButton}
         {micButton}
-        {sendButton}
+        {agent ? (
+          sendButton
+        ) : (
+          <button
+            type="button"
+            onClick={send}
+            disabled={!hasText}
+            className={`press flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-3 text-[12px] ${
+              hasText ? 'bg-accent font-medium text-bg' : 'bg-surface text-muted'
+            }`}
+          >
+            Run <kbd className="font-mono text-[10.5px] opacity-70">↵</kbd>
+          </button>
+        )}
       </div>
     </div>
   ) : (
-    <div className="flex items-end gap-1.5 rounded-card border border-border bg-bg py-1 pr-1 pl-3 focus-within:border-accent/60">
-      {!desktop && showKeys ? (
-        <button
-          type="button"
-          aria-label="Close keys"
-          aria-expanded
-          aria-controls="pane-keys"
-          onClick={() => setShowKeys(false)}
-          className="press flex h-9 w-7 shrink-0 items-center justify-center text-accent"
-        >
-          <Keyboard size={17} />
-        </button>
-      ) : (
-        glyph
-      )}
-      {textarea}
-      {attachButton}
-      {desktop ? (
-        <button
-          type="button"
-          onClick={send}
-          disabled={!hasText}
-          className={`press flex h-8 shrink-0 items-center gap-1.5 self-center rounded-chip px-3 text-[12px] ${
-            hasText ? 'bg-accent font-medium text-bg' : 'bg-surface text-muted'
-          }`}
-        >
-          Run <kbd className="font-mono text-[10.5px] opacity-70">↵</kbd>
-        </button>
-      ) : hasText || !micButton ? (
-        sendButton
-      ) : (
-        micButton
-      )}
+    // Phone: the toggles sit left of the input; the box is one 44 px line until it grows.
+    <div className="flex items-end gap-1.5">
+      {suggestToggle}
+      {keysToggle}
+      <div className="flex min-w-0 flex-1 items-end gap-1 rounded-card border border-border bg-bg py-[3px] pr-[3px] pl-3 focus-within:border-accent/60">
+        {glyph}
+        {textarea}
+        {stopButton}
+        {attachButton}
+        {hasText || !micButton ? sendButton : micButton}
+      </div>
     </div>
   );
-
-  // What sits above the box: the card while a prompt asks, else the open keys, else the
-  // resting row. The desktop agent keeps its keys in the toolbar, so its row is replies only.
-  const above = explain
-    ? null
-    : showKeys
-      ? grid
-      : quickRow(!(desktop && agent));
 
   return (
     <div
@@ -924,7 +995,8 @@ export function Composer({
           </div>
         </div>
 
-        {above}
+        {showSuggest && suggestTray}
+        {showKeys && keysTray}
 
         {heldMessages.length > 0 && (
           <section aria-label="Held messages" className={`overflow-hidden rounded-composer border border-border bg-bg ${desktop ? '' : 'mx-4'}`}>
@@ -954,7 +1026,10 @@ export function Composer({
                       type="button"
                       disabled={sendingHeld}
                       aria-label={`Remove held message: ${message.text}`}
-                      onClick={() => setHeldMessages((list) => list.filter((item) => item.id !== message.id))}
+                      onClick={() => {
+                        dropPending([message.id]);
+                        setHeldMessages((list) => list.filter((item) => item.id !== message.id));
+                      }}
                       className="press flex size-9 shrink-0 items-center justify-center text-muted disabled:opacity-40"
                     >
                       ×

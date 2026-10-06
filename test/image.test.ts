@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { fileImage, fileView, safeImage } from '../web/image.tsx';
+import { chatImage, fileImage, fileView, safeImage } from '../web/image.tsx';
 
 test('safeImage keeps https and raster data URLs only', () => {
   expect(safeImage('https://x.test/a b.png')).toBe('https://x.test/a%20b.png');
@@ -11,4 +11,8 @@ test('safeImage keeps https and raster data URLs only', () => {
 test('the file route and viewer encode the Pane key and the path', () => {
   expect(fileImage('mbp/herdr/w1:p2', 'shots/a #1.png')).toBe('/api/panes/mbp%2Fherdr%2Fw1%3Ap2/file?path=shots%2Fa%20%231.png');
   expect(fileView('mbp/herdr/w1:p2', '/abs/a.png')).toBe('#/file/mbp%2Fherdr%2Fw1%3Ap2?path=%2Fabs%2Fa.png');
+});
+
+test('the transcript image route encodes the Pane key', () => {
+  expect(chatImage('mbp/herdr/w1:p2', 3)).toBe('/api/panes/mbp%2Fherdr%2Fw1%3Ap2/chat/image/3');
 });

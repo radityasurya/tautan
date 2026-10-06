@@ -3,7 +3,7 @@ import { hostname } from 'node:os';
 import { remoteTmuxSockets } from '../server/tmux-discover.ts';
 import { parseTree, TmuxMux, tmuxKey, type TmuxExec } from '../server/tmux.ts';
 import { Hub } from '../server/mux.ts';
-import { AGENT_KEYS, SHELL_KEYS } from '../web/keys.ts';
+import { AGENT_KEYS, MODIFIERS, SHELL_KEYS, trayGroups } from '../web/keys.ts';
 
 const row = (o: { workspace?: string; workspaceLabel?: string; tab?: string; tabLabel?: string; pane?: string; command?: string; cwd?: string; title?: string; cols?: number; rows?: number } = {}) => [
   o.workspace ?? '$0', o.workspaceLabel ?? 'work', o.tab ?? '@1', o.tabLabel ?? 'code', o.pane ?? '%0',
@@ -47,6 +47,14 @@ describe('TmuxMux', () => {
     for (const name of [...new Set([...AGENT_KEYS, ...SHELL_KEYS].map(([key]) => key)), 'backspace', 'space', 'shift+tab'].filter(name => name !== 'ctrl')) expect(tmuxKey(name)).toBe(expected[name]);
     expect(tmuxKey('A')).toBe('A');
     expect(tmuxKey('ALT+X')).toBe('M-x');
+  });
+
+  test('translates every name the Keys tray sends', () => {
+    expect(tmuxKey('f1')).toBe('F1');
+    expect(tmuxKey('f12')).toBe('F12');
+    const names = trayGroups({ shell: true, claude: true, profileKeys: ['f1', 'f10'] })
+      .flatMap((group) => group.caps.flatMap((cap) => cap.keys ?? []));
+    for (const name of [...names, ...MODIFIERS.map((mod) => `${mod}+r`)]) expect(() => tmuxKey(name)).not.toThrow();
   });
 
   test('validates keys before sending and sends inputs in one command', async () => {

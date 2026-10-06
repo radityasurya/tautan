@@ -34,6 +34,8 @@ export function parseTree(stdout: string): Tree {
 const namedKeys: Record<string, string> = {
   enter: 'Enter', esc: 'Escape', tab: 'Tab', 'shift+tab': 'BTab', up: 'Up', down: 'Down',
   left: 'Left', right: 'Right', backspace: 'BSpace', space: 'Space',
+  // The function keys herdr takes as f1–f12; htop and less offer them in the Keys tray.
+  ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`f${i + 1}`, `F${i + 1}`])),
 };
 
 export function tmuxKey(name: string): string {
