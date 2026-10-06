@@ -24,6 +24,9 @@ const store = {
 /** Every key cap label the presets spell out, for the key bar an App profile asks for. */
 const KEY_LABEL = new Map([...AGENT_KEYS, ...SHELL_KEYS]);
 
+// ponytail: drafts live in memory only, so a reload loses them; sessionStorage if that bites.
+const drafts = new Map<string, string>();
+
 interface HeldMessage { id: number; text: string }
 // ponytail: a module counter, only a React key and a remove handle; it never leaves the tab.
 let heldMessageId = 0;
@@ -266,7 +269,19 @@ export function Composer({
 
   const [history, setHistory] = useState(readHistory);
 
-  const [text, setText] = useState('');
+  // The frame changes tree shape at 1024 px, so a resize remounts the Composer: the draft
+  // lives outside it, per Pane, and a Pane switch brings back that Pane's own draft.
+  const [text, setText] = useState(() => drafts.get(paneKey) ?? '');
+  const draftPane = useRef(paneKey);
+  useEffect(() => {
+    if (draftPane.current !== paneKey) {
+      draftPane.current = paneKey;
+      setText(drafts.get(paneKey) ?? '');
+      return;
+    }
+    if (text) drafts.set(paneKey, text);
+    else drafts.delete(paneKey); // a send clears the field, and with it the draft
+  }, [paneKey, text]);
   const [heldMessages, setHeldMessages] = useState<HeldMessage[]>([]);
   const [sendingHeld, setSendingHeld] = useState(false);
   const heldGeneration = useRef(0);

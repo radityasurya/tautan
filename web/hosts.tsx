@@ -181,11 +181,23 @@ function HostRow({ host, state, prefs }: { host: StateHost; state: State; prefs:
             {host.label}
             {!host.target && <span className="text-caption text-muted"> · this machine</span>}
           </span>
-          <span className={`block truncate text-caption ${host.online ? 'text-muted' : 'text-danger'}`}>
-            {host.online
-              ? [...kinds, count(workspaces, 'Workspace')].join(' · ')
-              : `unreachable${host.error ? ` · ${host.error}` : ''}${retryIn ? ` · ${retryIn}` : ''}`}
-          </span>
+          {host.online ? (
+            <span className="block truncate text-caption text-muted">
+              {[...kinds, count(workspaces, 'Workspace')].join(' · ')}
+            </span>
+          ) : (
+            <>
+              {/* The retry time sits on the short first line, so a long error can never cut it off. */}
+              <span className="block text-caption whitespace-nowrap text-danger">
+                unreachable{retryIn && ` · ${retryIn}`}
+              </span>
+              {host.error && (
+                <span title={host.error} className="line-clamp-2 text-caption break-words text-danger/80">
+                  {host.error}
+                </span>
+              )}
+            </>
+          )}
         </span>
         <ChevronRight size={16} className="shrink-0 text-muted" />
       </Link>
