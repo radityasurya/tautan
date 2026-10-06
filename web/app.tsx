@@ -285,6 +285,85 @@ function TabBar({ route, badge }: { route: string; badge: number }) {
   );
 }
 
+// ---- desktop frame ----
+// One breakpoint: Tailwind `lg`, 1024 px. Below it the app is the phone app, untouched.
+
+const LG = '(min-width: 1024px)';
+
+/** True at `lg` and up. Follows a window resize with no reload. */
+function useDesktop() {
+  const [on, setOn] = useState(() => matchMedia(LG).matches);
+  useEffect(() => {
+    const mq = matchMedia(LG);
+    const change = () => setOn(mq.matches);
+    mq.addEventListener('change', change);
+    change();
+    return () => mq.removeEventListener('change', change);
+  }, []);
+  return on;
+}
+
+const SIDEBAR = 'tautan.sidebar';
+
+/** The sidebar's open state, and the `⌘B` / `Ctrl+B` toggle. Remembered in localStorage. */
+function useSidebar(enabled: boolean) {
+  const [open, setOpen] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR) !== 'closed'; } catch { return true; }
+  });
+  useEffect(() => {
+    if (!enabled) return;
+    const on = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 'b' || e.altKey || e.shiftKey) return;
+      // Ctrl+B is the tmux prefix: it toggles only outside an editable, and is never swallowed there.
+      const t = e.target;
+      const typing = t instanceof HTMLElement && t.matches('input, textarea, [contenteditable]');
+      if (!(e.metaKey || (e.ctrlKey && !typing))) return;
+      e.preventDefault();
+      setOpen((was) => {
+        try { localStorage.setItem(SIDEBAR, was ? 'closed' : 'open'); } catch {}
+        return !was;
+      });
+    };
+    addEventListener('keydown', on);
+    return () => removeEventListener('keydown', on);
+  }, [enabled]);
+  return open;
+}
+
+// ponytail: Settings and Hosts are still two routes, so the section nav links the routes.
+// Phase 22 folds Hosts into Settings; the nav then lists the sections of one screen.
+const SECTIONS = [
+  { to: '#/settings', label: 'Settings', Icon: SettingsTab },
+  { to: '#/hosts', label: 'Hosts', Icon: HostsTab },
+];
+
+function SectionNav({ route }: { route: string }) {
+  return (
+    <nav
+      aria-label="Settings sections"
+      className="sticky top-0 flex h-dvh w-[240px] shrink-0 flex-col gap-0.5 border-r border-border bg-surface px-4 py-6"
+    >
+      <Link to="#/" className="flex items-center gap-2 px-2 pb-4 text-[13px] text-muted">
+        <span aria-hidden>‹</span>All panes
+      </Link>
+      <span className="px-2 pb-3 text-[22px] font-semibold tracking-tight">Settings</span>
+      {SECTIONS.map(({ to, label }) => {
+        const on = to === `#${route}`;
+        return (
+          <Link
+            key={to}
+            to={to}
+            aria-current={on ? 'page' : undefined}
+            className={`rounded-lg px-2.5 py-2 text-[14px] ${on ? 'bg-elevated text-fg' : 'text-muted'}`}
+          >
+            {label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
 // ---- app ----
 
 export function App() {
@@ -297,6 +376,8 @@ export function App() {
   const fileKey = encodedFileKey ? decodeURIComponent(encodedFileKey) : undefined;
   const filePath = fileKey ? (new URLSearchParams(fileQuery).get('path') ?? '') : '';
   const { state, screen, connected } = useEvents(paneKey);
+  const desktop = useDesktop();
+  const sidebar = useSidebar(desktop);
   const needsYou = state?.panes.filter((p) => p.status === 'blocked' && unseen(p)).length ?? 0;
   const wakeLock = useRef<{ release(): Promise<void> } | null>(null);
   const wakeLockToken = useRef(0);
@@ -355,6 +436,28 @@ export function App() {
     setBadge(state?.panes.filter((p) => (p.status === 'blocked' || p.status === 'done') && unseen(p)).length ?? 0);
   }, [state]);
 
+  const section = route === '/hosts' || route === '/settings';
+  // At `lg` the Pane list is the sidebar, so the `/` route has no list of its own to show
+  // until `⌘B` hides the sidebar.
+  const home = desktop && sidebar ? (
+    <p className="px-6 pt-24 text-center text-body text-muted">Pick a Pane from the list.</p>
+  ) : (
+    <Home state={state} />
+  );
+  const screens = paneKey ? (
+        <PaneScreen paneKey={paneKey} state={state} screen={screen} />
+      ) : diffKey ? (
+        <Diff workspaceKey={diffKey} state={state} />
+      ) : fileKey ? (
+        <FileScreen paneKey={fileKey} path={filePath} state={state} />
+      ) : route === '/hosts' ? (
+        <Hosts state={state} />
+      ) : route === '/settings' ? (
+        <Settings />
+      ) : (
+        home
+      );
+
   return (
     <ThemeProvider theme={kitTheme}>
       <DebugOverlay />
@@ -367,20 +470,35 @@ export function App() {
         <span className="sr-only">{connected ? '' : 'Reconnecting'}</span>
       </div>
       <NeedsCard state={state} openPaneKey={paneKey} onOpen={(key) => navigate(`#/pane/${encodeURIComponent(key)}`)} />
-      {paneKey ? (
-        <PaneScreen paneKey={paneKey} state={state} screen={screen} />
-      ) : diffKey ? (
-        <Diff workspaceKey={diffKey} state={state} />
-      ) : fileKey ? (
-        <FileScreen paneKey={fileKey} path={filePath} state={state} />
-      ) : route === '/hosts' ? (
-        <Hosts state={state} />
-      ) : route === '/settings' ? (
-        <Settings />
+      {desktop ? (
+        <div className="flex">
+          {section ? (
+            <SectionNav route={route} />
+          ) : (
+            sidebar && (
+              <aside aria-label="All panes" className="sticky top-0 flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface">
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <Home state={state} compact />
+                </div>
+                <nav aria-label="Sections" className="flex shrink-0 gap-1 border-t border-border p-2">
+                  {SECTIONS.map(({ to, label, Icon }) => (
+                    <Link key={to} to={to} className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg text-[13px] text-muted">
+                      <Icon size={16} />
+                      {label}
+                    </Link>
+                  ))}
+                </nav>
+              </aside>
+            )
+          )}
+          <div className="min-w-0 flex-1">{screens}</div>
+        </div>
       ) : (
-        <Home state={state} />
+        <>
+          {screens}
+          {!paneKey && !diffKey && !fileKey && <TabBar route={route} badge={needsYou} />}
+        </>
       )}
-      {!paneKey && !diffKey && !fileKey && <TabBar route={route} badge={needsYou} />}
     </ThemeProvider>
   );
 }

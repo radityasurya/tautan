@@ -342,8 +342,14 @@ const folderFoldKey = (host: string, path: string) => `@folder/${encodeURICompon
 const NEEDS = '@needs';
 const RUNNING = '@running';
 
-export function Home({ state }: { state: State | null }) {
-  const [host, setHost] = useState<string | null>(null);
+/** `compact` is the desktop sidebar: the same list, without the phone column or the tab bar's room. */
+// ponytail: module-level so the Host filter survives the sidebar toggle and a resize across
+// `lg`; it resets on reload. Move it to the URL or localStorage if that ever matters.
+let hostFilter: string | null = null;
+
+export function Home({ state, compact }: { state: State | null; compact?: boolean }) {
+  const [host, setHostState] = useState<string | null>(hostFilter);
+  const setHost = (h: string | null) => { hostFilter = h; setHostState(h); };
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [grouping, setGrouping] = useState(readGrouping);
   const [newWorkspace, setNewWorkspace] = useState(() => opensWith('newworkspace'));
@@ -472,12 +478,12 @@ export function Home({ state }: { state: State | null }) {
     writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
   return (
-    <div className="mx-auto max-w-2xl pb-28">
+    <div className={compact ? 'pb-4' : 'mx-auto max-w-2xl pb-28'}>
       <TopBar
         title="tautan"
         right={
           <>
-            <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>
+            {!compact && <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>}
             {state && keys.length > 0 && (
               <IconButton
                 size={40}

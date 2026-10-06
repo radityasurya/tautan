@@ -124,7 +124,7 @@ export function Hosts({ state }: { state: State | null }) {
     `${count(state.hosts.length, 'host')} · ${count(state.panes.length, 'pane')}`;
 
   return (
-    <div className="mx-auto max-w-2xl pb-28">
+    <div className="mx-auto max-w-2xl pb-28 lg:pb-10">
       <TopBar
         title="Hosts"
         right={

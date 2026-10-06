@@ -210,16 +210,6 @@ function closeTabCost(panes: StatePane[], lastTab: boolean): string {
   return active.join(' ');
 }
 
-/**
- * The widest grid measured in each Workspace, by Workspace key. Every Pane of a Workspace
- * reads the same entry, so switching Tab or Pane inside it keeps the column still from the
- * first frame. `lastColumn` is the width on screen, held while a new Workspace measures.
- * ponytail: never evicted; one number per Workspace ever opened in this tab.
- */
-const widths = new Map<string, number>();
-let lastColumn = 0;
-/** Workspaces measured before a font swap; their next measurement replaces the widest. */
-const unsettled = new Set<string>();
 
 /** How long a switch keeps the last Pane's Screen before the skeleton takes the grid. */
 const HOLD_MS = 800;
@@ -402,9 +392,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     setKeyBars((k) => ({ ...k, [kind]: v }));
   };
   const [scale, setScale] = useState(1);
-  /** The Workspace's widest grid, measured from the `<pre>`. It sizes the whole column. */
-  const wsKey = ws?.key ?? '';
-  const [measured, setMeasured] = useState(0);
   const [fade, setFade] = useState(false);
   const [fresh, setFresh] = useState(false);
   const [explain, setExplain] = useState<ExplainResponse | null>(null);
@@ -448,21 +435,25 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     measure();
   }, [lines]);
 
-  // Window width feeds the Fit scale, so a rotation or a desktop resize re-fits the grid.
+  // The Pane's own width feeds the Fit scale, so a rotation, a window resize or the sidebar
+  // toggling re-fits the grid. At `lg` the Pane sits beside a 300 px sidebar, so the window
+  // is the wrong ruler.
+  const frame = useRef<HTMLDivElement>(null);
   const [viewportW, setViewportW] = useState(() => innerWidth);
   // The mono subset swaps in after first paint and changes every column's width with it, so
   // the grid is measured again once the fonts are settled.
   const [fonts, setFonts] = useState(false);
   useEffect(() => {
     void document.fonts?.ready.then(() => {
-      widths.forEach((_, k) => unsettled.add(k));
       setFonts(true);
     });
   }, []);
   useEffect(() => {
-    const onResize = () => { setViewportW(innerWidth); measure(); };
-    addEventListener('resize', onResize);
-    return () => removeEventListener('resize', onResize);
+    const el = frame.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => { setViewportW(el.clientWidth); measure(); });
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
   // ---- interactive screen (ADR 0003) ----
@@ -531,23 +522,8 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     const nextRoom = el.parentElement.clientWidth - parseFloat(pad.paddingLeft || '0') - parseFloat(pad.paddingRight || '0');
     setRoom((prev) => (Math.abs(prev - nextRoom) < 0.01 ? prev : nextRoom));
     setScale(fit ? Math.min(1, nextRoom / el.scrollWidth) : 1);
-    // A wrapped `<pre>` is as wide as its column, so its scrollWidth feeds the column back.
-    // Its longest parsed line is the grid width instead. The widest line in the Workspace
-    // keeps winning, so the header, Tabs and dock do not resize per screen frame or Tab.
-    // A held Screen belongs to the last Pane, so it is never measured.
-    if (current && lines.length && wsKey && (!effectiveWrap || cell.cw)) {
-      const longest = effectiveWrap
-        ? Math.max(...lines.map((line) => line.reduce((n, span) => n + span.text.length, 0))) * cell.cw
-        : el.scrollWidth;
-      const prev = widths.get(wsKey) ?? 0;
-      const next = unsettled.delete(wsKey) ? longest : Math.max(prev, longest);
-      if (next !== prev) {
-        widths.set(wsKey, next);
-        setMeasured(next);
-      }
-    }
     measure();
-  }, [fit, effectiveWrap, lines, viewportW, fonts, wsKey, cell.cw, measured]);
+  }, [fit, effectiveWrap, lines, viewportW, fonts, cell.cw]);
 
   // Mark Seen once the screen settles: Seen is tautan's own flag, never written to the Mux.
   useEffect(() => {
@@ -946,22 +922,14 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // spelling, so a name the base sets do not carry prints as `F1`.
   const preset = profile.keys.all.map((name) => [name, KEY_LABEL.get(name) ?? name.toUpperCase()] as [string, string]);
   const inlineKeys = preset.filter(([name]) => profile.keys.inline.includes(name));
-  // One column for the whole screen, the grid's own width plus the scroller's padding, so a
-  // desktop centres a content-sized Pane instead of stretching every bar to the window. A
-  // phone is simply the window. See DESIGN.md "Terminal width on a phone".
-  // 32 px is the scroller's own padding; the 2 px on top absorbs the fraction `scrollWidth`
-  // rounds away, so the grid never overflows by a hair and raises the fade for nothing.
-  // The Workspace's widest grid; a Workspace not measured yet keeps the column on screen, so
-  // the 640 px fallback only ever shows before the first grid of the whole visit.
-  const natural = widths.get(wsKey) ?? lastColumn;
-  lastColumn = natural;
-  const column = viewportW >= 1024 ? `clamp(420px, ${(natural || 640) + 34}px, 100vw)` : undefined;
+  // At `lg` the frame (app.tsx) gives the Pane the space beside the sidebar and the Pane
+  // fills it; the old content-sized, centred column is gone. A phone is simply the window.
   const skeleton = !shown && waited;
 
   return (
     <div
-      className="mx-auto flex h-dvh w-full flex-col transition-[max-width] duration-180 ease-out motion-reduce:transition-none"
-      style={{ maxWidth: column }}
+      ref={frame}
+      className="flex h-dvh w-full flex-col"
     >
       {/* Home's bar, compact: back · title on the left; the status chip, read aloud and ⋯
           on the right, the way Home puts its counts and + there. */}
