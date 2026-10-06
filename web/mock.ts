@@ -593,6 +593,16 @@ const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
       brief: 'cd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/ge…',
       detail: '# Commit the slides generator\ncd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/generate-deck.ts \\\n  .claude/skills/slides/SKILL.md \\\n  && git commit -m "slides: generate the deck from the outline" \\\n  && pnpm test',
     }], at: ago(1) },
+    {
+      // A z.ai (GLM) built-in tool, lifted out of the assistant text by shared/chat.ts.
+      role: 'assistant', at: ago(1),
+      text: 'Inspecting the flagged slide through the image tool.\n\nThe headline now leads: about 62 px against 20 px ticks, and nothing clips.',
+      tools: [{
+        name: 'analyze_image', via: 'z.ai', brief: 'dark-slide-3.png', truncated: true,
+        detail: '{\n  "imageSource": "https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/9ba4f7e5/dark-slide-3.png",\n  "prompt": "Measure the cap height of the headline, badge, axis ticks, legend and footer. Is any text clipped?"\n}',
+        output: '# Text Measurement Analysis\n\n## Approximate Cap Heights (pixel measurements)\n\n| Element | Cap Height | Notes |\n|---|---|---|\n| (1) Headline "Where the p99 goes" | **~45–48 px** | Cap height of "W"; full font size ~62–64 px |\n| (2) Badge/pill "Latency" | ~14 px | Uppercase, tracked |\n| (3) Axis ticks | ~15 px | Tabular numbers |\n\nThe headline is the largest text on the slide. No text is clipped or overlapping…',
+      }],
+    },
   ],
 });
 

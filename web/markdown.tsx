@@ -5,7 +5,7 @@
 // links and bare URLs. No setext headings, reference links, footnotes, task boxes, HTML,
 // images, or emphasis that crosses another span's boundary. Add a real parser (micromark)
 // when a transcript needs one of those.
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 type Align = 'left' | 'center' | 'right' | undefined;
 type Block =
@@ -140,6 +140,28 @@ export function inline(text: string): ReactNode[] {
   return out;
 }
 
+// Clipboard needs a secure context; over plain http the button is left out, not broken.
+const canCopy = () => typeof navigator !== 'undefined' && Boolean(navigator.clipboard);
+
+export function CopyButton({ text, className }: { text: string; className: string }) {
+  const [copied, setCopied] = useState(false);
+  if (!canCopy()) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }, () => {});
+      }}
+      className={className}
+    >
+      <span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
+    </button>
+  );
+}
+
 const HEADING_CLASS = ['', 'text-title', 'text-title', 'text-body font-semibold', 'text-body font-semibold', 'text-body font-semibold text-muted', 'text-body font-semibold text-muted'];
 const CELL = 'border-border px-2 py-1.5 align-top [&+*]:border-l';
 
@@ -159,9 +181,14 @@ function BlockView({ block }: { block: Block }) {
     case 'rule': return <hr className="my-1 border-0 border-t border-border" />;
     case 'quote': return <blockquote className="flex flex-col gap-2 border-l-2 border-border pl-3 text-muted"><Blocks blocks={block.blocks} /></blockquote>;
     case 'code': return (
-      <div className="min-w-0 rounded-chip border border-border bg-bg">
-        {block.lang && <div className="px-3 pt-1.5 font-mono text-[10px] leading-none text-muted">{block.lang}</div>}
-        <pre className="overflow-x-auto overscroll-x-contain px-3 py-2 font-mono text-caption"><code>{block.text}</code></pre>
+      <div className="min-w-0 overflow-hidden rounded-card border border-border bg-bg">
+        {(block.lang || canCopy()) && (
+          <div className="flex min-h-9 items-center justify-between gap-2 border-b border-border pl-3 pr-1 lg:min-h-7">
+            <span className="truncate font-mono text-[10px] leading-none text-muted">{block.lang}</span>
+            <CopyButton text={block.text} className="min-h-8 rounded-chip px-2 text-caption text-muted hover:text-fg active:text-fg lg:min-h-6" />
+          </div>
+        )}
+        <pre className="max-h-96 overflow-auto overscroll-contain px-3 py-2 font-mono text-caption"><code>{block.text}</code></pre>
       </div>
     );
     case 'list': {

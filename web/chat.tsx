@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { timeAgo } from './home.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
-import { Markdown } from './markdown.tsx';
+import { CopyButton, Markdown } from './markdown.tsx';
 import { ChevronRight } from './icons.tsx';
 import type { Turn } from '../shared/chat.ts';
 
@@ -46,26 +46,6 @@ function Stamp({ at }: { at?: number }) {
     <time dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()} className="shrink-0 font-mono text-[10px] tabular-nums text-muted">
       {timeAgo(at)}
     </time>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  // Clipboard needs a secure context; over plain http the button is left out, not broken.
-  if (!navigator.clipboard) return null;
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        }, () => {});
-      }}
-      className="absolute right-1.5 top-1.5 min-h-8 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg"
-    >
-      <span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
-    </button>
   );
 }
 
@@ -146,9 +126,10 @@ export function Chat({
                         <details className="group">
                           <summary className="grid min-h-11 cursor-pointer list-none grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-chip px-2 py-1 font-mono text-caption lg:min-h-8 [&::-webkit-details-marker]:hidden">
                             <span
-                              title={tool.name}
-                              className="max-w-32 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 text-[10px] leading-none text-fg"
+                              title={tool.via ? `${tool.name}, run by ${tool.via}` : tool.name}
+                              className={`${tool.via ? 'max-w-44' : 'max-w-32'} truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 text-[10px] leading-none text-fg`}
                             >
+                              {tool.via && <span className="text-muted">{tool.via} · </span>}
                               {tool.name}
                             </span>
                             <span title={tool.brief} className="truncate text-muted">{tool.brief}</span>
@@ -156,11 +137,26 @@ export function Chat({
                             <ChevronRight className="text-muted transition-transform group-open:rotate-90" />
                           </summary>
                           <div className="relative border-t border-border">
-                            <pre className="max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words px-2 py-2 pr-16 font-mono text-caption text-fg">
-                              {tool.detail || tool.brief}
-                            </pre>
-                            <CopyButton text={tool.detail || tool.brief} />
+                            {(tool.detail || tool.brief) && (
+                              <pre className="max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words px-2 py-2 pr-16 font-mono text-caption text-fg">
+                                {tool.detail || tool.brief}
+                              </pre>
+                            )}
+                            <CopyButton
+                              text={[tool.detail || tool.brief, tool.output].filter(Boolean).join('\n\n')}
+                              className="absolute right-1.5 top-1.5 min-h-8 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg"
+                            />
                           </div>
+                          {tool.output !== undefined && (
+                            <section aria-label={`${tool.name} output`} className="border-t border-border">
+                              <div className="max-h-96 overflow-auto overscroll-contain px-3 py-2.5 text-caption [&_h1]:text-body [&_h2]:text-body">
+                                <Markdown text={tool.output} />
+                              </div>
+                              {tool.truncated && (
+                                <p className="border-t border-border px-3 py-1.5 text-[10px] text-muted">Output cut short by {tool.via ?? 'the tool'}</p>
+                              )}
+                            </section>
+                          )}
                         </details>
                       </li>
                     ))}

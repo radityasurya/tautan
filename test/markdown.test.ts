@@ -36,10 +36,16 @@ describe('blocks', () => {
 
   test('fenced code keeps its text literal, with a language label', () => {
     const out = md('```ts\nconst a = **b**;\n<script>alert(1)</script>\n```');
-    expect(out).toContain('<div>ts</div>');
+    expect(out).toContain('<span>ts</span>');
     expect(out).toContain('<pre><code>const a = **b**;\n&lt;script&gt;alert(1)&lt;/script&gt;</code></pre>');
     expect(out).not.toContain('<strong>');
     expect(out).not.toContain('<script>');
+  });
+
+  test('a line of spaces is a blank line', () => {
+    expect(md('one\n      \ntwo')).toBe('<p>one</p><p>two</p>');
+    expect(md('- a\n   \n- b')).toBe('<ul><li>a</li><li>b</li></ul>');
+    expect(md('| a |\n|---|\n| 1 |\n    \nafter')).toContain('</table></div><p>after</p>');
   });
 
   test('an unclosed fence runs to the end', () => {

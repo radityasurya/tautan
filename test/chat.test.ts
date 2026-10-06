@@ -53,6 +53,39 @@ describe('parseTranscript', () => {
     expect(turn!.text).toHaveLength(4_000);
     expect(turn!.text.endsWith('…')).toBe(true);
   });
+  // A real z.ai turn (GLM through Claude Code), the signed image URL shortened.
+  const zaiTurn = "This environment reads images through the analyze-image tool \u2014 inspecting both flagged slides:\n\n**\ud83c\udf10 Z.ai Built-in Tool: analyze_image**\n\n**Input:**\n```json\n{\"imageSource\":\"https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/9ba4f7e5-4c2a-467b-bd24-c00186ba3758/dark-slide-3.png?sig=x\",\"prompt\":\"This is a 1920x1080 presentation slide with a chart. Measure and report the approximate pixel heights of the capital text (x-height or cap-height) for each of these elements, and state which is the largest text on the slide: (1) the slide headline at the top (\\\"Where the p99 goes\\\" or similar), (2) the small badge/pill label above the headline, (3) the chart's axis tick labels (numbers on the axes), (4) the chart legend labels at the bottom of the chart, (5) the footer text at the very bottom of the slide, (6) any chart card title inside the chart card. Also report: is any text clipped, overflowing its container, or overlapping? Does the type hierarchy read clearly (headline dominant)? Be specific with pixel estimates.\"}\n```\n*Executing on server...*\n\n\n**Output:**\n**analyze_image_result_summary:** [{\"text\": \"\\\"# Text Measurement Analysis\\\\n\\\\n## Approximate Cap Heights (pixel measurements)\\\\n\\\\n| Element | Cap Height | Notes |\\\\n|---|---|---|\\\\n| (1) Headline \\\\\\\"Where the p99 goes\\\\\\\" | **~45\u201348 px** | Cap height of \\\\\\\"W\\\\\\\"; full font size ~62\u201364 px |\\\\n| (2) Badge/pill \\\\\\\"Latency\\\\\\\" | *...\n                                                \n\ndark-slide-3 fixed: headline ~62-64px font vs ticks ~20-22px, chart title between them, no clipping. Now the acme one:\n";
+
+  test('lifts a z.ai built-in tool out of the text into a tool row, output decoded', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: zaiTurn }] } });
+    const [turn] = parseTranscript(jsonl);
+    expect(turn!.text).toBe('This environment reads images through the analyze-image tool — inspecting both flagged slides:\n\ndark-slide-3 fixed: headline ~62-64px font vs ticks ~20-22px, chart title between them, no clipping. Now the acme one:');
+    const [tool] = turn!.tools;
+    expect(tool!.name).toBe('analyze_image');
+    expect(tool!.via).toBe('z.ai');
+    expect(tool!.brief).toBe('dark-slide-3.png');
+    expect(JSON.parse(tool!.detail).prompt.startsWith('This is a 1920x1080 presentation slide')).toBe(true);
+    expect(tool!.truncated).toBe(true);
+    expect(tool!.output!.startsWith('# Text Measurement Analysis\n\n## Approximate Cap Heights (pixel measurements)\n\n| Element | Cap Height | Notes |\n|---|---|---|\n| (1) Headline "Where the p99 goes" |')).toBe(true);
+    expect(tool!.output!.endsWith('| *…')).toBe(true);
+  });
+
+  test('pairs parallel z.ai calls with their outputs in order, across messages', () => {
+    const call = (file: string) => `**🌐 Z.ai Built-in Tool: analyze_image**\n\n**Input:**\n\`\`\`json\n{"imageSource":"https://x.test/${file}","prompt":"p"}\n\`\`\`\n*Executing on server...*\n`;
+    const out = (text: string) => `**Output:**\n**analyze_image_result_summary:** ${JSON.stringify([{ text: JSON.stringify(text) }])}\n`;
+    const jsonl = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: `Checking both.\n${call('a.png')}\n${call('b.png')}` }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: `${out('**A** fine')}\n   \n\n${out('B cut...')}\nDone.` }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const [turn] = parseTranscript(jsonl);
+    expect(turn!.text).toBe('Checking both.\n\nDone.');
+    expect(turn!.tools.map(t => [t.brief, t.output, t.truncated])).toEqual([['a.png', '**A** fine', undefined], ['b.png', 'B cut…', true]]);
+  });
+
+  test('leaves a plain Output heading in the text', () => {
+    const text = 'Run it.\n\n**Output:**\n**exit:** 0';
+    expect(parseTranscript(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }))[0]!.text).toBe(text);
+  });
 });
 
 test('uses Claude Code project path munging', () => {
