@@ -171,3 +171,11 @@
     transform: none !important;
   }
 }
+
+/* The kit injects `html, body { overflow-x: hidden }` below 720 px. `hidden` turns body into
+   a scroll container that never scrolls, so every `position: sticky` (the TopBar, the herdr
+   list's section headings) rode away with the page. `clip` trims the same overflow without
+   making a scroll container. `!important` because the kit's <style> lands after this file. */
+@media (max-width: 719px) {
+  html, body { overflow-x: clip !important; }
+}

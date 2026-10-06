@@ -1,7 +1,8 @@
 import { TopBar } from './header.tsx';
 import { useEffect, useState } from 'react';
 import { api, getTheme, setTheme, THEMES, useDesktop } from './app.tsx';
-import { Select } from './halaska-kit';
+import { SegmentedControl, Select } from './halaska-kit';
+import { getPaneList, setPaneList, type PaneList } from './spaces.ts';
 import type { Theme } from './app.tsx';
 import { GROUP, InstallHint, SectionTitle, Toggle, useHubSettings } from './hosts.tsx';
 import { disablePush, enablePush, pushOn } from './push.ts';
@@ -83,6 +84,34 @@ export function ThemePicker() {
   );
 }
 
+const PANE_LISTS: Record<PaneList, string> = {
+  tautan: 'Grouped by Workspace, with Needs you and Running on top',
+  herdr: 'Spaces above, Agents below, most urgent first, like herdr',
+};
+
+/** How the Pane list is drawn: tautan's Workspace groups, or herdr's Spaces and Agents. */
+function PaneListChoice() {
+  const [list, choose] = useState(getPaneList);
+  return (
+    <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2.5 px-4 lg:px-0">
+      <span className="min-w-0 flex-1 basis-48">
+        <span id="pane-list-label" className="block text-body">Pane list</span>
+        <span className="mt-px block text-caption text-muted">{PANE_LISTS[list]}</span>
+      </span>
+      <div role="group" aria-labelledby="pane-list-label" className="w-48 shrink-0">
+        <SegmentedControl
+          options={['tautan', 'herdr']}
+          value={list}
+          onChange={(v: string) => {
+            setPaneList(v as PaneList);
+            choose(v as PaneList);
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function Settings({ section }: { section?: string }) {
   const desktop = useDesktop();
   const { prefs, setPrefs, read } = useHubSettings();
@@ -133,6 +162,7 @@ export function Settings({ section }: { section?: string }) {
         <div className="px-4 lg:px-0">
           <ThemePicker />
         </div>
+        <PaneListChoice />
       </Section>
 
       <Section id="notifications" title="Notifications">

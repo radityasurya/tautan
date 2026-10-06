@@ -1,12 +1,13 @@
 import { TopBar } from './header.tsx';
 import { useEffect, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type {
   NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
 import { api, haptic, Link, navigate, opensWith, reducedMotion } from './app.tsx';
 import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus } from './icons.tsx';
-import { Chip, EmptyState, IconButton, SearchInput, SegmentedControl, Skeleton, usePal } from './halaska-kit';
+import { Chip, EmptyState, IconButton, SearchInput, Skeleton, usePal } from './halaska-kit';
+import { agentRows, getPaneList, getShowShells, rollup, setShowShells } from './spaces.ts';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
@@ -191,6 +192,7 @@ function Row({ pane, first, actions, context, compact }: {
         <span aria-hidden className="flex min-w-0 flex-1 items-baseline gap-2">
           <span className={`truncate text-[13px] ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
           <span className="shrink-0 text-caption text-muted">{pane.agent ?? 'shell'}</span>
+          {context && <span className="min-w-0 truncate text-caption text-muted/70">{context}</span>}
         </span>
       ) : (
         <span aria-hidden className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -475,7 +477,6 @@ function useLongPress(fn: () => void) {
  */
 function GroupHeader({
   label,
-  secondary,
   host,
   panes,
   open,
@@ -484,7 +485,6 @@ function GroupHeader({
   onMenu,
 }: {
   label: string;
-  secondary?: string;
   host?: string;
   panes: StatePane[];
   open: boolean;
@@ -508,7 +508,7 @@ function GroupHeader({
           compact ? 'min-h-9 py-1.5' : 'min-h-11 py-2'
         }`}
       >
-        <Chevron className={`shrink-0 text-muted ${secondary ? 'self-start mt-1.5' : ''}`} />
+        <Chevron className="shrink-0 text-muted" />
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className={`truncate font-semibold tracking-tight text-fg ${compact ? 'text-[13px]' : 'text-[15px]'}`}>{label}</span>
@@ -518,11 +518,6 @@ function GroupHeader({
               </span>
             )}
           </span>
-          {secondary && (
-            <span title={secondary} className="mt-0.5 block truncate font-mono text-caption text-muted">
-              {secondary}
-            </span>
-          )}
         </span>
         <span className="flex shrink-0 items-center gap-1">
           {tally(panes, compact ? 1 : 2).map(([s, n]) => (
@@ -566,14 +561,103 @@ function PinnedHeader({ label, count, open, compact, onToggle }: { label: string
   );
 }
 
+// ---- herdr list ----
+
+/** A small section heading. On the phone the window scrolls, so it sticks under the TopBar;
+ *  in the sidebar it sits above its section's own scroller and needs no stickiness. */
+function SectionHead({ id, label, count, compact, children }: { id: string; label: string; count?: number; compact?: boolean; children?: ReactNode }) {
+  return (
+    <div
+      className={`flex shrink-0 items-center gap-2 pr-2 pl-4 ${
+        // ponytail: 92 px is the scrolled TopBar (44) plus its search row (48); measure it if the TopBar grows.
+        compact ? 'h-9' : 'sticky top-[calc(env(safe-area-inset-top)+92px)] z-20 h-10 bg-bg/92 backdrop-blur-md'
+      }`}
+    >
+      <h2 id={id} className="text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">
+        {label}
+      </h2>
+      {count !== undefined && <span className="text-[11px] font-medium tabular-nums text-muted/70">{count}</span>}
+      <span className="flex-1" />
+      {children}
+    </div>
+  );
+}
+
+/**
+ * One Space in the herdr list, after herdr's own `[ui.sidebar.spaces]` row: the rolled-up
+ * state icon and the label, then the Host when there are several, and the Agent count. A tap
+ * selects it and filters Agents; ⋯ and long-press open the Workspace menu.
+ */
+function SpaceRow({
+  label,
+  host,
+  panes,
+  selected,
+  offline,
+  compact,
+  onSelect,
+  onMenu,
+}: {
+  label: string;
+  host?: string;
+  panes: StatePane[];
+  selected: boolean;
+  offline?: boolean;
+  compact?: boolean;
+  onSelect: () => void;
+  onMenu?: () => void;
+}) {
+  const press = useLongPress(() => onMenu?.());
+  const top = rollup(panes, unseen);
+  const agents = panes.filter((p) => p.agent).length;
+  const others = panes.length - agents;
+  const count = offline ? 'offline' : agents ? `${agents}` : others ? `${others} shell${others === 1 ? '' : 's'}` : '';
+  const state = top ? `${top.status}${top.seen ? '' : ', unseen'}` : 'no Agents';
+  return (
+    <li
+      className={`group/space flex items-center ${onMenu ? 'pr-1.5' : 'pr-4'} ${
+        selected ? `${compact ? 'bg-bg' : 'bg-surface'} shadow-[inset_2px_0_0_var(--accent)]` : compact ? 'hover:bg-bg' : 'hover:bg-surface'
+      }`}
+    >
+      <button
+        type="button"
+        aria-pressed={selected}
+        aria-label={[label, host, state, offline ? 'offline' : `${agents} Agent${agents === 1 ? '' : 's'}`].filter(Boolean).join(', ')}
+        onClick={onSelect}
+        {...(onMenu ? press : {})}
+        className={`flex min-w-0 flex-1 items-center gap-2.5 self-stretch pl-4 text-left [-webkit-touch-callout:none] ${RING} ${
+          compact ? 'min-h-9 py-1' : 'min-h-11 py-2'
+        }`}
+      >
+        <Dot status={top?.status ?? 'idle'} seen={top?.seen ?? true} />
+        <span aria-hidden className="flex min-w-0 flex-1 items-baseline gap-1.5">
+          <span className={`truncate text-fg ${compact ? 'text-[13px]' : 'text-[15px]'} ${selected ? 'font-semibold' : ''}`}>{label}</span>
+          {host && <span className="max-w-[45%] shrink-0 truncate text-caption text-muted">{host}</span>}
+        </span>
+        <span aria-hidden className={`shrink-0 text-[12px] tabular-nums ${offline ? 'text-danger' : agents ? 'text-muted' : 'text-muted/70'}`}>
+          {count}
+        </span>
+      </button>
+      {onMenu && (
+        <button
+          type="button"
+          aria-label={`${label} actions`}
+          onClick={onMenu}
+          className={`press ml-0.5 flex shrink-0 items-center justify-center rounded-chip text-muted transition-opacity hover:bg-fg/6 hover:text-fg [@media(hover:hover)]:opacity-60 group-hover/space:opacity-100 focus-visible:opacity-100 ${RING} ${
+            compact ? 'size-8' : 'size-10'
+          }`}
+        >
+          <More size={18} />
+        </button>
+      )}
+    </li>
+  );
+}
+
 // ---- screen ----
 
 const COLLAPSED = 'tautan.collapsed';
-const GROUPING = 'tautan.grouping';
-type Grouping = 'workspace' | 'folder';
 const readCollapsed = (): string[] => JSON.parse(localStorage.getItem(COLLAPSED) ?? '[]') as string[];
-const readGrouping = (): Grouping => (localStorage.getItem(GROUPING) === 'folder' ? 'folder' : 'workspace');
-const folderFoldKey = (host: string, path: string) => `@folder/${encodeURIComponent(host)}/${encodeURIComponent(path)}`;
 /** Fold keys for the two pinned sections. */
 const NEEDS = '@needs';
 const RUNNING = '@running';
@@ -582,12 +666,18 @@ const RUNNING = '@running';
 // ponytail: module-level so the Host filter survives the sidebar toggle and a resize across
 // `lg`; it resets on reload. Move it to the URL or localStorage if that ever matters.
 let hostFilter: string | null = null;
+/** The selected Space in the herdr list, kept the same way and for the same reason. */
+let spaceFilter: string | null = null;
 
 export function Home({ state, compact }: { state: State | null; compact?: boolean }) {
   const [host, setHostState] = useState<string | null>(hostFilter);
   const setHost = (h: string | null) => { hostFilter = h; setHostState(h); };
   const [collapsed, setCollapsed] = useState(readCollapsed);
-  const [grouping, setGrouping] = useState(readGrouping);
+  // Read once per mount: Settings and this list are never on screen together.
+  const [layout] = useState(getPaneList);
+  const [space, setSpaceState] = useState<string | null>(spaceFilter);
+  const setSpace = (k: string | null) => { spaceFilter = k; setSpaceState(k); };
+  const [shells, setShells] = useState(getShowShells);
   const [newWorkspace, setNewWorkspace] = useState(() => opensWith('newworkspace'));
   const [newTab, setNewTab] = useState<StateWorkspace | null>(null);
   const [menu, setMenu] = useState<StateWorkspace | null>(null);
@@ -610,10 +700,6 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   };
   const toggle = (key: string) =>
     write(collapsed.includes(key) ? collapsed.filter((k) => k !== key) : [...collapsed, key]);
-  const groupBy = (next: Grouping) => {
-    setGrouping(next);
-    localStorage.setItem(GROUPING, next);
-  };
 
   useEffect(() => {
     const el = created && sections.current.get(created);
@@ -661,31 +747,6 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
     // still says what it holds, and the group menu stays reachable. While searching, an
     // empty section is noise instead, so it goes.
     .filter((g) => g.panes.length > 0 || (!needle && g.all.length > 0) || g.host?.online === false || g.w.key === created);
-  const folderGroups = (() => {
-    const byFolder = new Map<
-      string,
-      { key: string; path: string; host?: State['hosts'][number]; all: StatePane[]; panes: StatePane[] }
-    >();
-    for (const pane of state?.panes ?? []) {
-      if (!visible(pane.muxKey)) continue;
-      const hostId = hostOf(pane.muxKey) ?? '';
-      const path = pane.cwd ?? '';
-      const key = folderFoldKey(hostId, path);
-      const group = byFolder.get(key) ?? {
-        key,
-        path,
-        host: state?.hosts.find((h) => h.id === hostId),
-        all: [],
-        panes: [],
-      };
-      group.all.push(pane);
-      if (!pinned.has(pane.key) && hit(pane)) group.panes.push(pane);
-      byFolder.set(key, group);
-    }
-    return [...byFolder.values()]
-      .map((group) => ({ ...group, all: group.all.sort(comparePanes), panes: group.panes.sort(comparePanes) }))
-      .filter((group) => group.panes.length > 0 || (!needle && group.all.length > 0));
-  })();
   /** A search must show what it found, so a folded section opens while the needle is set. */
   const openSection = (key: string) => !!needle || !collapsed.includes(key);
 
@@ -712,30 +773,18 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
     setCreated(workspaceKey);
   };
   const counts = state && `${state.hosts.length} host${state.hosts.length === 1 ? '' : 's'} · ${state.panes.length} panes`;
-  // Collapse all folds the pinned sections with the active grouping; the two only exist
-  // when they hold rows, which is exactly when folding them means something.
-  const groupKeys = grouping === 'workspace' ? groups.map((g) => g.w.key) : folderGroups.map((g) => g.key);
-  const keys = [...groupKeys, ...(needsYou.length ? [NEEDS] : []), ...(running.length ? [RUNNING] : [])];
+  // Collapse all folds the pinned sections with the Workspace groups; the two only exist
+  // when they hold rows, which is exactly when folding them means something. The herdr
+  // list folds nothing.
+  const keys = layout === 'herdr' ? [] : [...groups.map((g) => g.w.key), ...(needsYou.length ? [NEEDS] : []), ...(running.length ? [RUNNING] : [])];
   const allShut = keys.length > 0 && keys.every((k) => collapsed.includes(k));
   const rowActions = (p: StatePane): RowActions | undefined =>
     writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
   const listed = state && (needsYou.length > 0 || running.length > 0 || groups.length > 0);
-  const groupToggle = (
-    <div role="group" aria-label="Group panes by" className={`flex justify-end px-4 ${compact ? 'pt-1.5 pb-2.5' : 'pt-3'}`}>
-      <div className="w-52">
-        <SegmentedControl
-          options={['Workspace', 'Folder']}
-          value={grouping === 'workspace' ? 'Workspace' : 'Folder'}
-          onChange={(value: string) => groupBy(value === 'Folder' ? 'folder' : 'workspace')}
-        />
-      </div>
-    </div>
-  );
-
-  // The top: title, search, Host chips. In the sidebar it holds the grouping too, and stays
-  // put while only the list under it scrolls; on the phone the window scrolls and the
-  // TopBar is sticky, so neither part may be wrapped there.
+  // The top: title, search, Host chips. In the sidebar it stays put while only the list
+  // under it scrolls; on the phone the window scrolls and the TopBar is sticky, so neither
+  // part may be wrapped there.
   const top = (
     <>
       <TopBar
@@ -786,7 +835,6 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
           ))}
         </div>
       )}
-      {compact && listed && groupToggle}
     </>
   );
 
@@ -836,7 +884,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                         pane={p}
                         first={i === 0 || needsYou[i - 1]!.status === 'blocked'}
                         actions={rowActions(p)}
-                        context={wsLabel(p)}
+                        context={compact ? undefined : wsLabel(p)}
                         compact={compact}
                       />
                     ),
@@ -852,17 +900,14 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
               {openSection(RUNNING) && (
                 <ul>
                   {running.map((p, i) => (
-                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} compact={compact} />
+                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={compact ? undefined : wsLabel(p)} compact={compact} />
                   ))}
                 </ul>
               )}
             </section>
           )}
 
-          {!compact && groupToggle}
-
-          {grouping === 'workspace'
-            ? groups.map(({ w, host: h, panes, all }) => {
+          {groups.map(({ w, host: h, panes, all }) => {
                 const shut = collapsed.includes(w.key);
                 return (
                   <section
@@ -907,39 +952,115 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                     )}
                   </section>
                 );
-              })
-            : folderGroups.map(({ key, path, host: h, panes, all }) => {
-                const shut = collapsed.includes(key);
-                return (
-                  <section key={key}>
-                    <GroupHeader
-                      label={basename(path) || path || 'Unknown folder'}
-                      secondary={path || 'No directory reported'}
-                      host={h?.label}
-                      panes={all}
-                      compact={compact}
-                      open={!shut}
-                      onToggle={() => toggle(key)}
-                    />
-                    {!shut && (
-                      <ul>
-                        {panes.map((p, i) => (
-                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} compact={compact} />
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-                );
-              })}
+          })}
         </>
       )}
+    </>
+  );
+
+  // ---- the herdr list: Spaces over Agents ----
+  const herdr = layout === 'herdr' && !!state && state.workspaces.some((w) => visible(w.muxKey));
+  const many = (state?.hosts.length ?? 0) > 1;
+  const spaces = (state?.workspaces ?? [])
+    .filter((w) => visible(w.muxKey))
+    .map((w) => ({ w, all: panesOf(w) }))
+    .filter(({ w, all }) => !needle || w.key === space || w.label.toLowerCase().includes(needle) || all.some(hit));
+  const picked = spaces.find((s) => s.w.key === space)?.w;
+  const scope = (state?.panes ?? []).filter(
+    (p) => visible(p.muxKey) && (!picked || (p.muxKey === picked.muxKey && p.workspaceId === picked.id)),
+  );
+  const agents = agentRows(scope.filter(hit), { shells, unseen });
+  const shellCount = scope.filter((p) => !p.agent).length;
+  const toggleShells = () => {
+    setShells(!shells);
+    setShowShells(!shells);
+  };
+
+  const herdrBody = herdr && (
+    <>
+      <section
+        aria-labelledby="spaces-title"
+        className={compact ? 'flex max-h-[40%] shrink-0 flex-col border-b border-border pt-1' : 'pt-2'}
+      >
+        <SectionHead id="spaces-title" label="Spaces" count={spaces.length} compact={compact} />
+        <ul className={compact ? 'min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain pb-1.5' : 'pb-2'}>
+          <SpaceRow
+            label="All Spaces"
+            panes={(state?.panes ?? []).filter((p) => visible(p.muxKey))}
+            selected={!picked}
+            compact={compact}
+            onSelect={() => setSpace(null)}
+          />
+          {spaces.map(({ w, all }) => {
+            const h = state?.hosts.find((x) => x.id === hostOf(w.muxKey));
+            return (
+              <SpaceRow
+                key={w.key}
+                label={w.label}
+                host={many ? h?.label : undefined}
+                panes={all}
+                offline={h?.online === false}
+                selected={picked?.key === w.key}
+                compact={compact}
+                onSelect={() => setSpace(picked?.key === w.key ? null : w.key)}
+                onMenu={() => setMenu(w)}
+              />
+            );
+          })}
+        </ul>
+      </section>
+      <section aria-labelledby="agents-title" className={compact ? 'flex min-h-0 flex-1 flex-col pt-1' : 'pt-2'}>
+        <SectionHead id="agents-title" label={picked ? `Agents · ${picked.label}` : 'Agents'} count={agents.length} compact={compact}>
+          {(shellCount > 0 || shells) && (
+            <button
+              type="button"
+              aria-pressed={shells}
+              onClick={toggleShells}
+              className={`press h-7 shrink-0 rounded-chip px-2 text-[12px] font-medium text-accent hover:bg-fg/6 ${RING}`}
+            >
+              {shells ? 'Hide shells' : 'Show shells'}
+            </button>
+          )}
+        </SectionHead>
+        <ul className={compact ? 'min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-4' : ''}>
+          {agents.length === 0 ? (
+            <li className="px-4 py-3 text-caption text-muted">
+              {needle
+                ? `Nothing matches “${q.trim()}”`
+                : picked
+                  ? 'No Agents running in this Space'
+                  : 'No Agents running'}
+              {!needle && !shells && shellCount > 0 && (
+                <span className="text-muted/70"> · {shellCount} shell{shellCount === 1 ? '' : 's'} hidden</span>
+              )}
+            </li>
+          ) : (
+            agents.map((p, i) =>
+              p.status === 'blocked' ? (
+                <NeedsYouCard key={p.key} pane={p} where={whereOf(p)} compact={compact} />
+              ) : (
+                <Row
+                  key={p.key}
+                  pane={p}
+                  first={i === 0 || agents[i - 1]!.status === 'blocked'}
+                  actions={rowActions(p)}
+                  context={picked ? undefined : wsLabel(p)}
+                  compact={compact}
+                />
+              ),
+            )
+          )}
+        </ul>
+      </section>
     </>
   );
 
   return (
     <div className={compact ? 'flex h-full min-h-0 flex-col' : 'mx-auto max-w-2xl pb-28'}>
       {compact ? <div className="shrink-0 border-b border-border">{top}</div> : top}
-      {compact ? (
+      {herdr ? (
+        herdrBody
+      ) : compact ? (
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-4">{list}</div>
       ) : (
         list
