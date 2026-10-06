@@ -3,7 +3,7 @@ import type { Status } from '../shared/types.ts';
 import { Link } from './app.tsx';
 import { LensSwitch, type LensMode } from './chat.tsx';
 import { Dot, statusText } from './home.tsx';
-import { Back, ChatLens, ChevronDown, More, ScreenLens, Speaker } from './icons.tsx';
+import { Back, ChatLens, ChevronDown, More, ScreenLens } from './icons.tsx';
 import { keyGlyph } from './keys.ts';
 import { tokens } from './halaska-kit';
 
@@ -95,10 +95,11 @@ export interface QuickAnswer {
 
 /**
  * The Pane's header, one component at both widths (docs/WAVES.md 10.2, variants A and C).
- * Phone: back · title over `● status · agent · tab ⌄` (one Switch trigger) · lens icons · ⋯.
- * At `lg`: the `host / workspace / tab` path over the title, the Status chip, the labelled
- * lens and Read aloud, then ⋯. Blocked draws a 2 px warn line under the bar; the phone swaps
- * the lens for Review, the desktop shows the command with Yes and No.
+ * Phone: back · title over `● status · agent · host / workspace / tab ⌄` (one Switch trigger;
+ * the path gives way first) · lens icons · ⋯. At `lg`: the title over the small muted path,
+ * the Status chip, the labelled lens, then ⋯. Read aloud lives in ⋯ at both widths. Blocked
+ * draws a 2 px warn line under the bar; the phone swaps the lens for Review, the desktop
+ * shows the command with Yes and No.
  */
 export function PaneHeader({
   desktop,
@@ -106,11 +107,9 @@ export function PaneHeader({
   path,
   status,
   agent,
-  tab,
   lens,
   onLens,
   onSwitch,
-  onSpeak,
   onMore,
   onReview,
   reviewReady,
@@ -121,12 +120,10 @@ export function PaneHeader({
   path: (string | undefined)[];
   status: Status;
   agent?: string;
-  tab?: string;
   lens: LensMode;
   /** Absent for a shell Pane: there is no Chat to switch to. */
   onLens?: (mode: LensMode) => void;
   onSwitch: () => void;
-  onSpeak?: () => void;
   onMore: () => void;
   onReview: () => void;
   /** The blocked card has its Explain; until then Review has nothing to scroll to. */
@@ -153,6 +150,7 @@ export function PaneHeader({
       <More size={desktop ? 18 : 20} />
     </button>
   );
+  const parts = path.filter(Boolean);
   const statusWord = (
     <span aria-live="polite" className={`shrink-0 font-medium ${statusText[status]}`}>
       {word(status)}
@@ -168,16 +166,16 @@ export function PaneHeader({
       {desktop ? (
         <div className="flex h-16 items-center gap-3 pr-4 pl-2">
           {back}
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <p className="truncate text-[12px] text-muted">
-              {path.filter(Boolean).map((part, i) => (
+          <div className="flex min-w-0 flex-1 flex-col">
+            <h1 className="truncate text-[17px] leading-[22px] font-semibold tracking-tight">{title}</h1>
+            <p className="truncate text-[11px] leading-4 text-muted">
+              {parts.map((part, i) => (
                 <span key={i}>
-                  {i > 0 && <span aria-hidden className="text-border"> / </span>}
+                  {i > 0 && <span aria-hidden className="opacity-50"> / </span>}
                   {part}
                 </span>
               ))}
             </p>
-            <h1 className="truncate text-[17px] font-semibold tracking-tight">{title}</h1>
           </div>
           <button
             type="button"
@@ -234,27 +232,15 @@ export function PaneHeader({
               )}
             </>
           ) : (
-            <>
-              {onLens && <LensSwitch value={lens} onChange={onLens} />}
-              {onSpeak && (
-                <button
-                  type="button"
-                  aria-label="Read aloud"
-                  onClick={onSpeak}
-                  className="press flex size-9 shrink-0 items-center justify-center text-muted"
-                >
-                  <Speaker size={18} />
-                </button>
-              )}
-            </>
+            onLens && <LensSwitch value={lens} onChange={onLens} />
           )}
           {more}
         </div>
       ) : (
         <div className="flex h-14 items-center gap-1 pr-2 pl-1">
           {back}
-          {/* One trigger: the title and its Status line open Switch. The Status word never
-              truncates; the agent and the Tab give way first. */}
+          {/* One trigger: the title and its Status line open Switch. The Status word and the
+              agent never truncate; the path gives way first. */}
           <h1 className="min-w-0 flex-1">
             <button
               type="button"
@@ -266,10 +252,8 @@ export function PaneHeader({
               <span className="flex w-full min-w-0 items-center gap-1.5 text-[12px] font-normal text-muted">
                 <Dot status={status} size={7} />
                 {statusWord}
-                <span className="truncate">
-                  · {agent ?? 'shell'}
-                  {tab && ` · ${tab}`}
-                </span>
+                <span className="shrink-0">· {agent ?? 'shell'}</span>
+                {parts.length > 0 && <span className="min-w-0 truncate">· {parts.join(' / ')}</span>}
                 <span aria-hidden className="flex shrink-0">
                   <ChevronDown />
                 </span>

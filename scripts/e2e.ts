@@ -137,7 +137,8 @@ try {
     await phone.getByRole('radio', { name: /yes/i }).first().click();
     await print(main, box.map(l => l.includes('echo') ? 'echo e2e-v2' : l)); // the box moves on
     await report(main, 'blocked');
-    await phone.getByRole('button', { name: 'Send', exact: true }).click();
+    // The card's Send comes first; the composer's own Send now always stays in place, dim.
+    await phone.getByRole('button', { name: 'Send', exact: true }).first().click();
     await phone.getByText('The prompt changed. Read it again before you answer.').waitFor({ timeout: 8_000 });
     await phone.getByRole('button', { name: 'Re-read' }).click();
     await phone.getByText('needs your call').waitFor({ timeout: 8_000 });

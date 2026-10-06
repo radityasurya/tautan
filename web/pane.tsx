@@ -340,14 +340,15 @@ function TabStripButton({
         onOpen();
       }}
       onContextMenu={onMenu ? (e) => e.preventDefault() : undefined}
-      className={`press flex h-10 shrink-0 items-center gap-1.5 px-2.5 text-[13px] whitespace-nowrap ${
+      title={label}
+      className={`press flex h-10 max-w-[140px] shrink-0 items-center gap-1.5 px-2.5 text-[13px] whitespace-nowrap ${
         onMenu ? '[-webkit-touch-callout:none]' : ''
       } ${selected ? 'font-semibold text-fg' : 'font-medium text-muted'}`}
       {...(onMenu ? hold.press : {})}
     >
       <Dot status={status} seen={status === 'idle' || status === 'unknown'} size={6} />
-      {label}
-      {paneCount > 1 && <span className="ml-0.5 font-mono text-[10px] text-muted">{paneCount}</span>}
+      <span className="min-w-0 truncate">{label}</span>
+      {paneCount > 1 && <span className="ml-0.5 shrink-0 font-mono text-[10px] text-muted">{paneCount}</span>}
     </button>
   );
 }
@@ -377,7 +378,7 @@ function DesktopTab({
     <div
       role="presentation"
       onContextMenu={onMenu ? (e) => { e.preventDefault(); onMenu(); } : undefined}
-      className={`group flex h-[38px] shrink-0 items-center rounded-t-[10px] ${
+      className={`group flex h-[38px] max-w-[200px] shrink-0 items-center rounded-t-[10px] ${
         selected ? 'bg-bg text-fg shadow-[0_1px_0_var(--bg),inset_0_2px_0_var(--accent)]' : 'text-muted hover:bg-bg/50'
       }`}
     >
@@ -386,20 +387,21 @@ function DesktopTab({
         role="tab"
         aria-selected={selected}
         onClick={onOpen}
-        className={`flex h-full items-center gap-2 text-[13px] whitespace-nowrap ${onClose ? 'pr-1.5 pl-3.5' : 'px-3.5'} ${
+        title={label}
+        className={`flex h-full min-w-0 items-center gap-2 text-[13px] whitespace-nowrap ${onClose ? 'pr-1.5 pl-3.5' : 'px-3.5'} ${
           selected ? 'font-medium' : ''
         }`}
       >
         <Dot status={status} seen={status === 'idle' || status === 'unknown'} size={7} />
-        {label}
-        {paneCount > 1 && <span className="font-mono text-[10px] text-muted">{paneCount}</span>}
+        <span className="min-w-0 truncate">{label}</span>
+        {paneCount > 1 && <span className="shrink-0 font-mono text-[10px] text-muted">{paneCount}</span>}
       </button>
       {onClose && (
         <button
           type="button"
           aria-label={`Close ${label}`}
           onClick={onClose}
-          className={`mr-2.5 flex size-5 items-center justify-center rounded-[5px] text-muted hover:bg-surface hover:text-fg focus-visible:opacity-100 ${
+          className={`mr-2.5 flex size-5 shrink-0 items-center justify-center rounded-[5px] text-muted hover:bg-surface hover:text-fg focus-visible:opacity-100 ${
             selected ? '' : 'opacity-0 group-hover:opacity-100'
           }`}
         >
@@ -480,16 +482,17 @@ function PaneChips({ panes, paneKey, className }: { panes: StatePane[]; paneKey:
           key={p.key}
           type="button"
           aria-current={p.key === paneKey ? 'true' : undefined}
+          title={p.title}
           onClick={() => {
             haptic();
             navigate(`#/pane/${encodeURIComponent(p.key)}`);
           }}
-          className={`press flex h-7 shrink-0 items-center gap-1.5 rounded-chip px-2.5 text-[12px] whitespace-nowrap ${
+          className={`press flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-chip px-2.5 text-[12px] whitespace-nowrap ${
             p.key === paneKey ? 'bg-surface font-medium text-fg' : 'text-muted'
           }`}
         >
           <Dot status={p.status} size={6} seen={p.key !== paneKey} />
-          {p.agent ?? 'shell'}
+          <span className="min-w-0 truncate">{p.agent ?? 'shell'}</span>
         </button>
       ))}
     </div>
@@ -928,14 +931,12 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         path={[host?.label, ws?.label, active?.label]}
         status={status}
         agent={agent}
-        tab={active?.label}
         lens={lens}
         onLens={agent ? setLens : undefined}
         onSwitch={() => {
           setSwitchTabs(false);
           setShowSwitch(true);
         }}
-        onSpeak={agent ? speak : undefined}
         onMore={() => setShowMore(true)}
         onReview={review}
         reviewReady={!!explain}
@@ -1061,7 +1062,17 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
       )}
 
       {agent && lens === 'chat' ? (
-        <Chat key={paneKey} paneKey={paneKey} revision={pane?.revision ?? 0} onUnavailable={showScreen} />
+        <Chat
+          key={paneKey}
+          paneKey={paneKey}
+          revision={pane?.revision ?? 0}
+          onUnavailable={showScreen}
+          agent={agent}
+          status={status}
+          lines={current ? lines : null}
+          profile={profile}
+          onReview={explain ? review : undefined}
+        />
       ) : (
         <div className="relative min-h-0 flex-1">
           <div
@@ -1243,8 +1254,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         onClose={() => setShowMore(false)}
         head={<ThemePicker />}
         items={[
-          // The phone header has no room for it; at `lg` it sits in the header.
-          ...(agent && !desktop ? [{ label: 'Read aloud', onClick: speak }] : []),
+          ...(agent ? [{ label: 'Read aloud', onClick: speak }] : []),
           kind === 'shell'
             ? {
                 // Three states for a shell: auto, then the two explicit choices.

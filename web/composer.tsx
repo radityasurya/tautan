@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { Affordance, InputBody, Span, StatePane } from '../shared/types.ts';
 import { hintPills } from './affordances.tsx';
 import { haptic, post, reducedMotion } from './app.tsx';
@@ -8,6 +8,7 @@ import { capInput, modified, MODIFIERS, trayGroups, type Cap, type Modifier } fr
 import { CYCLE_MODE_KEYS, toolbarFromScreen, type Profile } from './profiles.ts';
 import { quickReplies, type Pill } from './replies.ts';
 import { deliver, dropPending, holdPending, trackPending } from './pending.ts';
+import { showingSubagent, subscribeShowing } from './subagents.ts';
 
 /** "Wider than the viewport" is a fade, not a scrollbar. The grid and the Diff screen reuse it. */
 export const FADE = 'linear-gradient(to right,#000 calc(100% - 24px),transparent)';
@@ -203,16 +204,26 @@ function ContextLeft({ left }: { left: number }) {
   );
 }
 
-/** A desktop shortcut cap, the header's `kbd` look. */
+/** A desktop shortcut cap, the header's `kbd` look, one step smaller for the legend. */
 const Kbd = ({ children }: { children: ReactNode }) => (
-  <kbd className="rounded-[4px] border border-border px-[5px] font-mono text-[10.5px] text-muted">{children}</kbd>
+  <kbd className="rounded-[3px] border border-border px-1 font-mono text-[10px] leading-[14px]">{children}</kbd>
 );
+
+/** Every composer control: a surface fill and `fg` ink on hover (Tailwind's `hover:` only
+ *  matches a pointer that hovers, so a phone never sticks on it), and a visible focus ring. */
+const RING =
+  'outline-none transition-[transform,background-color,color,border-color] duration-150 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+const HOVER = `${RING} hover:bg-surface hover:text-fg`;
+
+/** The hairline between toolbar groups. */
+const Divider = () => <span aria-hidden className="mx-1 h-[18px] w-px shrink-0 bg-border" />;
 
 /**
  * The dock under the Screen, at both widths. Two toggles, Suggestions and Keys, each open
  * their own tray above the input; both open stack them, both closed leave the input alone.
- * Phone: the toggles sit left of the input. Desktop (`lg`): they lead the toolbar of a
- * bordered box that reads mode, model and context off the Screen. A blocked prompt keeps its
+ * Send (Run for a shell) is always the right-most control and stands alone; everything else
+ * sits to its left, in the toolbar under the field: the toggles, ^C while working, attach,
+ * mic. Desktop (`lg`) adds `/`, `@`, and mode, model and context read off the Screen. A blocked prompt keeps its
  * card on top and opens Suggestions; a Pane with no Agent gets a `$` prompt, and its recent
  * commands are its suggestions.
  */
@@ -248,6 +259,7 @@ export function Composer({
   const agent = pane?.agent;
   const status = pane?.status ?? 'unknown';
   const kind = agent ? 'agent' : 'shell';
+  const subagentOpen = useSyncExternalStore(subscribeShowing, () => showingSubagent(paneKey)) !== undefined;
 
   const [trays, setTrays] = useState(() => ({
     agent: { suggest: readTray('agent', 'suggest'), keys: readTray('agent', 'keys') },
@@ -649,8 +661,8 @@ export function Composer({
   // The two toggles: accent tint while open, a plain outline while closed.
   const toggle = (on: boolean) =>
     `press flex shrink-0 items-center justify-center gap-1.5 rounded-composer border font-medium ${
-      desktop ? 'h-8 px-2.5 text-[12px]' : 'h-11 min-w-11 px-2.5 text-[13px]'
-    } ${on ? 'border-accent/45 bg-accent/12 text-accent' : 'border-border bg-bg text-fg'}`;
+      desktop ? 'h-8 px-2.5 text-[12px]' : 'h-9 min-w-10 px-2.5 text-[13px]'
+    } ${on ? `${RING} border-accent/45 bg-accent/12 text-accent hover:bg-accent/20` : `${HOVER} border-border bg-bg text-fg`}`;
   const suggestToggle = (
     <button
       type="button"
@@ -761,15 +773,16 @@ export function Composer({
     </div>
   );
 
-  // While the Agent works, ^C stays one tap away next to Send, whatever the trays show.
+  // While the Agent works, ^C stays one tap away beside the toggles, whatever the trays
+  // show — never beside Send, where a slip would interrupt instead of reply.
   const stopButton = status === 'working' && (
     <button
       type="button"
       aria-label="Interrupt, control C"
       title="Sends ^C"
       onClick={() => keys(['ctrl+c'])}
-      className={`press flex shrink-0 items-center justify-center rounded-chip border border-border font-mono text-danger ${
-        desktop ? 'h-8 px-2 text-[11px]' : 'size-9 text-[12px]'
+      className={`press flex shrink-0 items-center justify-center border border-danger/40 font-mono text-danger ${RING} hover:border-danger/60 hover:bg-danger/10 ${
+        desktop ? 'h-8 rounded-composer px-2.5 text-[11px]' : 'h-9 rounded-composer px-2.5 text-[12px]'
       }`}
     >
       ^C
@@ -796,22 +809,34 @@ export function Composer({
       type="button"
       aria-label="Attach"
       onClick={() => picker.current?.click()}
-      className={`press flex shrink-0 items-center justify-center rounded-chip text-muted hover:text-fg ${desktop ? 'size-8' : 'size-9'}`}
+      className={`press flex shrink-0 items-center justify-center rounded-chip text-muted ${HOVER} ${desktop ? 'size-8' : 'size-9'}`}
     >
       <Attach size={desktop ? 17 : 18} />
     </button>
   );
-  const sendButton = (
+  // The one control on the right. Dim, not gone, while the field is empty, so it never moves.
+  const sendLook = `press flex shrink-0 items-center justify-center rounded-chip ${RING} ${
+    hasText ? 'bg-accent text-bg hover:bg-accent/85' : 'bg-surface text-muted opacity-60'
+  }`;
+  const sendButton = agent || !desktop ? (
     <button
       type="button"
       onClick={send}
       disabled={!hasText}
       aria-label={agent ? 'Send' : 'Run'}
-      className={`press flex shrink-0 items-center justify-center rounded-chip ${desktop ? 'size-8' : 'size-9'} ${
-        hasText ? 'bg-accent text-bg' : 'bg-surface text-muted'
-      }`}
+      title={desktop ? undefined : agent ? 'Send' : 'Run'}
+      className={`${sendLook} ${desktop ? 'size-8' : 'size-9'}`}
     >
       <Send size={desktop ? 17 : 18} />
+    </button>
+  ) : (
+    <button
+      type="button"
+      onClick={send}
+      disabled={!hasText}
+      className={`${sendLook} h-8 gap-1.5 px-3 text-[12px] ${hasText ? 'font-medium' : ''}`}
+    >
+      Run <kbd className="font-mono text-[10.5px] opacity-70">↵</kbd>
     </button>
   );
   const micButton = canDictate && (
@@ -820,19 +845,21 @@ export function Composer({
       onClick={dictate}
       aria-label={listening ? 'Done dictating' : 'Dictate'}
       aria-pressed={listening}
-      className={`press flex shrink-0 items-center justify-center rounded-chip ${
-        desktop ? `size-8 ${listening ? 'text-accent' : 'text-muted hover:text-fg'}` : 'size-9 bg-accent text-bg'
+      className={`press flex shrink-0 items-center justify-center rounded-chip ${desktop ? 'size-8' : 'size-9'} ${
+        listening ? `${RING} text-accent hover:bg-surface` : `${HOVER} text-muted`
       }`}
     >
       <Mic size={desktop ? 17 : 18} />
     </button>
   );
 
+  // A subagent's conversation is on screen, but a send always types into the Pane.
   const placeholder = armed
     ? desktop ? `${armed} + the next key or letter` : `${armed} + next key`
     : agent
     ? explain
       ? desktop ? `Or tell ${agent} what to do instead` : 'Or type an answer'
+      : subagentOpen ? desktop ? 'Reply goes to the main Agent' : 'Reply to main Agent…'
       : desktop ? `Reply to ${Agent} — / for commands, @ for files` : `Reply to ${Agent}…`
     : 'Type a command';
   const textarea = (
@@ -881,25 +908,29 @@ export function Composer({
     </span>
   );
 
-  const box = desktop ? (
+  // One box at both widths: the field on top, the toolbar under it with Send alone at the
+  // right end. The phone gives the toolbar its own line rather than squeezing six controls
+  // beside the field, which left 60 px to type into while ^C showed.
+  const box = (
     <div className="flex flex-col rounded-card border border-border bg-bg focus-within:border-accent/60">
-      <div className="flex gap-2.5 px-3 pt-3 pb-1.5">
+      <div className={`flex ${desktop ? 'gap-2.5 px-3 pt-3 pb-1.5' : 'gap-2 px-3 pt-1'}`}>
         {glyph}
         {textarea}
       </div>
-      <div role="toolbar" aria-label="Composer" className="flex flex-wrap items-center gap-1.5 px-2 pt-1.5 pb-2">
+      <div role="toolbar" aria-label="Composer" className={`flex items-center gap-1 ${desktop ? 'flex-wrap px-2 pt-1 pb-2' : 'px-1 pb-1'}`}>
         {suggestToggle}
         {keysToggle}
-        <span aria-hidden className="mx-1 h-[18px] w-px shrink-0 bg-border" />
+        {stopButton}
+        <Divider />
         {attachButton}
-        {agent && (
+        {agent && desktop && (
           <>
             <button
               type="button"
               aria-label="Type /"
               title="Types / — the Agent shows its commands"
               onClick={() => typeAtCaret('/')}
-              className="press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[15px] text-muted hover:text-fg"
+              className={`press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[15px] text-muted ${HOVER}`}
             >
               /
             </button>
@@ -908,61 +939,47 @@ export function Composer({
               aria-label="Type @"
               title="Types @ — the Agent offers files"
               onClick={() => typeAtCaret('@')}
-              className="press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[14px] text-muted hover:text-fg"
+              className={`press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[14px] text-muted ${HOVER}`}
             >
               @
             </button>
           </>
         )}
+        {micButton && (
+          <>
+            <Divider />
+            {micButton}
+          </>
+        )}
+        {desktop && agent && (toolbar.mode || toolbar.model || toolbar.context !== undefined) && (
+          <>
+            <Divider />
+            {/* Read off the Screen, so muted: they report, they are not the work. */}
+            <div className="flex min-w-0 items-center gap-1">
+              {toolbar.mode && (
+                // The chip follows the Screen: the tap only sends the key, the next Screen
+                // says which mode the Agent landed in.
+                <button
+                  type="button"
+                  aria-label={`Mode: ${toolbar.mode}. Send shift+tab to cycle`}
+                  onClick={() => keys(CYCLE_MODE_KEYS)}
+                  className={`press flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-2 text-[12px] text-muted ${HOVER}`}
+                >
+                  ⏵⏵ {toolbar.mode}
+                  <kbd className="rounded-[4px] border border-border px-[5px] font-mono text-[10.5px] font-normal">⇧⇥</kbd>
+                </button>
+              )}
+              {toolbar.model && (
+                <span title="Model, from the Screen" className="shrink-0 px-1.5 text-[12px] text-muted">
+                  {toolbar.model}
+                </span>
+              )}
+              {toolbar.context !== undefined && <ContextLeft left={toolbar.context} />}
+            </div>
+          </>
+        )}
         <span className="flex-1" />
-        {agent && toolbar.mode && (
-          // The chip follows the Screen: the tap only sends the key, the next Screen says
-          // which mode the Agent landed in.
-          <button
-            type="button"
-            aria-label={`Mode: ${toolbar.mode}. Send shift+tab to cycle`}
-            onClick={() => keys(CYCLE_MODE_KEYS)}
-            className="press flex h-7 shrink-0 items-center gap-1.5 rounded-chip bg-accent/12 px-2.5 text-[12px] font-medium text-accent"
-          >
-            ⏵⏵ {toolbar.mode}
-            <kbd className="rounded-[4px] border border-accent/35 px-[5px] font-mono text-[10.5px] font-normal">⇧⇥</kbd>
-          </button>
-        )}
-        {agent && toolbar.model && (
-          <span title="Model, from the Screen" className="shrink-0 px-1.5 text-[12px] text-muted">
-            {toolbar.model}
-          </span>
-        )}
-        {agent && toolbar.context !== undefined && <ContextLeft left={toolbar.context} />}
-        {stopButton}
-        {micButton}
-        {agent ? (
-          sendButton
-        ) : (
-          <button
-            type="button"
-            onClick={send}
-            disabled={!hasText}
-            className={`press flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-3 text-[12px] ${
-              hasText ? 'bg-accent font-medium text-bg' : 'bg-surface text-muted'
-            }`}
-          >
-            Run <kbd className="font-mono text-[10.5px] opacity-70">↵</kbd>
-          </button>
-        )}
-      </div>
-    </div>
-  ) : (
-    // Phone: the toggles sit left of the input; the box is one 44 px line until it grows.
-    <div className="flex items-end gap-1.5">
-      {suggestToggle}
-      {keysToggle}
-      <div className="flex min-w-0 flex-1 items-end gap-1 rounded-card border border-border bg-bg py-[3px] pr-[3px] pl-3 focus-within:border-accent/60">
-        {glyph}
-        {textarea}
-        {stopButton}
-        {attachButton}
-        {hasText || !micButton ? sendButton : micButton}
+        {sendButton}
       </div>
     </div>
   );
@@ -971,8 +988,8 @@ export function Composer({
     <div
       className={`flex shrink-0 flex-col ${
         desktop
-          ? 'border-t border-border bg-elevated px-4 pt-3 pb-4'
-          : 'rounded-t-drawer bg-elevated pt-3 pb-[max(env(safe-area-inset-bottom),12px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]'
+          ? 'border-t border-border bg-elevated px-4 pt-3 pb-2'
+          : 'rounded-t-drawer bg-elevated pt-3 pb-[max(env(safe-area-inset-bottom),8px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]'
       }`}
     >
       <div className={`flex flex-col gap-2.5 ${desktop ? 'mx-auto w-full max-w-5xl' : ''}`}>
@@ -1106,8 +1123,9 @@ export function Composer({
             </div>
           )}
 
+          {/* The legend for Send, under it on the right. */}
           {desktop && (
-            <p className="flex items-center gap-1.5 text-[12px] text-muted">
+            <p className="-mt-0.5 flex items-center justify-end gap-1 pr-1 text-[10.5px] leading-[14px] text-muted/80">
               <Kbd>↵</Kbd> {agent ? 'send' : 'run'} · <Kbd>⇧↵</Kbd> newline
             </p>
           )}
