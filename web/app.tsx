@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Component, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { AnchorHTMLAttributes, ReactNode } from 'react';
 import type { ScreenEvent, State } from '../shared/types.ts';
@@ -442,6 +442,30 @@ function ScreenNav({ hosts, current, state }: { hosts: boolean; current: string;
 
 // ---- app ----
 
+/**
+ * One screen that throws shows a small card instead of blanking the app: React unmounts the
+ * whole tree on an uncaught render or effect error. Keyed by the route, so navigating away
+ * mounts a fresh boundary and the next screen gets its chance.
+ */
+class ScreenBoundary extends Component<{ children: ReactNode; where: string }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error) { console.error(`[tautan] ${this.props.where} crashed:`, error); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div role="alert" className="mx-auto flex max-w-md flex-col items-start gap-3 px-6 pt-24">
+        <p className="text-title">Something broke on this screen</p>
+        <p className="font-mono text-caption text-muted break-words">{this.state.error.message}</p>
+        <div className="flex gap-2">
+          <button type="button" className="press h-10 rounded-chip bg-accent px-4 text-body font-semibold text-bg" onClick={() => location.reload()}>Reload</button>
+          <button type="button" className="press h-10 rounded-chip border border-border px-4 text-body" onClick={() => this.setState({ error: null })}>Try again</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 export function App() {
   const route = useRoute();
   const kitTheme = useKitTheme();
@@ -566,7 +590,7 @@ export function App() {
               <aside aria-label="All panes" className="sticky top-0 flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface">
                 {/* Home scrolls its own list, under a top that stays put. */}
                 <div className="min-h-0 flex-1">
-                  <Home state={state} compact />
+                  <ScreenBoundary key="sidebar" where="Pane list"><Home state={state} compact /></ScreenBoundary>
                 </div>
                 <nav aria-label="Sections" className="flex shrink-0 gap-1 border-t border-border p-2">
                   {FOOTER.map(({ to, label, Icon }) => (
@@ -579,11 +603,11 @@ export function App() {
               </aside>
             )
           )}
-          <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain">{screens}</div>
+          <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain"><ScreenBoundary key={route} where={route}>{screens}</ScreenBoundary></div>
         </div>
       ) : (
         <>
-          {screens}
+          <ScreenBoundary key={route} where={route}>{screens}</ScreenBoundary>
           {!paneKey && !diffKey && !fileKey && <TabBar route={route} badge={needsYou} />}
         </>
       )}
