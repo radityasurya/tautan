@@ -588,12 +588,53 @@ SSE stream carries a set of watched Panes, or the extra Panes render the last sn
 the state stream with no live poll. Only then build it. Until this lane lands, desktop
 shows the Pane chips row, the same as the phone. Ship Phases 19–22 without it.
 
-**Decision (2026-10-06): defer.** The state stream carries only `lastLine`, so extra Panes
-cannot render a live grid from it (option B is not possible). A watched-Pane set on the SSE
-stream (option A) costs about 300 lines over five files plus a protocol change, and adds a
-poll loop and a transcript stat per extra Pane. Desktop keeps the Pane chips row. Revisit
-when a real desktop flow needs it: build A with a cap of three watched Panes, and decide
-Seen for visible but unfocused Panes.
+**Decision (2026-10-06): defer.** Superseded the same day, below.
+
+**Decision (2026-10-06, supersedes "defer"): build option A with the Mux's geometry.** See
+[ADR 0006](./adr/0006-split-panes-mirror-mux-geometry.md). The `screen` event already carries
+`key`, so the protocol change is only the request: `pane=` repeats, up to 4. The split mirrors
+herdr's own rects (tmux: `pane_left`/`pane_top`) as proportions of the Tab. Cap 4: the live
+snapshot has 14 two-Pane Tabs, 3 three-Pane Tabs and 1 four-Pane Tab.
+
+*Split rule.* At `lg`, show the split only when the Tab has 2–4 Panes that all carry `x` and
+`y`, the Tab is not zoomed, "Split view" in ⋯ is on (`tautan.split`, default on), this view
+holds no Phone width lease, and every cell would be at least 420 × 180 px in the Pane column
+(measured by the `frame` ResizeObserver). Otherwise the Pane chips row stays.
+
+| # | Lane | Specialist | Parallel |
+|---|---|---|---|
+| 10.8a | Hub: `x`/`y` on Panes, a watched-Pane set on `/api/events`, per-key backoff, lease owned by its stream | `glm-run` | first |
+| 10.8b | Extract `PaneGrid` from `PaneScreen`, no visible change | `frontend` | after the in-flight `web/pane.tsx` edits land |
+| 10.8c | `SplitView`, click to focus, e2e flow 14 | `frontend` | after 10.8a and 10.8b |
+| 10.8d | Drive flow 14 at 1440 and 1280; update ARCHITECTURE.md and UI.md | `qa`, then `scribe` | last |
+
+**10.8a brief.** `shared/types.ts`: `x?`, `y?` (cells, relative to the Tab) on `Pane` and
+`StatePane`. `server/herdr.ts` `tree()` copies `rect.x`/`rect.y` and omits both for every
+Pane of a `zoomed` layout. `server/tmux.ts`: add `#{pane_left}`, `#{pane_top}`,
+`#{window_zoomed_flag}` to `FORMAT`, same zoom rule. `server/mux.ts`: `HubListener.paneKeys`,
+one watch per (listener, key) with its own 250 ms → ×1.5 → 2 s backoff; `changed()` re-polls
+only matching keys; `watchedPaneKeys()` is the union; each key's first Screen goes out on
+subscribe. `server/http.ts` `/api/events`: `searchParams.getAll('pane')`, de-duplicated;
+more than 4 is `400 {error:'too-many-panes'}`; unresolved keys drop; none resolving is 404 as
+today. The `screen` event is unchanged. **Lease owner (fixes the keep-alive leak):** the
+stream announces an id; a lease request carries it; `LeaseHolder` records it and releases the
+lease when that stream ends, whoever else watches the Pane; a request without an id keeps
+today's rule. Tests: per-key backoff on a fake Mux, a contract test with two Panes on one
+stream on a throwaway herdr, 5 keys → 400, `x`/`y` absent when zoomed, and a lease released
+when its owner stream closes while a second stream still watches the Pane.
+
+**10.8c brief.** `useEvents(keys)` keyed on `keys.join(',')`, returning screens by key.
+`SplitView` places each `PaneGrid` absolutely at `x/W`, `y/H`, `cols/W`, `rows/H`, with 1 px
+dividers, a 24 px title row per cell, and a 2 px accent ring on the focused cell. Focus is the
+route: a click on an unfocused cell navigates with `replace` and sends nothing to the
+program. Unfocused cells draw no Affordances, no mouse forwarding and no Chat lens.
+`forceFit` in split. Seen: 3 s dwell for unfocused visible cells, 1 s for the focused one.
+Flow 14 at 1440×900: both cells render, a marker printed in Pane b shows only in cell b,
+clicking cell b moves the header and Composer without reopening the EventSource, and at
+1100 px the chips row returns.
+
+*Later, not v1:* a next-Pane shortcut (the browser owns ⌘[ ] and ⌘⌥←→), ratios dragged in
+tautan only, the Chat lens in unfocused cells, more than 4 Panes.
 
 **10.9 brief.** Drive the built app at 390 × 844 and at 1440 × 900 with `chrome-devtools-axi`
 on a throwaway herdr, never the live socket. Check each board against the canvas: same
