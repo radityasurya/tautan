@@ -10,6 +10,9 @@ export interface Tool {
   truncated?: boolean;
   /** The image the tool read or analysed: a file path for Read, a URL for a z.ai tool. */
   image?: string;
+  /** The image a Read returned, kept in the transcript: served by
+   *  `GET /api/panes/:key/chat/image/:imageId`, never inlined in the chat JSON. */
+  imageId?: number;
 }
 
 /** An image pasted into a user turn, as a data URL; no `src` when it is over the cap. */
@@ -23,7 +26,7 @@ export interface Turn {
   at?: number;
 }
 
-type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; source?: unknown };
+type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown };
 
 const commandWrapper = /^(?:command-name|command-message|local-command(?:-[\w-]+)?|task-notification|bash-(?:input|stdout))$/;
 const shortened = (text: string) => text.length > 80 ? `${text.slice(0, 79)}…` : text;
@@ -45,7 +48,7 @@ function wrapper(text: string): boolean {
 function brief(input: unknown): string {
   if (input && typeof input === 'object' && !Array.isArray(input)) {
     const value = input as Record<string, unknown>;
-    for (const key of ['file_path', 'command', 'pattern', 'url']) if (typeof value[key] === 'string' && value[key].trim()) return shortened(value[key].replace(/\s+/g, ' ').trim());
+    for (const key of ['file_path', 'command', 'pattern', 'url', 'path']) if (typeof value[key] === 'string' && value[key].trim()) return shortened(value[key].replace(/\s+/g, ' ').trim());
   }
   try { return shortened(JSON.stringify(input) ?? ''); } catch { return ''; }
 }
@@ -58,20 +61,23 @@ const preview = (text: string) => text.length > 600 ? `${text.slice(0, 599)}…`
 /** The full tool input for the expanded row: newlines kept, capped like turn text. */
 function detail(name: string, input: unknown): string {
   const value = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const filePath = str(value.file_path) ?? str(value.path);
   const lines: string[] = [];
   if (str(value.command)) {
     if (str(value.description)) lines.push(`# ${value.description as string}`);
     lines.push(value.command as string);
-  } else if (str(value.file_path)) {
-    lines.push(value.file_path as string);
-    const edits = Array.isArray(value.edits) ? value.edits as Record<string, unknown>[] : [value];
-    for (const edit of edits) {
-      if (typeof edit?.old_string !== 'string' || typeof edit.new_string !== 'string') continue;
-      lines.push('', `- ${preview(edit.old_string).replace(/\n/g, '\n- ')}`, `+ ${preview(edit.new_string).replace(/\n/g, '\n+ ')}`);
-    }
   } else if (str(value.pattern)) {
     lines.push(value.pattern as string);
     if (str(value.path)) lines.push(`in ${value.path as string}`);
+  } else if (filePath) {
+    lines.push(filePath);
+    const edits = Array.isArray(value.edits) ? value.edits as Record<string, unknown>[] : [value];
+    for (const edit of edits) {
+      const oldText = typeof edit?.old_string === 'string' ? edit.old_string : typeof edit?.oldText === 'string' ? edit.oldText : undefined;
+      const newText = typeof edit?.new_string === 'string' ? edit.new_string : typeof edit?.newText === 'string' ? edit.newText : undefined;
+      if (oldText === undefined || newText === undefined) continue;
+      lines.push('', `- ${preview(oldText).replace(/\n/g, '\n- ')}`, `+ ${preview(newText).replace(/\n/g, '\n+ ')}`);
+    }
   }
   if (lines.length) return cap(lines.join('\n'));
   try { return cap(JSON.stringify(input, null, 2) ?? name); } catch { return ''; }
@@ -163,8 +169,14 @@ const PASTED_MAX = 1_400_000; // base64 characters, about 1 MB decoded
 const PASTED_PER_TURN = 4;
 const PASTED_TOTAL = 5_700_000; // four full-size images and their data: prefixes
 
+/** An image a tool returned, handed back out of band so no base64 rides inside the turns. */
+export interface TranscriptImage { mediaType: string; data: string }
+// ponytail: a tool_result image over this is skipped whole (no id consumed); serve oversized reads from a file route if they appear.
+const RESULT_MAX = 8_000_000; // base64 characters, about 6 MB decoded
+
 function readImage(input: unknown): string | undefined {
-  const path = str((input as Record<string, unknown> | null)?.file_path);
+  const value = input as Record<string, unknown> | null | undefined;
+  const path = str(value?.file_path) ?? str(value?.path);
   return path && IMAGE_FILE.test(path) ? path : undefined;
 }
 
@@ -175,10 +187,13 @@ function pasted(source: unknown): Pasted {
     : {};
 }
 
-/** Parse Claude Code's JSONL into display-safe turns; raw transcript lines never leave this module. */
-export function parseTranscript(jsonl: string): Turn[] {
+/** Parse Claude Code's JSONL into display-safe turns; raw transcript lines never leave this module.
+ *  `opts.images`, when given, collects the images tool_results returned, numbered as their `imageId`s. */
+export function parseTranscript(jsonl: string, opts?: { images?: TranscriptImage[] }): Turn[] {
   const turns: Turn[] = [];
   const pending: Tool[] = [];
+  const toolUses = new Map<string, Tool>();
+  let resultImages = 0;
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line) continue;
     let entry: Record<string, unknown>;
@@ -206,7 +221,21 @@ export function parseTranscript(jsonl: string): Turn[] {
       }
       if (block.type === 'tool_use' && typeof block.name === 'string') {
         const image = block.name === 'Read' ? readImage(block.input) : undefined;
-        tools.push({ name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(image ? { image } : {}) });
+        const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(image ? { image } : {}) };
+        if (typeof block.id === 'string') toolUses.set(block.id, tool);
+        tools.push(tool);
+      }
+      if (block.type === 'tool_result' && Array.isArray(block.content)) {
+        for (const item of block.content) {
+          if (!item || typeof item !== 'object' || Array.isArray(item) || (item as Block).type !== 'image') continue;
+          const source = (item as Block).source;
+          const { type, media_type: media, data } = source && typeof source === 'object' ? source as Record<string, unknown> : {};
+          if (type !== 'base64' || typeof media !== 'string' || !PASTED_TYPE.test(media) || typeof data !== 'string' || data.length > RESULT_MAX || !BASE64.test(data)) continue;
+          const imageId = resultImages++;
+          opts?.images?.push({ mediaType: media, data });
+          const tool = typeof block.tool_use_id === 'string' ? toolUses.get(block.tool_use_id) : undefined;
+          if (tool && tool.imageId === undefined) tool.imageId = imageId; // the first image only when a result carries several
+        }
       }
       if (block.type === 'image' && role === 'user') {
         images.push(pasted(block.source));
@@ -228,6 +257,78 @@ export function parseTranscript(jsonl: string): Turn[] {
     for (const image of turn.images ?? []) {
       if (image.src && (++kept > PASTED_PER_TURN || (budget -= image.src.length) < 0)) delete image.src;
     }
+  }
+  return turns;
+}
+
+/** Parse pi's session JSONL into the same turns. Each line is an entry in a parentId tree;
+ *  only the active branch is rendered — the chain that ends at the last entry, because pi
+ *  appends a fork's new leaf after the branch it replaces. */
+// ponytail: user-pasted images are unhandled — no pi transcript on this machine carries one;
+// map {type:'image'} blocks in user content through `pasted()` when they appear.
+export function parsePiTranscript(jsonl: string, opts?: { images?: TranscriptImage[] }): Turn[] {
+  const entries: Record<string, unknown>[] = [];
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line) continue;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (value && typeof value === 'object' && !Array.isArray(value)) entries.push(value as Record<string, unknown>);
+    } catch { continue; }
+  }
+  const byId = new Map<string, number>();
+  entries.forEach((entry, index) => { if (typeof entry.id === 'string') byId.set(entry.id, index); });
+  const active = new Set<number>();
+  for (let index = entries.length - 1; index >= 0 && !active.has(index);) {
+    active.add(index);
+    const parent = entries[index]!.parentId;
+    index = typeof parent === 'string' ? byId.get(parent) ?? -1 : -1;
+  }
+  const turns: Turn[] = [];
+  const toolUses = new Map<string, Tool>();
+  let resultImages = 0;
+  let forked = false; // a message from another branch sat between two active ones: no merging across it
+  for (const [index, entry] of entries.entries()) {
+    if (entry.type !== 'message') continue;
+    if (!active.has(index)) { forked = true; continue; }
+    const message = entry.message;
+    if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
+    const record = message as Record<string, unknown>;
+    const role = record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : undefined;
+    if (!role) {
+      if (record.role !== 'toolResult' || !Array.isArray(record.content)) continue;
+      for (const item of record.content) {
+        if (!item || typeof item !== 'object' || Array.isArray(item) || (item as Block).type !== 'image') continue;
+        const block = item as Block;
+        if (typeof block.mimeType !== 'string' || !PASTED_TYPE.test(block.mimeType) || typeof block.data !== 'string' || block.data.length > RESULT_MAX || !BASE64.test(block.data)) continue;
+        const imageId = resultImages++;
+        opts?.images?.push({ mediaType: block.mimeType, data: block.data });
+        const tool = typeof record.toolCallId === 'string' ? toolUses.get(record.toolCallId) : undefined;
+        if (tool && tool.imageId === undefined) tool.imageId = imageId; // the first image only when a result carries several
+      }
+      continue;
+    }
+    const content = record.content;
+    let text = turnText(content);
+    const tools: Turn['tools'] = [];
+    if (Array.isArray(content)) for (const item of content) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const block = item as Block;
+      if (block.type === 'text' && typeof block.text === 'string') text += block.text;
+      if (block.type === 'toolCall' && typeof block.name === 'string') {
+        const image = block.name === 'read' ? readImage(block.arguments) : undefined;
+        const tool: Tool = { name: block.name, brief: brief(block.arguments), detail: detail(block.name, block.arguments), ...(image ? { image } : {}) };
+        if (typeof block.id === 'string') toolUses.set(block.id, tool);
+        tools.push(tool);
+      }
+    }
+    if (!text && !tools.length) continue;
+    const at = time(entry.timestamp);
+    const previous = forked ? undefined : turns.at(-1);
+    forked = false;
+    if (previous?.role === role) {
+      previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
+      previous.tools.push(...tools);
+    } else turns.push({ role, text: cap(text), tools, ...(at !== undefined ? { at } : {}) });
   }
   return turns;
 }

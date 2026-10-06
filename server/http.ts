@@ -115,11 +115,13 @@ export function startHttp(hub: Hub, opts: {
   discover?: typeof discoverLocalMuxes;
   discoverRemote?: (target: string, session?: string) => Promise<{ name: string; socketPath: string }[]>;
   configPath?: string;
+  /** Test seam: the chat transcript lens the chat routes read; the Hub's own when absent. */
+  chats?: ChatLens;
 }): ReturnType<typeof Bun.serve> {
   const root = resolve(opts.staticDir);
   const retries = new Set<string>(); let probes = 0;
   const leases = new LeaseHolder(hub);
-  const chats = new ChatLens(hub);
+  const chats = opts.chats ?? new ChatLens(hub);
   hub.onClose?.(() => { void leases.releaseAll(); chats.close(); });
   return Bun.serve({
     port: opts.port, hostname: opts.hostname,
@@ -322,6 +324,17 @@ export function startHttp(hub: Hub, opts: {
           if (hub.resolvePane(key)?.entry.mux.kind !== 'herdr') return json({ error: 'unsupported' }, 501);
           const chat = await chats.query(key);
           return chat ? json(chat) : json({ error: 'no-session' }, 404);
+        }
+        const chatImageMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat\/image\/([^/]+)$/);
+        if (req.method === 'GET' && chatImageMatch) {
+          let key: string;
+          try { key = decodeURIComponent(chatImageMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          if (!/^\d+$/.test(chatImageMatch[2]!)) return json({ error: 'id' }, 400);
+          if (!await hub.hasPane(key)) return json({ error: 'no-session' }, 404);
+          const found = await chats.image(key, Number(chatImageMatch[2]!));
+          if (!found) return json({ error: 'no-session' }, 404);
+          if (!found.image) return json({ error: 'no-image' }, 404);
+          return new Response(found.image.bytes, { headers: { 'content-type': found.image.mediaType, 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
         }
         const fileMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/file$/);
         if (req.method === 'GET' && fileMatch) {

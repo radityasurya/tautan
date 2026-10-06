@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseTranscript } from '../shared/chat.ts';
+import { parseTranscript, type TranscriptImage } from '../shared/chat.ts';
 import { ChatLens, resolveSession, transcriptPath, type ChatHub, type SessionHub, type TranscriptIo } from '../server/chat.ts';
 import type { State } from '../shared/types.ts';
 
@@ -133,6 +133,58 @@ describe('parseTranscript', () => {
     const text = 'Run it.\n\n**Output:**\n**exit:** 0';
     expect(parseTranscript(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }))[0]!.text).toBe(text);
   });
+
+  describe('tool_result images', () => {
+    const image = (data: string, media_type = 'image/png') => ({ type: 'image', source: { type: 'base64', media_type, data } });
+    const read = (id: string, file_path: string) => ({ type: 'tool_use', id, name: 'Read', input: { file_path } });
+    const result = (id: string, content: unknown) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content }] } });
+
+    test('two Reads get imageId 0 and 1; the bytes come back out of band', () => {
+      const jsonl = [
+        { type: 'assistant', message: { content: [read('toolu_1', '/tmp/a.png'), read('toolu_2', '/tmp/b.jpg')] } },
+        result('toolu_1', [image('iVBORw0KGgo=')]),
+        result('toolu_2', [image('/9j/', 'image/jpeg')]),
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const images: TranscriptImage[] = [];
+      const turns = parseTranscript(jsonl, { images });
+      expect(turns[0]!.tools.map(tool => tool.imageId)).toEqual([0, 1]);
+      expect(images).toEqual([{ mediaType: 'image/png', data: 'iVBORw0KGgo=' }, { mediaType: 'image/jpeg', data: '/9j/' }]);
+      expect(JSON.stringify(turns)).not.toContain('iVBORw0KGgo');
+    });
+
+    test('a non-image tool_result and an unsupported media type give no imageId', () => {
+      const jsonl = [
+        { type: 'assistant', message: { content: [read('toolu_1', '/tmp/a.png'), read('toolu_2', '/tmp/b.svg'), read('toolu_3', '/tmp/c.png')] } },
+        result('toolu_1', [{ type: 'text', text: 'plain text result' }]),
+        result('toolu_2', [image('PHN2Zz4=', 'image/svg+xml')]),
+        result('toolu_3', 'a string result'),
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const images: TranscriptImage[] = [];
+      expect(parseTranscript(jsonl, { images })[0]!.tools.map(tool => tool.imageId)).toEqual([undefined, undefined, undefined]);
+      expect(images).toEqual([]);
+    });
+
+    test('only the first image of a result links; the rest still count', () => {
+      const jsonl = [
+        { type: 'assistant', message: { content: [read('toolu_1', '/tmp/a.png')] } },
+        result('toolu_1', [image('AAAA'), image('BBBB')]),
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const images: TranscriptImage[] = [];
+      expect(parseTranscript(jsonl, { images })[0]!.tools.map(tool => tool.imageId)).toEqual([0]);
+      expect(images).toHaveLength(2);
+    });
+
+    test('an image over the cap is skipped without taking an id', () => {
+      const jsonl = [
+        { type: 'assistant', message: { content: [read('toolu_1', '/tmp/a.png'), read('toolu_2', '/tmp/b.png')] } },
+        result('toolu_1', [image('A'.repeat(8_000_001))]),
+        result('toolu_2', [image('BBBB')]),
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const images: TranscriptImage[] = [];
+      expect(parseTranscript(jsonl, { images })[0]!.tools.map(tool => tool.imageId)).toEqual([undefined, 0]);
+      expect(images).toEqual([{ mediaType: 'image/png', data: 'BBBB' }]);
+    });
+  });
 });
 
 test('uses Claude Code project path munging', () => {
@@ -141,14 +193,14 @@ test('uses Claude Code project path munging', () => {
 
 describe('resolveSession', () => {
   test('uses herdr agent_session before process arguments', async () => {
-    await expect(resolveSession(sessionHub(id, [{ name: 'claude', argv: ['claude', '--resume', '22222222-2222-2222-2222-222222222222'] }]), paneKey)).resolves.toEqual({ sessionId: id });
+    await expect(resolveSession(sessionHub(id, [{ name: 'claude', argv: ['claude', '--resume', '22222222-2222-2222-2222-222222222222'] }]), paneKey)).resolves.toEqual({ agent: 'claude', sessionId: id });
   });
 
   test('finds a Claude resume descriptor in the foreground processes', async () => {
     await expect(resolveSession(sessionHub(undefined, [
       { pid: 1, name: 'zsh', argv: ['zsh'] },
       { pid: 2, name: 'claude', argv: ['claude', '--session-id', id] },
-    ]), paneKey)).resolves.toEqual({ sessionId: id });
+    ]), paneKey)).resolves.toEqual({ agent: 'claude', sessionId: id });
   });
 });
 
@@ -166,6 +218,31 @@ test('ChatLens parses only when the transcript signature changes', async () => {
   const lens = new ChatLens(hub, io, '/home/tama');
   await lens.query(paneKey);
   await lens.query(paneKey);
+  lens.close();
+  expect(reads).toBe(1);
+});
+
+test('ChatLens serves a tool_result image from the cached parse', async () => {
+  let reads = 0;
+  const jsonl = [
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: '/tmp/a.png' } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }] }] } },
+  ].map(entry => JSON.stringify(entry)).join('\n');
+  const hub: ChatHub = {
+    ...sessionHub(id),
+    state: async () => ({ panes: [{ key: paneKey, cwd: '/home/tama/projects/taut' }] }) as State,
+    paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
+  };
+  const io: TranscriptIo = {
+    stat: async () => ({ inode: '1', size: 10, mtime: 'now' }),
+    read: async () => { reads++; return jsonl; },
+  };
+  const lens = new ChatLens(hub, io, '/home/tama');
+  const image = (await lens.image(paneKey, 0))?.image;
+  expect(image?.mediaType).toBe('image/png');
+  expect(Buffer.from(image!.bytes).toString('base64')).toBe('iVBORw0KGgo=');
+  expect(await lens.image(paneKey, 1)).toEqual({ image: undefined });
+  expect(await lens.image('local/mux/none', 0)).toBeUndefined();
   lens.close();
   expect(reads).toBe(1);
 });
