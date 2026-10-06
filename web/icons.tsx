@@ -178,3 +178,34 @@ export const ScreenLens = (p: Props) => (
     <path d="M7 9l3 3-3 3" />
   </Icon>
 );
+
+/** tautan's Pane list: Workspace headings, each over its own indented rows. */
+export const ListTautan = (p: Props) => (
+  <Icon {...p}>
+    <path d="M4 5h7M8 9h12M4 14h7M8 18h12" />
+  </Icon>
+);
+
+/** herdr's Pane list: a Spaces panel over the Agents rows. */
+export const ListHerdr = (p: Props) => (
+  <Icon {...p}>
+    <rect x="4" y="3.5" width="16" height="7" rx="1.5" />
+    <path d="M4 15h16M4 19.5h16" />
+  </Icon>
+);
+
+/** View options: two slider tracks with their knobs. */
+export const Sliders = (p: Props) => (
+  <Icon {...p}>
+    <path d="M4 8h9M17 8h3M4 16h3M11 16h9" />
+    <circle cx="15" cy="8" r="2" />
+    <circle cx="9" cy="16" r="2" />
+  </Icon>
+);
+
+/** The chosen item in a menu. */
+export const Check = (p: Props) => (
+  <Icon {...p}>
+    <path d="M5 12.5l4.5 4.5L19 7.5" />
+  </Icon>
+);

@@ -5,9 +5,12 @@ import type {
   NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
 import { api, haptic, Link, navigate, opensWith, reducedMotion } from './app.tsx';
-import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus } from './icons.tsx';
+import { Check, ChevronDown, ChevronRight, CollapseAll, ExpandAll, ListHerdr, ListTautan, More, Plus, Sliders } from './icons.tsx';
 import { Chip, EmptyState, IconButton, SearchInput, Skeleton, usePal } from './halaska-kit';
-import { agentRows, getPaneList, getShowShells, rollup, setShowShells } from './spaces.ts';
+import {
+  agentRows, bySpace, getAgentGroup, getAgentSort, getPaneList, getShowShells, rollup, setAgentGroup, setAgentSort,
+  setPaneList, setShowShells, usePref, type AgentGroup, type AgentSort, type PaneList,
+} from './spaces.ts';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
@@ -563,17 +566,11 @@ function PinnedHeader({ label, count, open, compact, onToggle }: { label: string
 
 // ---- herdr list ----
 
-/** A small section heading. On the phone the window scrolls, so it sticks under the TopBar;
- *  in the sidebar it sits above its section's own scroller and needs no stickiness. */
+/** A small section heading. It sits above its section's own scroller, so it never moves. */
 function SectionHead({ id, label, count, compact, children }: { id: string; label: string; count?: number; compact?: boolean; children?: ReactNode }) {
   return (
-    <div
-      className={`flex shrink-0 items-center gap-2 pr-2 pl-4 ${
-        // ponytail: 92 px is the scrolled TopBar (44) plus its search row (48); measure it if the TopBar grows.
-        compact ? 'h-9' : 'sticky top-[calc(env(safe-area-inset-top)+92px)] z-20 h-10 bg-bg/92 backdrop-blur-md'
-      }`}
-    >
-      <h2 id={id} className="text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">
+    <div className={`flex shrink-0 items-center gap-2 pr-2 pl-4 ${compact ? 'h-9' : 'h-10'}`}>
+      <h2 id={id} className="min-w-0 truncate text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">
         {label}
       </h2>
       {count !== undefined && <span className="text-[11px] font-medium tabular-nums text-muted/70">{count}</span>}
@@ -654,6 +651,148 @@ function SpaceRow({
   );
 }
 
+/** The two Pane lists, as icons: the TopBar has no room for their names beside the title. */
+const LISTS: { value: PaneList; label: string; Icon: typeof ListTautan }[] = [
+  { value: 'tautan', label: 'tautan list, grouped by Workspace', Icon: ListTautan },
+  { value: 'herdr', label: 'herdr list, Spaces and Agents', Icon: ListHerdr },
+];
+
+/**
+ * The Pane list switch in Home's TopBar: the same preference as Settings › Appearance, live
+ * in both. On the phone each half is 44 × 36 and reaches 44 px tall through `after:`.
+ */
+function PaneListSwitch({ compact }: { compact?: boolean }) {
+  const list = usePref(getPaneList);
+  return (
+    <div role="group" aria-label="Pane list" className="mr-1 flex rounded-[10px] bg-fg/6 p-0.5">
+      {LISTS.map(({ value, label, Icon }) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={list === value}
+          aria-label={label}
+          title={label}
+          onClick={() => setPaneList(value)}
+          className={`press relative flex items-center justify-center rounded-lg transition-colors ${RING} ${
+            compact ? 'h-7 w-8' : "h-9 w-11 after:absolute after:-inset-y-1 after:inset-x-0 after:content-['']"
+          } ${list === value ? 'bg-elevated text-fg shadow-elevated' : 'text-muted hover:text-fg'}`}
+        >
+          <Icon size={compact ? 16 : 18} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const GROUPS: [AgentGroup, string][] = [['priority', 'Priority'], ['spaces', 'Spaces']];
+const SORTS: [AgentSort, string, string][] = [
+  ['urgency', 'Urgency', 'Needs you first'],
+  ['recent', 'Recent', 'Last change first'],
+  ['name', 'Name', 'A to Z'],
+];
+
+/**
+ * The Agents section's view options, behind one icon in its heading: Group (Priority is
+ * herdr's flat attention queue, Spaces one group per Space), Sort within a group, and the
+ * shells. The icon turns accent while anything differs from herdr's default. A small
+ * popover, not a sheet: three short choices, read beside the list they change.
+ */
+function AgentsView({ shellCount, compact }: { shellCount: number; compact?: boolean }) {
+  const group = usePref(getAgentGroup);
+  const sort = usePref(getAgentSort);
+  const shells = usePref(getShowShells);
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    box.current?.querySelector<HTMLElement>('[role=dialog] [aria-pressed=true]')?.focus();
+    const away = (e: PointerEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      trigger.current?.focus();
+    };
+    document.addEventListener('pointerdown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('pointerdown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+
+  const custom = group !== 'priority' || sort !== 'urgency' || shells;
+  const said = `${GROUPS.find(([v]) => v === group)![1]}, sorted by ${SORTS.find(([v]) => v === sort)![1]}${shells ? ', shells shown' : ''}`;
+  const item = `press flex w-full items-center gap-2 rounded-lg px-2.5 text-left hover:bg-fg/6 ${RING} ${compact ? 'h-8 text-[13px]' : 'min-h-11 text-body'}`;
+  const label = 'mb-1 px-2.5 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase';
+  return (
+    <div
+      ref={box}
+      className="relative shrink-0"
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <button
+        ref={trigger}
+        type="button"
+        aria-label={`Agents view: ${said}`}
+        title="Group and sort"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className={`press relative flex items-center justify-center rounded-chip hover:bg-fg/6 ${RING} ${
+          compact ? 'size-7' : "size-9 after:absolute after:-inset-1 after:content-['']"
+        } ${custom ? 'text-accent' : 'text-muted hover:text-fg'} ${open ? 'bg-fg/6' : ''}`}
+      >
+        <Sliders size={compact ? 16 : 18} />
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Agents view"
+          className="absolute top-full right-0 z-40 mt-1 w-60 rounded-xl border border-border bg-elevated p-1.5 normal-case shadow-elevated backdrop-blur-md"
+        >
+          <p className={`${label} pt-1`}>Group</p>
+          <div role="group" aria-label="Group" className="grid grid-cols-2 gap-0.5 rounded-[10px] bg-fg/6 p-0.5">
+            {GROUPS.map(([v, name]) => (
+              <button
+                key={v}
+                type="button"
+                aria-pressed={group === v}
+                onClick={() => setAgentGroup(v)}
+                className={`press rounded-lg font-medium transition-colors ${RING} ${compact ? 'h-7 text-[12px]' : 'h-10 text-[14px]'} ${
+                  group === v ? 'bg-bg text-fg shadow-elevated' : 'text-muted hover:text-fg'
+                }`}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          <p className={`${label} pt-3`}>Sort</p>
+          <div role="group" aria-label="Sort">
+            {SORTS.map(([v, name, hint]) => (
+              <button key={v} type="button" aria-pressed={sort === v} onClick={() => setAgentSort(v)} className={item}>
+                <span className="w-4 shrink-0 text-accent">{sort === v && <Check size={16} />}</span>
+                <span className="text-fg">{name}</span>
+                <span className="ml-auto text-caption text-muted">{hint}</span>
+              </button>
+            ))}
+          </div>
+          <div className="mx-1 my-1.5 border-t border-border" />
+          <button type="button" aria-pressed={shells} onClick={() => setShowShells(!shells)} className={item}>
+            <span className="w-4 shrink-0 text-accent">{shells && <Check size={16} />}</span>
+            <span className="text-fg">Show shells</span>
+            <span className="ml-auto text-caption tabular-nums text-muted">{shellCount || 'none'}</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- screen ----
 
 const COLLAPSED = 'tautan.collapsed';
@@ -673,11 +812,12 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const [host, setHostState] = useState<string | null>(hostFilter);
   const setHost = (h: string | null) => { hostFilter = h; setHostState(h); };
   const [collapsed, setCollapsed] = useState(readCollapsed);
-  // Read once per mount: Settings and this list are never on screen together.
-  const [layout] = useState(getPaneList);
+  const layout = usePref(getPaneList);
+  const group = usePref(getAgentGroup);
+  const sort = usePref(getAgentSort);
+  const shells = usePref(getShowShells);
   const [space, setSpaceState] = useState<string | null>(spaceFilter);
   const setSpace = (k: string | null) => { spaceFilter = k; setSpaceState(k); };
-  const [shells, setShells] = useState(getShowShells);
   const [newWorkspace, setNewWorkspace] = useState(() => opensWith('newworkspace'));
   const [newTab, setNewTab] = useState<StateWorkspace | null>(null);
   const [menu, setMenu] = useState<StateWorkspace | null>(null);
@@ -791,7 +931,13 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
         title="tautan"
         right={
           <>
-            {!compact && <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>}
+            {/* A 390 px phone cannot hold the counts beside the switch and Collapse all; they come back from 412 px. */}
+            {!compact && (
+              <span className={`mr-1.5 text-caption tabular-nums text-muted ${keys.length > 0 ? 'hidden @min-[380px]:inline' : ''}`}>
+                {counts}
+              </span>
+            )}
+            <PaneListSwitch compact={compact} />
             {state && keys.length > 0 && (
               <IconButton
                 size={40}
@@ -969,21 +1115,35 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const scope = (state?.panes ?? []).filter(
     (p) => visible(p.muxKey) && (!picked || (p.muxKey === picked.muxKey && p.workspaceId === picked.id)),
   );
-  const agents = agentRows(scope.filter(hit), { shells, unseen });
+  const agents = agentRows(scope.filter(hit), { shells, unseen, sort });
   const shellCount = scope.filter((p) => !p.agent).length;
-  const toggleShells = () => {
-    setShells(!shells);
-    setShowShells(!shells);
-  };
+  // One Space picked is one group already, so Spaces grouping only applies to All Spaces.
+  const grouped = group === 'spaces' && !picked ? bySpace(agents, spaces.map((s) => s.w)) : null;
+  /** Agent rows, blocked as cards. `where` names the Space on a row when no heading does. */
+  const agentItems = (rows: StatePane[], where: boolean) =>
+    rows.map((p, i) =>
+      p.status === 'blocked' ? (
+        <NeedsYouCard key={p.key} pane={p} where={whereOf(p)} compact={compact} />
+      ) : (
+        <Row
+          key={p.key}
+          pane={p}
+          first={i === 0 || rows[i - 1]!.status === 'blocked'}
+          actions={rowActions(p)}
+          context={where ? wsLabel(p) : undefined}
+          compact={compact}
+        />
+      ),
+    );
 
+  // Two scrollers under a top that stays put, on the phone as in the sidebar: Spaces takes up
+  // to 40 % of the height left, Agents the rest. On the phone the Agents list runs on under
+  // the floating tab bar and pads its end by the bar's height, so the last row clears it.
   const herdrBody = herdr && (
-    <>
-      <section
-        aria-labelledby="spaces-title"
-        className={compact ? 'flex max-h-[40%] shrink-0 flex-col border-b border-border pt-1' : 'pt-2'}
-      >
+    <div className="flex min-h-0 flex-1 flex-col">
+      <section aria-labelledby="spaces-title" className="flex max-h-[40%] shrink-0 flex-col border-b border-border pt-1">
         <SectionHead id="spaces-title" label="Spaces" count={spaces.length} compact={compact} />
-        <ul className={compact ? 'min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain pb-1.5' : 'pb-2'}>
+        <ul className="min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain pb-1.5">
           <SpaceRow
             label="All Spaces"
             panes={(state?.panes ?? []).filter((p) => visible(p.muxKey))}
@@ -1009,20 +1169,15 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
           })}
         </ul>
       </section>
-      <section aria-labelledby="agents-title" className={compact ? 'flex min-h-0 flex-1 flex-col pt-1' : 'pt-2'}>
+      <section aria-labelledby="agents-title" className="flex min-h-0 flex-1 flex-col pt-1">
         <SectionHead id="agents-title" label={picked ? `Agents · ${picked.label}` : 'Agents'} count={agents.length} compact={compact}>
-          {(shellCount > 0 || shells) && (
-            <button
-              type="button"
-              aria-pressed={shells}
-              onClick={toggleShells}
-              className={`press h-7 shrink-0 rounded-chip px-2 text-[12px] font-medium text-accent hover:bg-fg/6 ${RING}`}
-            >
-              {shells ? 'Hide shells' : 'Show shells'}
-            </button>
-          )}
+          <AgentsView shellCount={shellCount} compact={compact} />
         </SectionHead>
-        <ul className={compact ? 'min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-4' : ''}>
+        <ul
+          className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain ${
+            compact ? 'pb-4' : 'pb-[calc(env(safe-area-inset-bottom)+76px)]'
+          }`}
+        >
           {agents.length === 0 ? (
             <li className="px-4 py-3 text-caption text-muted">
               {needle
@@ -1034,29 +1189,36 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                 <span className="text-muted/70"> · {shellCount} shell{shellCount === 1 ? '' : 's'} hidden</span>
               )}
             </li>
+          ) : grouped ? (
+            grouped.map(({ space, rows }) => (
+              <li key={space.key}>
+                <h3
+                  id={`agents-in-${space.key}`}
+                  className={`flex items-baseline gap-1.5 px-4 text-[12px] font-medium text-muted ${compact ? 'pt-2.5 pb-1' : 'pt-4 pb-1.5'}`}
+                >
+                  <span className="min-w-0 truncate">{space.label}</span>
+                  {many && <span className="max-w-[45%] shrink-0 truncate font-normal text-muted/70">{hostLabel(space.muxKey)}</span>}
+                  <span className="shrink-0 font-normal tabular-nums text-muted/70">{rows.length}</span>
+                </h3>
+                <ul aria-labelledby={`agents-in-${space.key}`}>{agentItems(rows, false)}</ul>
+              </li>
+            ))
           ) : (
-            agents.map((p, i) =>
-              p.status === 'blocked' ? (
-                <NeedsYouCard key={p.key} pane={p} where={whereOf(p)} compact={compact} />
-              ) : (
-                <Row
-                  key={p.key}
-                  pane={p}
-                  first={i === 0 || agents[i - 1]!.status === 'blocked'}
-                  actions={rowActions(p)}
-                  context={picked ? undefined : wsLabel(p)}
-                  compact={compact}
-                />
-              ),
-            )
+            agentItems(agents, !picked)
           )}
         </ul>
       </section>
-    </>
+    </div>
   );
 
   return (
-    <div className={compact ? 'flex h-full min-h-0 flex-col' : 'mx-auto max-w-2xl pb-28'}>
+    <div
+      className={
+        compact ? 'flex h-full min-h-0 flex-col'
+        : herdr ? 'mx-auto flex h-dvh max-w-2xl flex-col overflow-hidden'
+        : 'mx-auto max-w-2xl pb-28'
+      }
+    >
       {compact ? <div className="shrink-0 border-b border-border">{top}</div> : top}
       {herdr ? (
         herdrBody

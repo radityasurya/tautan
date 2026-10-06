@@ -2,7 +2,7 @@ import { TopBar } from './header.tsx';
 import { useEffect, useState } from 'react';
 import { api, getTheme, setTheme, THEMES, useDesktop } from './app.tsx';
 import { SegmentedControl, Select } from './halaska-kit';
-import { getPaneList, setPaneList, type PaneList } from './spaces.ts';
+import { getPaneList, setPaneList, usePref, type PaneList } from './spaces.ts';
 import type { Theme } from './app.tsx';
 import { GROUP, InstallHint, SectionTitle, Toggle, useHubSettings } from './hosts.tsx';
 import { disablePush, enablePush, pushOn } from './push.ts';
@@ -91,7 +91,7 @@ const PANE_LISTS: Record<PaneList, string> = {
 
 /** How the Pane list is drawn: tautan's Workspace groups, or herdr's Spaces and Agents. */
 function PaneListChoice() {
-  const [list, choose] = useState(getPaneList);
+  const list = usePref(getPaneList);
   return (
     <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2.5 px-4 lg:px-0">
       <span className="min-w-0 flex-1 basis-48">
@@ -102,10 +102,7 @@ function PaneListChoice() {
         <SegmentedControl
           options={['tautan', 'herdr']}
           value={list}
-          onChange={(v: string) => {
-            setPaneList(v as PaneList);
-            choose(v as PaneList);
-          }}
+          onChange={(v: string) => setPaneList(v as PaneList)}
         />
       </div>
     </div>
