@@ -6,22 +6,21 @@ import { classify } from '../shared/layout.ts';
 import type {
   InputBody, NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
-import { AffordanceLayer, hintPills, useCell, useMouseForward } from './affordances.tsx';
+import { AffordanceLayer, useCell, useMouseForward } from './affordances.tsx';
 
 import { api, haptic, navigate, opensWith, post, reducedMotion, useDesktop } from './app.tsx';
 import { yesNoKeys } from '../shared/blocked.ts';
-import { Blocked, promptLine, type ExplainResponse } from './blocked.tsx';
+import { promptLine, type ExplainResponse } from './blocked.tsx';
 import { Chat, readLens, writeLens, type LensMode } from './chat.tsx';
+import { Composer, FADE } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen } from './home.tsx';
-import { Attach, ChevronDown, Down, Keyboard, Mic, Plus, Send } from './icons.tsx';
+import { ChevronDown, Down, Plus } from './icons.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
 import { SwitchDrawer } from './switch.tsx';
-import { AGENT_KEYS, SHELL_KEYS } from './keys.ts';
-import { quickReplies } from './replies.ts';
 
 // ---- themed terminal colours ----
 // A 256-colour or truecolour span carries the palette the agent picked, which is nobody's
@@ -122,17 +121,11 @@ export function Ansi({ text }: { text: string }) {
   );
 }
 
-/** Every key cap label the presets spell out, for the key bar an App profile asks for. */
-const KEY_LABEL = new Map([...AGENT_KEYS, ...SHELL_KEYS]);
-
 const ROLL: Status[] = ['blocked', 'working', 'done', 'idle', 'unknown'];
 const rollUp = (panes: StatePane[]): Status => ROLL.find((s) => panes.some((p) => p.status === s)) ?? 'unknown';
 
 /** The Pane a Tab reopens to, so switching back lands where you left. */
 const lastPane = new Map<string, string>();
-
-interface HeldMessage { id: number; text: string }
-let heldMessageId = 0;
 
 /** The same 500 ms hold and 10 px movement threshold as Home's row menus. */
 function useLongPress(fn: () => void) {
@@ -365,8 +358,6 @@ const HOLD_MS = 800;
 
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
 
-/** "Wider than the viewport" is a fade, not a scrollbar. The Diff screen reuses it. */
-export const FADE = 'linear-gradient(to right,#000 calc(100% - 24px),transparent)';
 
 /** The last block the agent printed, for read-aloud. */
 function lastBlock(text?: string): string {
@@ -376,119 +367,6 @@ function lastBlock(text?: string): string {
     .map((b) => b.trim())
     .filter(Boolean);
   return blocks.at(-1) ?? '';
-}
-
-/** `1.2 MB` for the composer chip. */
-const human = (n: number) =>
-  n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 ** 2).toFixed(1)} MB`;
-
-// ponytail: the attach reply is three fields, so it is declared here instead of imported
-// from shared/types.ts; the Hub owns its own copy of the same shape.
-interface Attached {
-  path: string;
-  bytes: number;
-  display: string;
-}
-
-interface Upload {
-  id: number;
-  file: File;
-  progress: number;
-  status: 'uploading' | 'done' | 'error';
-  path?: string;
-  display?: string;
-  reason?: string;
-}
-
-let uploadId = 0;
-
-/** The Hub's `error` field as one short phrase. Anything else is simply a failed upload. */
-const REASONS: Record<string, string> = {
-  'too large': 'too large',
-  body: 'empty file',
-  origin: 'blocked by the Hub',
-  'pane not found': 'Pane is gone',
-};
-
-const whyFailed = (xhr: XMLHttpRequest): string => {
-  try {
-    return REASONS[(JSON.parse(xhr.responseText) as { error?: string }).error ?? ''] ?? 'upload failed';
-  } catch {
-    return 'upload failed';
-  }
-};
-
-interface Recognition {
-  continuous: boolean;
-  interimResults: boolean;
-  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-  onend: (() => void) | null;
-  start(): void;
-  stop(): void;
-}
-
-function RecordingPill({
-  analyser,
-  onCancel,
-  onDone,
-}: {
-  analyser: AnalyserNode | null;
-  onCancel: () => void;
-  onDone: () => void;
-}) {
-  const [calm] = useState(reducedMotion);
-  const [seconds, setSeconds] = useState(0);
-  const [levels, setLevels] = useState(() => Array(calm ? 1 : 5).fill(0) as number[]);
-
-  useEffect(() => {
-    const started = Date.now();
-    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 250);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!analyser) return;
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    const sample = () => {
-      analyser.getByteFrequencyData(data);
-      const count = calm ? 1 : 5;
-      setLevels(Array.from({ length: count }, (_, i) => {
-        const from = Math.floor(i * data.length / count);
-        const to = Math.floor((i + 1) * data.length / count);
-        let total = 0;
-        for (let j = from; j < to; j += 1) total += data[j]!;
-        return total / Math.max(1, to - from) / 255;
-      }));
-    };
-    sample();
-    const timer = setInterval(sample, calm ? 250 : 80);
-    return () => clearInterval(timer);
-  }, [analyser, calm]);
-
-  const time = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-  return (
-    <div className="rise flex min-h-10 items-center gap-2 rounded-composer border border-border bg-surface px-1.5">
-      <button type="button" onClick={onCancel} className="press min-h-9 px-2 text-caption font-medium text-muted">
-        Cancel
-      </button>
-      <span aria-live="polite" className="text-caption font-semibold text-fg">Recording</span>
-      {analyser && (
-        <span aria-hidden className="flex h-5 flex-1 items-center justify-center gap-0.5">
-          {levels.map((level, i) => (
-            <span
-              key={i}
-              className="w-1 rounded-full bg-accent transition-[height] duration-75 ease-out motion-reduce:transition-none"
-              style={{ height: `${Math.max(4, Math.round(level * 20))}px` }}
-            />
-          ))}
-        </span>
-      )}
-      <time className={`font-mono text-caption tabular-nums text-muted ${analyser ? '' : 'ml-auto'}`}>{time}</time>
-      <button type="button" onClick={onDone} className="press min-h-9 px-2 text-caption font-semibold text-accent">
-        Done
-      </button>
-    </div>
-  );
 }
 
 export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state: State | null; screen: ScreenEvent | null }) {
@@ -529,17 +407,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // grid that already fits is left alone even then.
   const [fit, setFitState] = useState(() => localStorage.getItem('tautan.fit') === 'on');
   const setFit = (v: boolean) => { localStorage.setItem('tautan.fit', v ? 'on' : 'off'); setFitState(v); };
-  // The key bar is one row of the dock, behind its own trigger: an agent Pane types, so it
-  // starts collapsed and the composer is nearest the keyboard; a shell Pane only has keys.
-  const [keyBars, setKeyBars] = useState(() => ({
-    agent: localStorage.getItem('tautan.keys.agent') === 'on',
-    shell: localStorage.getItem('tautan.keys.shell') !== 'off',
-  }));
-  const showKeys = keyBars[kind];
-  const setShowKeys = (v: boolean) => {
-    localStorage.setItem(`tautan.keys.${kind}`, v ? 'on' : 'off');
-    setKeyBars((k) => ({ ...k, [kind]: v }));
-  };
   const [scale, setScale] = useState(1);
   const [fade, setFade] = useState(false);
   const [fresh, setFresh] = useState(false);
@@ -694,20 +561,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     if (pane) lastPane.set(`${pane.muxKey}/${pane.tabId}`, pane.key);
   }, [pane?.key]);
 
-  // Smart replies are the phone's own switch; Settings writes it and tells the Hub too.
-  const [smart] = useState(() => localStorage.getItem('tautan.smart') === 'on');
-
-  // The Hub drafts on a Status change, so a Pane that blocked before the switch went on
-  // has none. Ask once per revision; a Hub with Smart replies off answers with the Pane
-  // unchanged and nothing leaves it.
-  const asked = useRef('');
-  useEffect(() => {
-    const stamp = `${paneKey}@${pane?.revision}`;
-    if (!smart || !pane?.agent || pane.status !== 'blocked' || pane.suggestions?.length || asked.current === stamp) return;
-    asked.current = stamp;
-    void post(paneKey, 'suggest', {});
-  }, [smart, paneKey, pane?.agent, pane?.status, pane?.revision, pane?.suggestions?.length]);
-
   // The blocked card outlives the status by 150 ms, so it fades instead of vanishing.
   const loadExplain = () =>
     fetch(`/api/panes/${encodeURIComponent(paneKey)}/explain`)
@@ -790,82 +643,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const renameTab = tabs.find((t) => t.id === tabRename);
   const closingTab = tabs.find((t) => t.id === tabClose);
 
-  const [text, setText] = useState('');
-  const [heldMessages, setHeldMessages] = useState<HeldMessage[]>([]);
-  const [sendingHeld, setSendingHeld] = useState(false);
-  const heldGeneration = useRef(0);
-  const flushingHeld = useRef(false);
-  useEffect(() => {
-    heldGeneration.current += 1;
-    flushingHeld.current = false;
-    setHeldMessages([]);
-    setSendingHeld(false);
-  }, [paneKey]);
-  const input = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const el = input.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 96)}px`; // 4 rows at line-height 20 plus padding
-  }, [text]);
-
-  const send = () => {
-    if (!text.trim()) return;
-    haptic();
-    if (pane?.status === 'working') {
-      const message = { id: (heldMessageId += 1), text };
-      setHeldMessages((list) => [...list, message]);
-    } else {
-      void post(paneKey, 'input', { text, keys: ['enter'] } satisfies InputBody);
-    }
-    setText('');
-    // The paths went with the text. A chip still uploading keeps its place.
-    setUploads((list) => list.filter((u) => u.status === 'uploading'));
-    input.current?.focus();
-  };
-
-  const flushHeld = async () => {
-    if (flushingHeld.current || pane?.status === 'working') return;
-    const generation = heldGeneration.current;
-    const batch = heldMessages;
-    flushingHeld.current = true;
-    setSendingHeld(true);
-    haptic();
-    for (const message of batch) {
-      try {
-        await api<void>(`/api/panes/${encodeURIComponent(paneKey)}/input`, {
-          text: message.text,
-          keys: ['enter'],
-        } satisfies InputBody);
-      } catch {
-        break;
-      }
-      if (heldGeneration.current === generation) {
-        setHeldMessages((list) => list.filter((item) => item.id !== message.id));
-      }
-    }
-    if (heldGeneration.current === generation) {
-      flushingHeld.current = false;
-      setSendingHeld(false);
-    }
-  };
-
-  const [ctrlArmed, setCtrlArmed] = useState(false);
-  useEffect(() => setCtrlArmed(false), [paneKey, kind]);
-  const keys = (names: string[]) => {
-    haptic();
-    if (names.length === 1 && names[0] === 'ctrl') {
-      setCtrlArmed((armed) => !armed);
-      return;
-    }
-    if (ctrlArmed) {
-      setCtrlArmed(false);
-      if (names.length === 1 && names[0] === 'esc') return;
-      if (names.length === 1 && !names[0]!.includes('+')) names = [`ctrl+${names[0]}`];
-    }
-    void post(paneKey, 'input', { keys: names } satisfies InputBody);
-  };
-
   /** The blocked card must see the 409, so its send returns the outcome instead of
    *  swallowing it the way `post` does. */
   const sendBlocked = async (names: string[], promptId?: string): Promise<'sent' | 'changed'> => {
@@ -902,84 +679,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     el?.querySelector<HTMLElement>('[role="radio"]')?.focus({ preventScroll: true });
   };
 
-  /** A text pill is a draft, not an answer: it lands in the composer for review. */
-  const fill = (reply: string) => {
-    haptic();
-    setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}${reply}`);
-    input.current?.focus();
-  };
-
-  // ---- attachments ----
-  // `post()` is JSON only. An upload wants progress and an abort, so it goes out on XHR:
-  // the browser sets Origin either way, which is what the Hub checks.
-  const [uploads, setUploads] = useState<Upload[]>([]);
-  const picker = useRef<HTMLInputElement>(null);
-  const running = useRef(new Map<number, XMLHttpRequest>());
-
-  // A path is only good on the Host that wrote it, so nothing follows a Pane switch.
-  useEffect(() => {
-    const flight = running.current;
-    return () => {
-      for (const xhr of flight.values()) xhr.abort();
-      flight.clear();
-      setUploads([]);
-    };
-  }, [paneKey]);
-
-  const patch = (id: number, fields: Partial<Upload>) =>
-    setUploads((list) => list.map((u) => (u.id === id ? { ...u, ...fields } : u)));
-
-  const upload = (u: Upload) => {
-    const xhr = new XMLHttpRequest();
-    running.current.set(u.id, xhr);
-    xhr.open('POST', `/api/panes/${encodeURIComponent(paneKey)}/attach`);
-    // ponytail: setRequestHeader throws above Latin-1 and the Hub flattens everything
-    // outside [A-Za-z0-9._-] anyway, so a non-ASCII name is flattened here first.
-    xhr.setRequestHeader('X-Name', u.file.name.replace(/[^\x20-\x7e]/g, '_'));
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) patch(u.id, { progress: e.loaded / e.total });
-    };
-    xhr.onload = () => {
-      running.current.delete(u.id);
-      if (xhr.status !== 200) return patch(u.id, { status: 'error', reason: whyFailed(xhr) });
-      const { path, display } = JSON.parse(xhr.responseText) as Attached;
-      patch(u.id, { status: 'done', progress: 1, path, display });
-      // Claude Code and Pi read an absolute path out of the prompt, so `path` goes in the
-      // field and `display` stays on the chip.
-      setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}${path}`);
-    };
-    xhr.onerror = () => {
-      running.current.delete(u.id);
-      patch(u.id, { status: 'error', reason: 'upload failed' });
-    };
-    xhr.send(u.file);
-  };
-
-  const attach = (files: FileList | null) => {
-    for (const file of Array.from(files ?? [])) {
-      const u: Upload = { id: (uploadId += 1), file, progress: 0, status: 'uploading' };
-      setUploads((list) => [...list, u]);
-      upload(u);
-    }
-  };
-
-  const retry = (u: Upload) => {
-    patch(u.id, { progress: 0, status: 'uploading', reason: undefined });
-    upload(u);
-  };
-
-  const drop = (u: Upload) => {
-    running.current.get(u.id)?.abort();
-    running.current.delete(u.id);
-    setUploads((list) => list.filter((x) => x.id !== u.id));
-    const path = u.path;
-    // The token goes out exactly as it went in: with its separating space, either side.
-    if (path) setText((t) => t.replace(`${path} `, '').replace(` ${path}`, '').replace(path, ''));
-  };
-
-  const inFlight = uploads.filter((u) => u.status === 'uploading');
-  const progress = inFlight.length ? inFlight.reduce((n, u) => n + u.progress, 0) / inFlight.length : 0;
-
   const speak = () => {
     const synth = window.speechSynthesis;
     if (!synth) return;
@@ -992,97 +691,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // `touchend` always does. The strip's own scroll position guards the ambiguous case —
   // with more Tabs than fit, dragging scrolls the strip and must not also switch Tab.
   const swipe = useRef({ x: 0, scroll: 0 });
-  const rec = useRef<Recognition | null>(null);
-  const transcript = useRef('');
-  const keepTranscript = useRef(true);
-  const mic = useRef<{ stream: MediaStream; context: AudioContext } | null>(null);
-  const [listening, setListening] = useState(false);
-  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
-
-  const releaseMic = () => {
-    const active = mic.current;
-    mic.current = null;
-    try { active?.stream.getTracks().forEach((track) => track.stop()); } catch {}
-    try { if (active) void active.context.close().catch(() => {}); } catch {}
-    setAnalyser(null);
-  };
-
-  const stopDictation = (keep: boolean) => {
-    keepTranscript.current = keep;
-    const active = rec.current;
-    if (!active) return;
-    try {
-      active.stop();
-    } catch {
-      active.onend?.();
-    }
-  };
-
-  const dictate = () => {
-    if (rec.current) return stopDictation(true);
-    const Ctor = (window as unknown as { webkitSpeechRecognition?: new () => Recognition }).webkitSpeechRecognition;
-    if (!Ctor) return;
-    const r = new Ctor();
-    transcript.current = '';
-    keepTranscript.current = true;
-    r.continuous = true;
-    r.interimResults = true;
-    r.onresult = (e) => {
-      transcript.current = Array.from(e.results, (result) => result[0]?.transcript ?? '').join(' ').replace(/\s+/g, ' ').trim();
-    };
-    r.onend = () => {
-      if (rec.current !== r) return;
-      rec.current = null;
-      if (keepTranscript.current && transcript.current) {
-        setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}${transcript.current}`);
-      }
-      transcript.current = '';
-      setListening(false);
-      releaseMic();
-    };
-    rec.current = r;
-    setListening(true);
-    void (async () => {
-      let stream: MediaStream | null = null;
-      let context: AudioContext | null = null;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        if (rec.current !== r) {
-          stream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-        context = new AudioContext();
-        const next = context.createAnalyser();
-        next.fftSize = 64;
-        context.createMediaStreamSource(stream).connect(next);
-        await context.resume();
-        mic.current = { stream, context };
-        setAnalyser(next);
-      } catch {
-        try { stream?.getTracks().forEach((track) => track.stop()); } catch {}
-        try { if (context) await context.close(); } catch {}
-      }
-    })();
-    try {
-      r.start();
-    } catch {
-      r.onend();
-    }
-  };
-
-  useEffect(() => () => {
-    const active = rec.current;
-    rec.current = null;
-    if (active) {
-      active.onresult = null;
-      active.onend = null;
-      try { active.stop(); } catch {}
-    }
-    const audio = mic.current;
-    mic.current = null;
-    try { audio?.stream.getTracks().forEach((track) => track.stop()); } catch {}
-    try { if (audio) void audio.context.close().catch(() => {}); } catch {}
-  }, [paneKey]);
 
   if (state && !pane) {
     return (
@@ -1097,11 +705,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
 
   const agent = pane?.agent;
   const status = pane?.status ?? 'unknown';
-  // The card's 150 ms exit leaves only the caption visible. An active blocked prompt always
-  // keeps the held messages readable, because that is when the user must choose what to do.
-  const heldFolded = !!explain && status !== 'blocked';
-  // No engine, no button: Send stays in place, disabled, rather than a mic that does nothing.
-  const canDictate = 'webkitSpeechRecognition' in window;
   const active = tabs.find((t) => t.id === pane?.tabId);
   const activeIndex = active ? tabs.indexOf(active) : -1;
   // Past five Tabs the phone strip turns into a picker. Desktop tabs scroll instead.
@@ -1158,20 +761,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
       : localStorage.getItem(`tautan.mouse.${paneKey}`)
         ? 'overridden'
         : `from ${pane?.command ?? pane?.agent ?? 'the generic'} profile`;
-  const replies = agent ? quickReplies({ agent, explain, suggestions: pane?.suggestions, smart }) : [];
-  // The keys the blocked prompt offers stay first, because answering it is why the Pane is
-  // open; then the Hints the Screen itself printed, then the quick replies. Deduped, so a
-  // Hint that repeats the prompt's own `esc to cancel` is listed once.
-  const pills = [
-    ...replies.filter((p) => p.kind === 'key'),
-    ...hintPills(affordances, replies),
-    ...replies.filter((p) => p.kind === 'text'),
-  ];
-  // The App profile owns the key bar now: htop and less carry the function keys their own
-  // footer advertises, an agent carries the agent set. The cap's label is the key bar's own
-  // spelling, so a name the base sets do not carry prints as `F1`.
-  const preset = profile.keys.all.map((name) => [name, KEY_LABEL.get(name) ?? name.toUpperCase()] as [string, string]);
-  const inlineKeys = preset.filter(([name]) => profile.keys.inline.includes(name));
   // At `lg` the frame (app.tsx) gives the Pane the space beside the sidebar and the Pane
   // fills it; the old content-sized, centred column is gone. A phone is simply the window.
   const skeleton = !shown && waited;
@@ -1422,295 +1011,19 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         </div>
       )}
 
-      <div className="flex shrink-0 flex-col gap-2.5 rounded-t-drawer bg-elevated pt-3 pb-[max(env(safe-area-inset-bottom),12px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]">
-        {/* The blocked card lives here, above the composer, on its width and gutter. The
-            live region must exist before the card does, or a screen reader announces
-            nothing: it stays mounted at zero height while no prompt asks. */}
-        <div ref={card} aria-live="polite" className={explain ? 'px-4' : 'h-0 overflow-hidden px-4'}>
-          <div className={`transition-opacity duration-150 ${pane?.status === 'blocked' && explain ? 'opacity-100' : 'opacity-0'}`}>
-            {explain && (
-              <Blocked
-                key={explain.promptId ?? 'mock'}
-                explain={explain}
-                agent={agent}
-                stale={stale}
-                onSend={answer}
-                onReread={reread}
-              />
-            )}
-          </div>
-        </div>
-        {/* One bar: the keys a hand reaches for on the left, the replies you tap on the right. */}
-        <div className="flex items-center gap-2 pl-4">
-          <div className="flex shrink-0 items-center gap-1">
-            {/* The toggle opens the rest of the preset, so it leads the row it belongs to.
-                Filled, not a ghost: a control among the caps, and accent while it is open. */}
-            <button
-              type="button"
-              aria-label="Keys"
-              aria-expanded={showKeys}
-              aria-controls="pane-keys"
-              onClick={() => {
-                haptic();
-                setShowKeys(!showKeys);
-              }}
-              className={`press flex size-9 items-center justify-center rounded-chip border ${
-                showKeys ? 'border-accent bg-accent text-bg' : 'border-border bg-surface text-fg'
-              }`}
-            >
-              <Keyboard />
-            </button>
-            {inlineKeys.map(([name, label]) => (
-              <button
-                key={name}
-                type="button"
-                aria-label={name}
-                onClick={() => keys([name])}
-                className="press flex h-9 min-w-9 items-center justify-center rounded-chip border border-border bg-bg px-2 font-mono text-[11px] text-fg active:bg-surface"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          {pills.length > 0 && (
-            <div
-              role="group"
-              aria-label="Quick replies"
-              className="hscroll flex min-w-0 flex-1 gap-2 border-l border-border py-0.5 pr-4 pl-2"
-              style={{ maskImage: FADE, WebkitMaskImage: FADE }}
-            >
-              {pills.map((p, i) =>
-                p.kind === 'key' ? (
-                  <button
-                    key={`${p.label}-${i}`}
-                    type="button"
-                    aria-label={p.aria}
-                    onClick={() => keys(p.keys!)}
-                    className={`press flex shrink-0 items-center gap-1.5 rounded-chip px-3 py-[7px] text-[13px] whitespace-nowrap ${
-                      i === 0
-                        ? 'bg-accent font-semibold text-bg'
-                        : 'border border-border bg-bg font-medium text-fg active:bg-surface'
-                    }`}
-                  >
-                    {p.label}
-                    {p.glyph && (
-                      <span className={`font-mono text-[11px] ${i === 0 ? 'opacity-70' : 'text-muted'}`}>{p.glyph}</span>
-                    )}
-                  </button>
-                ) : (
-                  <button
-                    key={`${p.label}-${i}`}
-                    type="button"
-                    aria-label={p.aria}
-                    onClick={() => fill(p.label)}
-                    className={`press flex shrink-0 items-center gap-1.5 rounded-chip border border-border bg-bg px-3 py-[7px] text-[13px] whitespace-nowrap active:bg-surface ${
-                      p.generated ? 'text-fg' : 'text-muted'
-                    }`}
-                  >
-                    {p.generated && <span aria-hidden className="text-accent">✦</span>}
-                    {p.label}
-                  </button>
-                ),
-              )}
-            </div>
-          )}
-        </div>
-
-        {showKeys && (
-          <div id="pane-keys" role="group" aria-label="Keys" className="rise hscroll flex gap-2 px-4">
-            {preset.map(([name, label]) => (
-              <button
-                key={name}
-                type="button"
-                aria-label={name === 'ctrl' ? `${ctrlArmed ? 'Disarm' : 'Arm'} Control` : name}
-                aria-pressed={name === 'ctrl' ? ctrlArmed : undefined}
-                onClick={() => keys([name])}
-                className={`press flex h-9 shrink-0 items-center justify-center rounded-chip border px-3 font-mono text-caption active:bg-surface ${
-                  name === 'ctrl' && ctrlArmed
-                    ? 'border-accent bg-accent text-bg'
-                    : name === 'ctrl+c'
-                      ? 'border-border bg-bg text-danger'
-                      : 'border-border bg-bg text-fg'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {agent && heldMessages.length > 0 && (
-          <section aria-label="Held messages" className="mx-4 overflow-hidden rounded-composer border border-border bg-bg">
-            <div className={`flex min-h-9 items-center gap-3 px-3 ${heldFolded ? '' : 'border-b border-border'}`}>
-              <span aria-live="polite" className="flex-1 text-caption font-medium text-muted">
-                {heldMessages.length} held
-              </span>
-              {status !== 'working' && (
-                <button
-                  type="button"
-                  disabled={sendingHeld}
-                  onClick={() => void flushHeld()}
-                  className="press min-h-9 shrink-0 text-caption font-semibold text-accent disabled:text-muted"
-                >
-                  {sendingHeld ? 'Sending…' : 'Send now'}
-                </button>
-              )}
-            </div>
-            {!heldFolded && (
-              <ul className="max-h-28 overflow-y-auto overscroll-contain">
-                {heldMessages.map((message) => (
-                  <li key={message.id} className="flex min-h-10 items-center gap-2 border-t border-border/60 px-3 first:border-t-0">
-                    <span title={message.text} className="min-w-0 flex-1 truncate text-caption text-fg">
-                      {message.text}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={sendingHeld}
-                      aria-label={`Remove held message: ${message.text}`}
-                      onClick={() => setHeldMessages((list) => list.filter((item) => item.id !== message.id))}
-                      className="press flex size-9 shrink-0 items-center justify-center text-muted disabled:opacity-40"
-                    >
-                      ×
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        )}
-
-        {agent && (
-          <div className="flex flex-col gap-1.5 px-4">
-            {listening && (
-              <RecordingPill
-                analyser={analyser}
-                onCancel={() => stopDictation(false)}
-                onDone={() => stopDictation(true)}
-              />
-            )}
-            <div className="flex items-end gap-2 rounded-composer border border-border bg-bg py-1 pr-1.5 pl-3">
-              {/* The agent's glyph labels the field from inside it, where the prompt is. */}
-              <span aria-hidden className="self-center text-accent">
-                ✻
-              </span>
-              <textarea
-                ref={input}
-                rows={1}
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    send();
-                  }
-                }}
-                enterKeyHint="send"
-                aria-label={`Reply to ${agent}`}
-                placeholder={`Reply to ${agent[0]!.toUpperCase()}${agent.slice(1)}…`}
-                className="max-h-24 min-h-9 flex-1 resize-none self-center bg-transparent py-2 text-body leading-5 placeholder:text-muted focus:outline-none"
-              />
-              {text.trim() || !canDictate ? (
-                <button
-                  type="button"
-                  onClick={send}
-                  disabled={!text.trim()}
-                  aria-label="Send"
-                  className={`press flex size-9 shrink-0 items-center justify-center rounded-chip ${
-                    text.trim() ? 'bg-accent text-bg' : 'bg-surface text-muted'
-                  }`}
-                >
-                  <Send />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={dictate}
-                  aria-label={listening ? 'Done dictating' : 'Dictate'}
-                  aria-pressed={listening}
-                  className={`press flex size-9 shrink-0 items-center justify-center ${listening ? 'text-accent' : 'text-muted'}`}
-                >
-                  <Mic />
-                </button>
-              )}
-              <input
-                ref={picker}
-                type="file"
-                // ponytail: no `capture` — the button opens the library, never the camera.
-                // `image/*` is what makes iOS hand over a JPEG for a HEIC pick; see docs/UI.md.
-                accept="image/*,video/*"
-                multiple
-                hidden
-                onChange={(e) => {
-                  attach(e.target.files);
-                  e.target.value = ''; // so the same file can be picked twice
-                }}
-              />
-              <button
-                type="button"
-                aria-label="Attach"
-                onClick={() => picker.current?.click()}
-                className="flex size-9 shrink-0 items-center justify-center text-muted"
-              >
-                <Attach />
-              </button>
-            </div>
-
-            {inFlight.length > 0 && (
-              <div
-                role="progressbar"
-                aria-label="Uploading"
-                aria-valuenow={Math.round(progress * 100)}
-                className="h-0.5 overflow-hidden rounded-full bg-surface"
-              >
-                <div
-                  className="h-full bg-accent transition-[width] duration-150 ease-out motion-reduce:transition-none"
-                  style={{ width: `${progress * 100}%` }}
-                />
-              </div>
-            )}
-
-            {uploads.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {uploads.map((u) => (
-                  <span
-                    key={u.id}
-                    title={u.display ?? u.file.name}
-                    className={`flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-chip border border-border bg-bg py-0.5 pr-0.5 pl-2.5 text-caption ${
-                      u.status === 'error' ? 'text-danger' : 'text-fg'
-                    }`}
-                  >
-                    <span className="truncate">{u.file.name}</span>
-                    <span className="shrink-0 text-muted">{human(u.file.size)}</span>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${u.file.name}`}
-                      onClick={() => drop(u)}
-                      className="press flex size-7 shrink-0 items-center justify-center rounded-chip text-muted"
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {uploads.some((u) => u.status === 'error') && (
-              <div role="status" className="flex flex-col gap-1">
-                {uploads
-                  .filter((u) => u.status === 'error')
-                  .map((u) => (
-                    <p key={u.id} className="text-caption text-muted">
-                      {u.file.name} failed · {u.reason}{' '}
-                      <button type="button" onClick={() => retry(u)} className="text-accent">
-                        Retry
-                      </button>
-                    </p>
-                  ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+      <Composer
+        paneKey={paneKey}
+        pane={pane}
+        desktop={desktop}
+        profile={profile}
+        affordances={affordances}
+        lines={current ? lines : null}
+        explain={explain}
+        stale={stale}
+        onAnswer={answer}
+        onReread={reread}
+        cardRef={card}
+      />
 
       <SwitchDrawer
         open={showSwitch}

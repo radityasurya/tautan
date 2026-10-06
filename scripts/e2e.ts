@@ -251,6 +251,36 @@ try {
     await desktop.waitForTimeout(900);
     return assert(decodeURIComponent(desktop.url()).endsWith(second), `url=${desktop.url().slice(-30)}`);
   });
+
+  await flow('desktop composer: / types only; mode chip follows the Screen', async () => {
+    const agent = await pane('e2e-composer');
+    await report(agent, 'idle');
+    await print(agent, ['composer test, default mode']);
+    const sent: string[] = [];
+    const watch = (r: { method(): string; url(): string; postData(): string | null }) => {
+      if (r.method() === 'POST' && r.url().includes('/input')) sent.push(r.postData() ?? '');
+    };
+    desktop.on('request', watch);
+    try {
+      await desktop.goto(`${BASE}/#/pane/${encodeURIComponent(`HireOpz/default/${agent}`)}`, { waitUntil: 'networkidle' });
+      await desktop.getByText('composer test, default mode').first().waitFor({ timeout: 8_000 });
+      const field = desktop.getByRole('textbox', { name: /Reply to/i });
+      await desktop.getByRole('button', { name: 'Type /' }).click();
+      await desktop.waitForTimeout(400);
+      assert(await field.inputValue() === '/', `field=${await field.inputValue()}`);
+      assert(sent.length === 0, `sent ${sent.length} on /`);
+      const chip = desktop.getByRole('button', { name: /^Mode:/ });
+      assert(await chip.count() === 0, 'mode chip hidden without ⏵⏵');
+      await print(agent, ['❯', '  ⏵⏵ accept edits on (shift+tab to cycle) · Opus 4.6 · Context left until auto-compact: 37%']);
+      await chip.waitFor({ timeout: 8_000 });
+      assert(await desktop.getByText('37% context left').count() === 1, 'context shown');
+      await chip.click();
+      await desktop.waitForTimeout(400);
+      return assert(sent.some((body) => body.includes('"shift+tab"')), `sent=${sent.join('|').slice(0, 80)}`);
+    } finally {
+      desktop.off('request', watch);
+    }
+  });
 } finally {
   await browser.close().catch(() => {});
   try { process.kill(-hub.pid!, 'SIGTERM'); } catch {}

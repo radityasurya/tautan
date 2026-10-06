@@ -4,7 +4,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { DiffFile, DiffResult, DiffScope, State } from '../shared/types.ts';
 import { api } from './app.tsx';
 import { Back, ChevronDown, ChevronRight, Refresh } from './icons.tsx';
-import { FADE } from './pane.tsx';
+import { FADE } from './composer.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
 
 const SCOPES: [DiffScope, string][] = [
