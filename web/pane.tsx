@@ -981,7 +981,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
           </div>
           {/* ponytail: lane 10.8 deferred split Panes side by side; desktop keeps the chips row. */}
           {active && active.panes.length > 1 && (
-            <PaneChips panes={active.panes} paneKey={paneKey} className="px-4 py-2" />
+            <PaneChips panes={active.panes} paneKey={paneKey} className="border-b border-border px-4 py-2" />
           )}
         </div>
       ) : (
@@ -1057,7 +1057,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
           )}
 
           {/* Row two: the Panes of the open Tab, only when the Tab is split. */}
-          {active && active.panes.length > 1 && <PaneChips panes={active.panes} paneKey={paneKey} className="pt-2" />}
+          {active && active.panes.length > 1 && <PaneChips panes={active.panes} paneKey={paneKey} className="border-b border-border py-2" />}
         </div>
       )}
 

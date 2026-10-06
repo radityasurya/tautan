@@ -42,6 +42,11 @@ export interface Subagent {
   /** The subagent that started this one, when nested; absent for the main conversation's. */
   parentId?: string;
   at?: number;
+  /** Its conversation file's mtime in ms; it moves while the subagent runs. */
+  updatedAt?: number;
+  /** Whether it still runs, judged by the Hub from the file's ending and the parent's
+   *  completion records. Absent on an older Hub; the browser then keeps its own guess. */
+  state?: 'running' | 'done';
 }
 
 /** `GET /api/panes/:key/chat[?agent=<id>]`. `subagents` lists the whole tree, on both forms. */

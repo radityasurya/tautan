@@ -544,6 +544,7 @@ export function assertMockInvariants(): void {
     Object.keys(MOCK_DIFFS).every((key) => mockState.workspaces.some((w) => w.key === key)) || 'a Workspace per diff',
     /… \(\d/.test(strip(CLAUDE_WORKING)) || 'a Claude spinner line',
     MOCK_SUBAGENTS.some((a) => a.parentId) || 'a nested subagent',
+    MOCK_SUBAGENTS.some((a) => a.state === 'running' && a.updatedAt) && MOCK_SUBAGENTS.some((a) => a.state === 'done') || 'both subagent states',
     mockChat().turns.some((t) => t.tools.some((tool) => tool.link && tool.previewId !== undefined)) || 'an Artifact card with a preview',
   ].filter((p) => p !== true);
   if (problems.length) throw new Error(`mock fixtures lost ${problems.join(', ')}`);
@@ -581,11 +582,12 @@ function longOutput(): { result: string; resultLines: number } {
   return { result: `…\n${tail.slice(tail.indexOf('\n') + 1)}`, resultLines: lines.length };
 }
 
-/** Claude Code's subagents for the transcript below; `a3` was started by `a2`. */
+/** Claude Code's subagents for the transcript below; `a3` was started by `a2`. The states
+ *  are the Hub's judgement: `a1` finished, the other two still run. */
 const MOCK_SUBAGENTS: Subagent[] = [
-  { id: 'a1', type: 'Explore', description: 'Find where SSE events are routed', toolUseId: 'toolu_a1', at: ago(5) },
-  { id: 'a2', type: 'general-purpose', description: 'Write the SGR 22 regression test', toolUseId: 'toolu_a2', at: ago(4.5) },
-  { id: 'a3', type: 'Explore', description: 'Read the old ANSI fixtures', toolUseId: 'toolu_a3', parentId: 'a2', at: ago(4) },
+  { id: 'a1', type: 'Explore', description: 'Find where SSE events are routed', toolUseId: 'toolu_a1', at: ago(5), updatedAt: ago(4.8), state: 'done' },
+  { id: 'a2', type: 'general-purpose', description: 'Write the SGR 22 regression test', toolUseId: 'toolu_a2', at: ago(4.5), updatedAt: ago(0.2), state: 'running' },
+  { id: 'a3', type: 'Explore', description: 'Read the old ANSI fixtures', toolUseId: 'toolu_a3', parentId: 'a2', at: ago(4), updatedAt: ago(0.1), state: 'running' },
 ];
 
 /** Each subagent's own turns, as `?agent=<id>` returns them. */
@@ -625,6 +627,12 @@ const PREVIEW_HTML = [
     .map((c, n) => `<div class="s" style="background:${c}">${n}</div>`),
   '</div><script>document.body.style.background="red"</script>',
 ].join('');
+
+const LIVE_FROM = Date.now();
+const liveTurn = (n: number): Turn => ({
+  role: 'assistant', at: LIVE_FROM + n * 4_000, text: `Step ${n}: running the next check.`,
+  tools: [{ name: 'Bash', brief: `pnpm test --filter step-${n}`, detail: `pnpm test --filter step-${n}`, result: `✓ step-${n} (12 ms)`, resultLines: 1 }],
+});
 
 /** A Claude transcript as `GET /api/panes/:key/chat` returns it, with the Markdown Claude writes. */
 const mockChat = (agent?: string): ChatResponse => agent ? {
@@ -703,7 +711,7 @@ const mockChat = (agent?: string): ChatResponse => agent ? {
       // Two subagents, started side by side.
       role: 'assistant', at: ago(5), text: 'I will map the event routes and write the regression test in parallel.',
       tools: [
-        { name: 'Task', brief: 'Find where SSE events are routed', detail: '{\n  "subagent_type": "Explore",\n  "description": "Find where SSE events are routed"\n}', subagentId: 'a1' },
+        { name: 'Task', brief: 'Find where SSE events are routed', detail: '{\n  "subagent_type": "Explore",\n  "description": "Find where SSE events are routed"\n}', subagentId: 'a1', result: 'Routed in server/http.ts: /api/events streams state, pane and alert events.', resultLines: 1 },
         { name: 'Task', brief: 'Write the SGR 22 regression test', detail: '{\n  "subagent_type": "general-purpose",\n  "description": "Write the SGR 22 regression test"\n}', subagentId: 'a2' },
       ],
     },
@@ -1044,7 +1052,7 @@ async function readBody(input: RequestInfo | URL, init?: RequestInit): Promise<u
   return undefined;
 }
 
-function route(s: Store, url: URL, method: string, body: unknown): Response | undefined {
+function route(s: Store, url: URL, method: string, body: unknown, headers?: Headers): Response | undefined {
   if (method === 'GET' && url.pathname === '/api/state') return json(s.state);
   if (url.pathname === '/api/settings') {
     if (method === 'GET') return json(s.settings);
@@ -1125,7 +1133,15 @@ function route(s: Store, url: URL, method: string, body: unknown): Response | un
   if (method === 'GET' && match[2] === 'chat') {
     if (pane.agent !== 'claude') return json({ error: 'no-transcript' }, 404);
     const agent = url.searchParams.get('agent') ?? undefined;
-    return agent && !SUBAGENT_TURNS[agent] ? json({ error: 'no-subagent' }, 404) : json(mockChat(agent));
+    if (agent && !SUBAGENT_TURNS[agent]) return json({ error: 'no-subagent' }, 404);
+    // An ETag like the Hub's. `?mock&open=live` grows Main by one Bash turn every 4 s, so
+    // the Chat view's polling and its "New messages" pill can be seen.
+    const grown = !agent && mockOpen() === 'live' ? Math.floor((Date.now() - LIVE_FROM) / 4_000) : 0;
+    const etag = `"mock-${agent ?? 'main'}-${grown}"`;
+    if (headers?.get('if-none-match') === etag) return new Response(null, { status: 304, headers: { etag } });
+    const chat = mockChat(agent);
+    for (let n = 1; n <= grown; n++) chat.turns.push(liveTurn(n));
+    return Response.json(chat, { headers: { etag, 'cache-control': 'no-cache' } });
   }
   if (method === 'GET' && match[2] === 'explain') return json(mockExplains[key] ?? null);
   if (method === 'POST' && match[2] === 'input') {
@@ -1214,7 +1230,8 @@ export function installMock(): void {
     const url = new URL(href, location.origin);
     if (!url.pathname.startsWith('/api/')) return original(input, init);
     const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
-    const response = route(s, url, method, await readBody(input, init));
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    const response = route(s, url, method, await readBody(input, init), headers);
     await sleep(80 + Math.random() * 120); // slow enough to see the loading states
     return response ?? json({ error: 'not found' }, 404);
   };

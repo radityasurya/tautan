@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatLens, localIo, transcriptDir, type ChatHub } from '../server/chat.ts';
@@ -41,7 +41,7 @@ const t1Jsonl = [
   { type: 'user', isSidechain: true, timestamp: '2026-10-06T00:00:05.000Z', message: { content: [
     { type: 'tool_result', tool_use_id: 'toolu_r2', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: subPng } }] },
   ] } },
-  { type: 'assistant', isSidechain: true, timestamp: '2026-10-06T00:00:06.000Z', message: { content: [{ type: 'text', text: 'Done drafting.' }] } },
+  { type: 'assistant', isSidechain: true, timestamp: '2026-10-06T00:00:06.000Z', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done drafting.' }] } },
 ].map(line).join('\n');
 const t2Jsonl = [{ type: 'user', isSidechain: true, timestamp: '2026-10-06T00:00:04.500Z', message: { content: 'Polish.' } }].map(line).join('\n');
 // No timestamp anywhere in t3's file: `at` falls back to the file's mtime.
@@ -93,7 +93,10 @@ describe('chat subagents and previews', () => {
     const chat = await lens.query(paneKey);
     expect(chat?.sessionId).toBe(id);
     expect(chat?.subagents?.map(item => item.id)).toEqual(['t1aaaa', 't2bbbb', 't3cccc']); // ordered by `at`
-    expect(chat?.subagents?.[1]).toEqual({ id: 't2bbbb', type: 'worker', description: 'Polish', toolUseId: 'toolu_t2', parentId: 't1aaaa', at: Date.parse('2026-10-06T00:00:04.500Z') });
+    expect(chat?.subagents?.[1]).toEqual({ id: 't2bbbb', type: 'worker', description: 'Polish', toolUseId: 'toolu_t2', parentId: 't1aaaa', at: Date.parse('2026-10-06T00:00:04.500Z'), updatedAt: expect.any(Number), state: 'running' });
+    // t1 ended with a final assistant message; the others are fresh and unfinished. t2's Task
+    // rows sit in t1's file, not the main transcript, so only the ending and freshness judge it.
+    expect(chat?.subagents?.map(item => item.state)).toEqual(['done', 'running', 'running']);
     expect(chat?.subagents?.[2]!.parentId).toBeUndefined(); // a parent id outside the list is dropped
     const [task, write, artifact, read] = chat!.turns[1]!.tools;
     expect(task!.subagentId).toBe('t1aaaa');
@@ -151,6 +154,28 @@ describe('chat subagents and previews', () => {
     expect(JSON.stringify(chat)).not.toContain('<title>');
   });
 
+  test('GET /chat answers 304 to a matching If-None-Match until the transcript moves', async () => {
+    const first = await get(`/api/panes/${key}/chat`);
+    const etag = first.headers.get('etag')!;
+    expect(etag).toMatch(/^"[0-9a-z]+"$/);
+    expect(first.headers.get('cache-control')).toBe('no-cache');
+    const again = await handle(new Request(`http://tautan.test/api/panes/${key}/chat`, { headers: { 'if-none-match': `"other", W/${etag}` } }));
+    expect(again.status).toBe(304);
+    expect(again.headers.get('etag')).toBe(etag);
+    expect(await again.text()).toBe('');
+    // A subagent's conversation carries its own tag.
+    const sub = await get(`/api/panes/${key}/chat?agent=t1aaaa`);
+    expect(sub.headers.get('etag')).not.toBe(etag);
+    // An appended line moves the signature: a new tag and a full body.
+    const file = join(transcriptDir('/repo', id, home), '..', `${id}.jsonl`);
+    writeFileSync(file, `${mainJsonl}\n${line({ type: 'assistant', timestamp: '2026-10-06T00:00:09.000Z', message: { content: [{ type: 'text', text: 'More.' }] } })}`);
+    const moved = await handle(new Request(`http://tautan.test/api/panes/${key}/chat`, { headers: { 'if-none-match': etag } }));
+    expect(moved.status).toBe(200);
+    expect(moved.headers.get('etag')).not.toBe(etag);
+    expect((await moved.json()).turns.at(-1).text).toBe('More.');
+    writeFileSync(file, mainJsonl);
+  });
+
   test('GET /chat?agent= serves the subagent conversation; unknown or malformed ids give no-agent', async () => {
     const ok = await get(`/api/panes/${key}/chat?agent=t1aaaa`);
     expect(ok.status).toBe(200);
@@ -187,5 +212,52 @@ describe('chat subagents and previews', () => {
     const badAgent = await get(`/api/panes/${key}/chat/preview/0?agent=nope`);
     expect(badAgent.status).toBe(404);
     expect(await badAgent.json()).toEqual({ error: 'no-agent' });
+  });
+
+  test('a quiet unfinished file reads done, and the state moves the ETag with the transcript still', async () => {
+    const file = join(transcriptDir('/repo', id, home), 'subagents', 'agent-t3cccc.jsonl');
+    const etag = (await lens.tagged(paneKey))!.etag;
+    const stale = Date.now() / 1000 - 200;
+    utimesSync(file, stale, stale); // the process died: nothing else will move
+    const chat = await lens.query(paneKey);
+    expect(chat?.subagents?.find(item => item.id === 't3cccc')!.state).toBe('done');
+    expect(chat?.subagents?.find(item => item.id === 't2bbbb')!.state).toBe('running');
+    const moved = (await lens.tagged(paneKey))!.etag;
+    expect(moved).not.toBe(etag);
+    const again = await handle(new Request(`http://tautan.test/api/panes/${key}/chat`, { headers: { 'if-none-match': etag } }));
+    expect(again.status).toBe(200); // the digest, not the transcript, moved the tag
+    utimesSync(file, Date.now() / 1000, Date.now() / 1000);
+  });
+
+  test('a background Task reads done only once its notification lands in the parent', async () => {
+    const bgHome = mkdtempSync(join(tmpdir(), 'tautan-chat-bg-'));
+    const sid = '55555555-5555-5555-5555-555555555555';
+    const bgKey = 'local/fake/p9';
+    let bgLens: ChatLens | undefined;
+    try {
+      const dir = transcriptDir('/repo', sid, bgHome);
+      mkdirSync(join(dir, 'subagents'), { recursive: true });
+      const main = [
+        line({ type: 'user', timestamp: '2026-10-06T00:00:00.000Z', message: { content: 'Go.' } }),
+        line({ type: 'assistant', timestamp: '2026-10-06T00:00:01.000Z', message: { content: [
+          { type: 'tool_use', id: 'toolu_bg1', name: 'Task', input: { prompt: 'Scan.', run_in_background: true } },
+        ] } }),
+      ].join('\n');
+      writeFileSync(join(dir, '..', `${sid}.jsonl`), main);
+      writeFileSync(join(dir, 'subagents', 'agent-bg11111.meta.json'), JSON.stringify({ agentType: 'recon', toolUseId: 'toolu_bg1' }));
+      writeFileSync(join(dir, 'subagents', 'agent-bg11111.jsonl'), t2Jsonl); // fresh, ends on a user entry
+      const chatHub: ChatHub = {
+        resolvePane: () => ({ paneId: 'p9', entry: { mux: { kind: 'herdr' }, tree: { panes: [{ id: 'p9', agentSession: sid }] } } }),
+        state: async () => ({ panes: [{ key: bgKey, cwd: '/repo' }] }) as State,
+        paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
+      };
+      bgLens = new ChatLens(chatHub, localIo, bgHome);
+      expect((await bgLens.query(bgKey))?.subagents?.[0]!.state).toBe('running'); // the tool_result came back at once
+      writeFileSync(join(dir, '..', `${sid}.jsonl`), `${main}\n${line({ type: 'user', timestamp: '2026-10-06T00:00:09.000Z', message: { content: [
+        { type: 'text', text: '<task-notification><task-id>bg11111</task-id><tool-use-id>toolu_bg1</tool-use-id><status>completed</status></task-notification>' },
+      ] } })}`);
+      expect((await bgLens.query(bgKey))?.subagents?.[0]!.state).toBe('done');
+      expect((await bgLens.query(bgKey))!.turns.map(turn => turn.role)).toEqual(['user', 'assistant']); // the wrapper line stays out
+    } finally { bgLens?.close(); rmSync(bgHome, { recursive: true, force: true }); }
   });
 });

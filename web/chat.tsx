@@ -1,15 +1,15 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { timeAgo } from './home.tsx';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Dot, timeAgo } from './home.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown } from './markdown.tsx';
-import { ChevronRight } from './icons.tsx';
+import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
 import type { ChatResponse, Subagent, Tool, Turn } from '../shared/chat.ts';
 import type { Span, Status } from '../shared/types.ts';
 import { deliver, dropPending, pendingSnapshot, settled, subscribePending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
 import { toolbarFromScreen, type Profile } from './profiles.ts';
-import { readSubagent, setShowing, subagentChips, subagentName, writeSubagent } from './subagents.ts';
+import { finishedIn, readSubagent, setShowing, subagentChips, subagentName, subagentRows, subagentRunning, writeSubagent } from './subagents.ts';
 
 export type LensMode = 'chat' | 'screen';
 
@@ -193,7 +193,7 @@ function ToolBody({ tool, image, preview }: { tool: Tool; image?: ReturnType<typ
 
 /**
  * One tool call. A published page (the Artifact tool) is a card with Open; a Task that
- * started a subagent offers its conversation; HTML the Agent wrote previews when opened.
+ * started a subagent opens that Agent; HTML the Agent wrote previews when opened.
  */
 function ToolRow({
   paneKey,
@@ -277,7 +277,7 @@ function ToolRow({
           onClick={() => onOpenSubagent(tool.subagentId!)}
           className="press flex min-h-11 w-full items-center justify-between gap-2 rounded-b-chip border-t border-border px-3 text-left text-caption font-semibold text-accent lg:min-h-9"
         >
-          Open conversation
+          Open agent
           <ChevronRight size={16} />
         </button>
       )}
@@ -338,45 +338,173 @@ function Working({ agent, status, spinner, onReview }: {
   );
 }
 
-/** "Main", then one chip per subagent, newest last; one row that scrolls sideways. */
-function Switcher({ subagents, selected, onPick }: { subagents: Subagent[]; selected?: string; onPick: (id?: string) => void }) {
-  const chips = useMemo(() => [{ id: '', label: 'Main' }, ...subagentChips(subagents)], [subagents]);
+/**
+ * The Agents of this Pane's chat: the main Agent first, with the Pane's Status, then every
+ * subagent, running ones first and then newest, each nested one after its parent. One row of
+ * chips that scrolls sideways; the list button on its left opens them all as rows above the
+ * strip, each with its description, state and start time. Choosing a row switches and closes
+ * it; Esc and a click outside close it too.
+ */
+function Switcher({ agent, status, subagents, running, selected, onPick }: {
+  agent: string;
+  status: Status;
+  subagents: Subagent[];
+  running: (agent: Subagent) => boolean;
+  selected?: string;
+  onPick: (id?: string) => void;
+}) {
+  const chips = useMemo(() => subagentChips(subagents, running), [subagents, running]);
+  const rows = useMemo(() => subagentRows(subagents, running), [subagents, running]);
+  const busy = rows.filter((r) => r.running).length;
   const current = useRef<HTMLButtonElement>(null);
-  useEffect(() => current.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' }), [selected]);
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  useEffect(() => { current.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }, [selected]);
+  useEffect(() => {
+    if (!open) return;
+    const chosen = panel.current?.querySelector<HTMLElement>('[aria-current=true]');
+    chosen?.scrollIntoView({ block: 'nearest' });
+    chosen?.focus({ preventScroll: true });
+    const away = (e: PointerEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      trigger.current?.focus();
+    };
+    document.addEventListener('pointerdown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('pointerdown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+  const choose = (id?: string) => {
+    setOpen(false);
+    onPick(id);
+    trigger.current?.focus();
+  };
+  const mainState = word(status);
+  const row = (id: string | undefined, depth: number, name: string, detail: string | undefined, dot: Status, seen: boolean, state: string, live: boolean, at?: number) => {
+    const on = selected === id;
+    return (
+      <li key={id ?? ''}>
+        <button
+          type="button"
+          aria-current={on ? 'true' : undefined}
+          onClick={() => choose(id)}
+          title={detail ? `${name} · ${detail}` : name}
+          className={`press flex min-h-12 w-full items-center gap-2.5 rounded-lg py-1.5 pr-2.5 text-left hover:bg-fg/6 lg:min-h-10 ${on ? 'bg-fg/6' : ''}`}
+          style={{ paddingLeft: 10 + depth * 16 }}
+        >
+          {depth > 0 && <span aria-hidden className="-mr-1 shrink-0 text-[12px] text-muted">↳</span>}
+          <Dot status={dot} seen={seen} />
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-baseline gap-2">
+              <span className={`truncate text-[13px] text-fg ${on ? 'font-semibold' : 'font-medium'}`}>{name}</span>
+              <span className={`shrink-0 text-[11px] ${live ? 'font-medium text-accent' : 'text-muted'}`}>{state}</span>
+            </span>
+            {detail && <span className="block truncate text-[12px] text-muted">{detail}</span>}
+          </span>
+          <Stamp at={at} />
+          <span aria-hidden className={`flex w-4 shrink-0 justify-end text-accent ${on ? '' : 'invisible'}`}>
+            <Check size={16} />
+          </span>
+        </button>
+      </li>
+    );
+  };
+  const chip = (id: string, label: string, dot: Status, seen: boolean, state: string) => {
+    const on = (selected ?? '') === id;
+    return (
+      <button
+        key={id}
+        ref={on ? current : undefined}
+        type="button"
+        aria-pressed={on}
+        aria-label={`${label}, ${state}`}
+        title={`${label} · ${state}`}
+        onClick={() => onPick(id || undefined)}
+        className={`press flex h-8 max-w-[15rem] shrink-0 items-center gap-1.5 rounded-chip border px-2.5 text-[12px] whitespace-nowrap ${
+          on ? 'border-transparent bg-surface font-medium text-fg' : 'border-border text-muted'
+        }`}
+      >
+        <Dot status={dot} seen={seen} size={6} />
+        <span className="truncate">{label}</span>
+      </button>
+    );
+  };
   return (
     <div className="shrink-0 px-4 pt-1 pb-2">
-      <div
-        role="group"
-        aria-label="Conversations"
-        // `hscroll` is not defined in theme.css, so the strip says what it needs.
-        className="flex gap-1.5 overflow-x-auto overscroll-x-contain [scrollbar-width:none] lg:mx-auto lg:max-w-5xl"
-        style={{ maskImage: FADE_END, WebkitMaskImage: FADE_END }}
-      >
-        {chips.map((chip) => {
-          const on = (selected ?? '') === chip.id;
-          return (
-            <button
-              key={chip.id}
-              ref={on ? current : undefined}
-              type="button"
-              aria-pressed={on}
-              title={chip.label}
-              onClick={() => onPick(chip.id || undefined)}
-              className={`press flex h-8 max-w-[15rem] shrink-0 items-center rounded-chip border px-2.5 text-[12px] whitespace-nowrap ${
-                on ? 'border-transparent bg-surface font-medium text-fg' : 'border-border text-muted'
-              }`}
-            >
-              <span className="truncate">{chip.label}</span>
-            </button>
-          );
-        })}
+      <div ref={box} className="relative flex gap-1.5 lg:mx-auto lg:max-w-5xl">
+        <button
+          ref={trigger}
+          type="button"
+          aria-label={`All Agents, ${rows.length + 1}${busy ? `, ${busy} running` : ''}`}
+          title="All Agents"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          className={`press flex size-8 shrink-0 items-center justify-center rounded-chip border ${
+            open ? 'border-transparent bg-surface text-fg' : 'border-border text-muted hover:text-fg'
+          }`}
+        >
+          <ListIcon />
+        </button>
+        <div
+          role="group"
+          aria-label="Agents"
+          // `hscroll` is not defined in theme.css, so the strip says what it needs.
+          className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto overscroll-x-contain [scrollbar-width:none]"
+          style={{ maskImage: FADE_END, WebkitMaskImage: FADE_END }}
+        >
+          {chip('', `${agent} · main`, status, false, mainState)}
+          {chips.map((c) => chip(c.id, c.label, c.running ? 'working' : 'done', !c.running, c.running ? 'running' : 'done'))}
+        </div>
+        {open && (
+          <div
+            ref={panel}
+            role="dialog"
+            aria-label="Agents"
+            className="absolute right-0 bottom-full left-0 z-40 mb-1.5 flex max-h-[min(26rem,60dvh)] flex-col rounded-xl border border-border bg-elevated shadow-elevated sm:right-auto sm:w-[28rem]"
+          >
+            <p className="flex shrink-0 items-baseline justify-between px-3.5 pt-2.5 pb-1 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">
+              Agents
+              <span className="font-normal tracking-normal normal-case tabular-nums">
+                {busy ? `${busy} running · ` : ''}{rows.length + 1}
+              </span>
+            </p>
+            <ul className="min-h-0 overflow-y-auto overscroll-contain px-1.5 pb-1.5">
+              {row(undefined, 0, agent, 'main', status, false, mainState, status === 'working' || status === 'blocked')}
+              {rows.map((r) => row(r.agent.id, r.depth, r.agent.type?.trim() || 'Subagent', r.agent.description?.trim(), r.running ? 'working' : 'done', !r.running, r.running ? 'running' : 'done', r.running, r.agent.at))}
+            </ul>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
+/** The main Agent's state in the switcher, in the header's words. */
+const word = (s: Status) => (s === 'blocked' ? 'needs you' : s);
+
+/** Rows with a bullet each: the list panel's button. */
+const ListIcon = () => (
+  <svg viewBox="0 0 24 24" width={16} height={16} fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" aria-hidden>
+    <path d="M9 6h11M9 12h11M9 18h11" />
+    <path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" strokeWidth={2.6} />
+  </svg>
+);
+
 // The strip's fade, on the right edge only; the last chip stays readable once scrolled to.
 const FADE_END = 'linear-gradient(to right,#000 calc(100% - 16px),transparent)';
+
+/** What a poll can add to a conversation: a turn, a tool row, or text on the last turn. */
+const tail = (chat: ChatResponse) => {
+  const last = chat.turns.at(-1);
+  return `${chat.turns.length}:${last?.tools.length ?? 0}:${last?.text.length ?? 0}`;
+};
 
 /** A reply that waits for its answer longer than this, with the Status never moving, stops showing the dots. */
 const AWAIT_MS = 30_000;
@@ -406,6 +534,8 @@ export function Chat({
   const [selected, setSelected] = useState<string | undefined>(() => readSubagent(paneKey));
   const [data, setData] = useState<{ agent?: string; chat: ChatResponse } | null>(null);
   const [subagents, setSubagents] = useState<Subagent[]>([]);
+  /** Subagents whose Task row has its result in a transcript loaded so far: they have finished. */
+  const [finished, setFinished] = useState<ReadonlySet<string>>(() => new Set());
   // The response on screen: the selected conversation's, or nothing while it loads.
   const view = data && data.agent === selected ? data.chat : null;
   const box = useRef<HTMLDivElement>(null);
@@ -413,6 +543,9 @@ export function Chat({
   /** Each conversation's scroll, kept across switches; null means "at the bottom". */
   const scrolls = useRef(new Map<string, number | null>());
   const restore = useRef<number | null>(null);
+  /** New turns arrived below while the user reads further up. */
+  const [fresh, setFresh] = useState(false);
+  const shown = useRef<ChatResponse | null>(null);
   const all = useSyncExternalStore(subscribePending, pendingSnapshot);
   const waiting = all.filter((p) => p.paneKey === paneKey);
   // The Hub re-reads the transcript on a revision, which may come late or not at all for a
@@ -433,6 +566,7 @@ export function Chat({
     pinned.current = saved === undefined || saved === null;
     restore.current = saved ?? null;
     writeSubagent(paneKey, id);
+    setFresh(false);
     setSelected(id);
   };
 
@@ -442,27 +576,78 @@ export function Chat({
     return () => setShowing(paneKey, undefined);
   }, [paneKey, selected]);
 
+  // The Chat view polls its transcript, because herdr moves a Pane's revision on the title,
+  // cwd and Status only: a long working turn would never refresh. Each poll asks with the
+  // last ETag and costs the Hub a stat and a 304 until the transcript moves. The next poll
+  // waits for the previous one; a revision, a send or a Status change asks at once.
+  // ponytail: a change sends the whole conversation again (4 MB on the busiest Pane); an
+  // incremental `?since=` or an SSE push from the Hub is the upgrade.
+  const pace = useRef({ fast: false, blocked: false });
+  pace.current = { fast: status === 'working' || waiting.some((p) => p.state !== 'held' && p.state !== 'failed'), blocked: status === 'blocked' };
+  const poke = useRef(() => {});
   useEffect(() => {
+    const url = `/api/panes/${encodeURIComponent(paneKey)}/chat${selected ? `?agent=${encodeURIComponent(selected)}` : ''}`;
     const controller = new AbortController();
-    const query = selected ? `?agent=${encodeURIComponent(selected)}` : '';
-    fetch(`/api/panes/${encodeURIComponent(paneKey)}/chat${query}`, { signal: controller.signal })
-      .then((response) => {
-        if (!response.ok) throw new Error(String(response.status));
-        return response.json() as Promise<ChatResponse>;
-      })
-      .then((result) => {
-        if (!Array.isArray(result.turns)) throw new Error('invalid chat');
-        setData({ agent: selected, chat: result });
-        if (result.subagents) setSubagents(result.subagents);
-      })
-      .catch((error: Error) => {
-        if (error.name === 'AbortError') return;
-        // A subagent's transcript that went away falls back to Main; Main's falls back to Screen.
-        if (selected) pick(undefined);
-        else onUnavailable();
-      });
-    return () => controller.abort();
-  }, [paneKey, selected, revision, nudge, onUnavailable]);
+    let etag: string | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let busy = false, again = false, loaded = false, quiet = 0;
+    const next = () => {
+      clearTimeout(timer);
+      if (controller.signal.aborted || document.visibilityState === 'hidden') return;
+      const { fast, blocked } = pace.current;
+      if (fast || blocked) quiet = 0; // the 30 s back-off counts idle 304s only
+      timer = setTimeout(run, fast ? 1_500 : blocked ? 5_000 : quiet >= 4 ? 30_000 : 15_000);
+    };
+    const run = async () => {
+      clearTimeout(timer);
+      if (busy) { again = true; return; }
+      busy = true;
+      try {
+        const response = await fetch(url, { signal: controller.signal, cache: 'no-store', headers: etag ? { 'if-none-match': etag } : {} });
+        if (response.status === 304) quiet++;
+        else {
+          if (!response.ok) throw Object.assign(new Error(String(response.status)), { gone: response.status === 404 || response.status === 501 });
+          const result = (await response.json()) as ChatResponse;
+          if (!Array.isArray(result.turns)) throw new Error('invalid chat');
+          etag = response.headers.get('etag');
+          quiet = 0;
+          loaded = true;
+          setData({ agent: selected, chat: result });
+          if (result.subagents) setSubagents(result.subagents);
+          const done = finishedIn(result.turns);
+          setFinished((prev) => (done.every((id) => prev.has(id)) ? prev : new Set([...prev, ...done])));
+        }
+      } catch (error) {
+        if ((error as Error).name === 'AbortError') return;
+        // A transcript that went away, or one that never loaded: a subagent's falls back to
+        // Main, Main's to Screen. A blip on a loaded view only waits for the next poll.
+        if (!loaded || (error as { gone?: boolean }).gone) {
+          controller.abort();
+          if (selected) pick(undefined);
+          else onUnavailable();
+          return;
+        }
+      } finally { busy = false; }
+      if (again) { again = false; void run(); } else next();
+    };
+    poke.current = () => void run();
+    const onVisible = () => { if (document.visibilityState === 'visible') void run(); else clearTimeout(timer); };
+    document.addEventListener('visibilitychange', onVisible);
+    void run();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      poke.current = () => {};
+    };
+  }, [paneKey, selected, onUnavailable]);
+  // A revision, a send's nudge or a Status change asks now instead of at the next tick.
+  const asked = useRef(`${revision} ${nudge} ${status}`);
+  useEffect(() => {
+    const now = `${revision} ${nudge} ${status}`;
+    if (now !== asked.current) poke.current();
+    asked.current = now;
+  }, [revision, nudge, status]);
 
   // A remembered subagent the transcript no longer lists: back to Main.
   useEffect(() => {
@@ -485,11 +670,14 @@ export function Chat({
     const el = box.current;
     if (newest !== undefined && newest !== followed.current) pinned.current = true;
     followed.current = newest;
+    const before = shown.current;
+    shown.current = view;
     if (!el || !view) return;
     if (restore.current !== null) {
       el.scrollTop = restore.current;
       restore.current = null;
     } else if (pinned.current) el.scrollTop = el.scrollHeight;
+    else if (before && before !== view && before.agent === view.agent && tail(before) !== tail(view)) setFresh(true);
   }, [view, newest]);
 
   // Images load after the turns render and grow the list; a pinned view follows them down.
@@ -529,30 +717,37 @@ export function Chat({
 
   const byId = useMemo(() => new Map(subagents.map((s) => [s.id, s])), [subagents]);
   const open = selected ? byId.get(selected) : undefined;
+  const live = status === 'working' || status === 'blocked';
+  const running = useCallback((item: Subagent) => subagentRunning(item, subagents, finished, live), [subagents, finished, live]);
+  const openRunning = open ? running(open) : false;
   const pendingShown = selected ? [] : waiting;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {selected && (
         <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-1.5">
-          <p className="min-w-0 flex-1 truncate text-caption">
-            <span className="font-semibold text-fg">Subagent</span>
-            {open && (open.type || open.description) && (
-              <span className="text-muted"> · {[open.type, open.description].filter(Boolean).join(' — ')}</span>
-            )}
+          <p className="flex min-w-0 flex-1 items-center gap-2 text-caption">
+            <Dot status={openRunning ? 'working' : 'done'} seen={!openRunning} size={7} />
+            <span className="min-w-0 truncate">
+              <span className="font-semibold text-fg">{open?.type?.trim() || 'Subagent'}</span>
+              <span className={openRunning ? 'text-accent' : 'text-muted'}> {openRunning ? 'running' : 'done'}</span>
+              {open?.description?.trim() && <span className="text-muted"> · {open.description.trim()}</span>}
+            </span>
           </p>
           <button type="button" onClick={() => pick(undefined)} className="press -my-1 inline-flex min-h-9 shrink-0 items-center text-caption font-semibold text-accent">
-            Back to Main
+            Back to {agent}
           </button>
         </div>
       )}
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={box}
         aria-busy={!view}
-        aria-label={open ? `Subagent transcript, ${subagentName(open)}` : 'Chat transcript'}
+        aria-label={open ? `${subagentName(open)}, subagent transcript` : `${agent} transcript`}
         onScroll={(event) => {
           const el = event.currentTarget;
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          if (pinned.current) setFresh(false);
         }}
         className={`relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4 ${subagents.length ? 'pb-4' : 'pb-10'}`}
       >
@@ -620,7 +815,25 @@ export function Chat({
           {view && busy && <Working agent={agent} status={status === 'blocked' ? 'blocked' : 'working'} spinner={spinner} onReview={onReview} />}
         </div>
       </div>
-      {subagents.length > 0 && <Switcher subagents={subagents} selected={selected} onPick={pick} />}
+      {fresh && (
+        <button
+          type="button"
+          onClick={() => {
+            const el = box.current;
+            if (el) el.scrollTop = el.scrollHeight;
+            pinned.current = true;
+            setFresh(false);
+          }}
+          className="absolute inset-x-0 bottom-2 mx-auto flex w-max items-center gap-1.5 rounded-chip bg-elevated px-3 py-1.5 text-caption font-medium text-fg shadow-elevated"
+        >
+          <Down />
+          New messages
+        </button>
+      )}
+      </div>
+      {subagents.length > 0 && (
+        <Switcher agent={agent} status={status} subagents={subagents} running={running} selected={selected} onPick={pick} />
+      )}
     </div>
   );
 }

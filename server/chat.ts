@@ -14,6 +14,10 @@ export interface TranscriptIo {
   /** One round trip: a `subagents` directory's signature and its `agent-<id>.meta.json` files;
    *  `undefined` when the directory does not exist. */
   subagents?(dir: string, target?: string): Promise<SubagentDir | undefined>;
+  /** Every `agent-<id>.jsonl` mtime in ms, in one cheap round trip for the running check. */
+  mtimes?(dir: string, target?: string): Promise<Map<string, number> | undefined>;
+  /** The last `bytes` of a file, for a conversation's ending. */
+  tail?(path: string, bytes: number, target?: string): Promise<string>;
 }
 
 type Process = { pid?: number; name?: string; argv?: string[] };
@@ -90,6 +94,31 @@ export const localIo: TranscriptIo = {
     }
   },
   read: path => readFile(path, 'utf8'),
+  async mtimes(dir) {
+    try {
+      const out = new Map<string, number>();
+      for (const name of await readdir(dir)) {
+        const id = name.match(/^agent-(.+)\.jsonl$/)?.[1];
+        if (!id) continue;
+        const info = await stat(join(dir, name)).catch(() => undefined);
+        if (info?.isFile()) out.set(id, Math.round(info.mtimeMs));
+      }
+      return out;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+  },
+  async tail(path, bytes) {
+    const info = await stat(path);
+    const handle = await open(path, 'r');
+    try {
+      const start = Math.max(0, info.size - bytes);
+      const buffer = Buffer.alloc(info.size - start);
+      await handle.read(buffer, 0, buffer.length, start);
+      return buffer.toString('utf8');
+    } finally { await handle.close(); }
+  },
   async subagents(dir) {
     try {
       const info = await stat(dir);
@@ -128,7 +157,35 @@ const remoteIo: TranscriptIo = {
     return result.stdout;
   },
   subagents: (dir, target) => target ? remoteSubagents(dir, target) : localIo.subagents!(dir),
+  mtimes: (dir, target) => target ? remoteMtimes(dir, target) : localIo.mtimes!(dir),
+  tail: async (path, bytes, target) => {
+    if (!target) return localIo.tail!(path, bytes);
+    const result = await ssh(target, `tail -c ${bytes} -- ${remotePath(path)}`);
+    if (result.code) throw new Error('remote transcript tail failed');
+    return result.stdout;
+  },
 };
+
+/** One ssh round trip for every agent file's mtime, in seconds since the epoch. */
+async function remoteMtimes(dir: string, target: string): Promise<Map<string, number> | undefined> {
+  const script = `d=${remotePath(dir)}
+[ -d "$d" ] || exit 3
+for f in "$d"/agent-*.jsonl; do
+  [ -f "$f" ] || continue
+  i=\${f##*/agent-}; i=\${i%.jsonl}
+  e=$(LC_ALL=C stat -c '%Y' -- "$f" 2>/dev/null || stat -f '%m' -- "$f" 2>/dev/null || echo 0)
+  printf '%s %s\\n' "$i" "$e"
+done`;
+  const result = await ssh(target, script);
+  if (result.code === 3) return undefined;
+  if (result.code) throw new Error('remote subagents mtimes failed');
+  const out = new Map<string, number>();
+  for (const line of result.stdout.split('\n')) {
+    const found = line.match(/^(\S+) (\d+)$/);
+    if (found) out.set(found[1]!, Number(found[2]!) * 1000);
+  }
+  return out;
+}
 
 /** One ssh round trip for the whole `subagents` directory: its mtime, then per agent its
  *  conversation file's mtime and head, and the meta file's text, between `@@` marker lines. */
@@ -232,17 +289,111 @@ function subagentsOf(agents: SubagentDir['agents']): Subagent[] {
   return list.sort((a, b) => (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER));
 }
 
+/** What the parent transcript records about its subagents: the Task tool_use ids that
+ *  finished, and every id a background task's `<task-notification>` named. A foreground
+ *  Task's result arrives when it ends; a background Task's arrives at once, so only its
+ *  later notification — which carries the tool-use id, and the agent id as its task id —
+ *  says it ended. The notification rides any entry kind, so this scans the raw lines. */
+export interface ParentDone { finished: Set<string>; notified: Set<string> }
+
+export function parentFinished(jsonl: string): ParentDone {
+  const calls = new Map<string, boolean>(); // Task tool_use id → started with run_in_background
+  const results = new Set<string>();
+  const notified = new Set<string>();
+  const notification = (value: unknown): string | undefined => {
+    if (typeof value === 'string') return value.includes('<task-notification>') && value.includes('<tool-use-id>') ? value : undefined;
+    if (!value || typeof value !== 'object') return undefined;
+    for (const item of Array.isArray(value) ? value : Object.values(value as Record<string, unknown>)) {
+      const found = notification(item);
+      if (found) return found;
+    }
+  };
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.includes('"tool_use"') && !line.includes('"tool_result"') && !line.includes('<task-notification>')) continue;
+    let entry: Record<string, unknown>;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      entry = value as Record<string, unknown>;
+    } catch { continue; }
+    const note = notification(entry);
+    if (note) {
+      const toolUseId = note.match(/<tool-use-id>([^<]+)<\/tool-use-id>/)?.[1];
+      const taskId = note.match(/<task-id>([^<]+)<\/task-id>/)?.[1];
+      if (toolUseId) notified.add(toolUseId);
+      if (taskId) notified.add(taskId); // a background subagent's task id is its agent id
+      continue;
+    }
+    const content = (entry.message as Record<string, unknown> | undefined)?.content;
+    if (!Array.isArray(content)) continue;
+    for (const item of content) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const block = item as Record<string, unknown>;
+      if (block.type === 'tool_use' && (block.name === 'Task' || block.name === 'Agent') && typeof block.id === 'string')
+        calls.set(block.id, (block.input as Record<string, unknown> | undefined)?.run_in_background === true);
+      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') results.add(block.tool_use_id);
+    }
+  }
+  const finished = new Set<string>();
+  for (const [id, background] of calls) if (background ? notified.has(id) : results.has(id)) finished.add(id);
+  return { finished, notified };
+}
+
+/** Whether a conversation's tail ends with a final assistant message, Claude Code's own
+ *  end-of-run record. Most finished subagents miss it — the answer goes to the parent as the
+ *  Task result — so this is one signal beside the parent's records and the file's freshness. */
+function endsDone(tail: string): boolean {
+  const lines = tail.split('\n');
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index];
+    if (!line) continue;
+    let entry: Record<string, unknown>;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      entry = value as Record<string, unknown>;
+    } catch { continue; } // a line the tail window cut
+    if (entry.type !== 'assistant' && entry.type !== 'user') continue; // reminders and attachments ride last
+    const message = entry.message;
+    return entry.type === 'assistant' && !!message && typeof message === 'object' && !Array.isArray(message)
+      && (message as Record<string, unknown>).stop_reason === 'end_turn';
+  }
+  return false;
+}
+
+// A file this quiet reads done: its process most likely died. A tool silent longer than this
+// (a slow build) reads done until its next write or the parent's record corrects it.
+const STALE_MS = 90_000;
+const TAIL_BYTES = 16_384;
+
 export class ChatLens {
   private cache = new Map<string, Cached>();
   private subagents = new Map<string, Subagents>();
+  /** The main transcript's completion records per Pane, re-derived only on a fresh parse. */
+  private parents = new Map<string, { sessionId: string; parent: ParentDone }>();
+  /** Each subagent file's judged ending per Pane; the cached mtime says when to read again. */
+  private tails = new Map<string, { sessionId: string; tails: Map<string, { mtime: number; done: boolean }> }>();
   private reads = new Map<string, Promise<Cached | undefined>>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly hub: ChatHub, private readonly io: TranscriptIo = remoteIo, private readonly home = homedir()) {}
 
   async query(paneKey: string, agent?: string): Promise<ChatResponse | undefined> {
+    return (await this.tagged(paneKey, agent))?.chat;
+  }
+
+  /** The chat with a strong ETag. One tag per parse: the parse is cached on the transcript's
+   *  signature, so the tag holds exactly as long as the JSON it names. */
+  async tagged(paneKey: string, agent?: string): Promise<{ chat: ChatResponse; etag: string } | undefined> {
     const value = await this.value(paneKey, agent);
-    return value && { sessionId: value.sessionId, turns: value.turns, at: value.at, subagents: value.subagents, ...(agent ? { agent } : {}) };
+    if (!value) return undefined;
+    const { inode, size, mtime } = value.signature;
+    // The subagents' states and mtimes ride the tag: they move while the transcript stands still.
+    const digest = value.subagents.map((item) => `${item.id}\u0001${item.state ?? ''}\u0001${item.updatedAt ?? ''}`).join('\u0002');
+    return {
+      chat: { sessionId: value.sessionId, turns: value.turns, at: value.at, subagents: value.subagents, ...(agent ? { agent } : {}) },
+      etag: `"${Bun.hash([value.sessionId, agent ?? '', inode, size, mtime, value.at, digest].join('\u0000')).toString(36)}"`,
+    };
   }
 
   /** The Pane's subagent tree, `undefined` when the Pane resolves to no session. */
@@ -253,7 +404,9 @@ export class ChatLens {
     const target = this.hub.host(await this.hub.paneHost(paneKey))?.target;
     const cwd = (await this.hub.state()).panes.find(item => item.key === paneKey)?.cwd;
     if (!cwd) return undefined;
-    return (await this.list(paneKey, join(transcriptDir(cwd, resolved.sessionId, target ? '$HOME' : this.home), 'subagents'), target, resolved.sessionId))?.list ?? [];
+    const dir = join(transcriptDir(cwd, resolved.sessionId, target ? '$HOME' : this.home), 'subagents');
+    const found = await this.list(paneKey, dir, target, resolved.sessionId);
+    return found ? await this.states(paneKey, dir, target, resolved.sessionId, found.list) : [];
   }
 
   /** Image `id` from the cached parse of the main or a subagent conversation: `undefined`
@@ -307,19 +460,30 @@ export class ChatLens {
     const signature = await this.io.stat(path, target);
     if (!signature) { this.cache.delete(cacheKey); return; }
     const cached = this.cache.get(cacheKey);
-    if (cached?.sessionId === session && sameSignature(cached.signature, signature)) return cached;
+    if (cached?.sessionId === session && sameSignature(cached.signature, signature)) {
+      // The transcript stands still while a subagent runs; its own file keeps moving.
+      if (dir) cached.subagents = await this.states(paneKey, join(dir, 'subagents'), target, session, (await this.list(paneKey, join(dir, 'subagents'), target, session))?.list ?? cached.subagents);
+      return cached;
+    }
     let list: Subagent[] = [];
+    let subagentDir: string | undefined;
     if (dir) {
+      subagentDir = join(dir, 'subagents');
       // The tree rides every Claude parse: the turns link Task rows by toolUseId, on both forms.
-      list = (await this.list(paneKey, join(dir, 'subagents'), target, session))?.list ?? [];
+      list = (await this.list(paneKey, subagentDir, target, session))?.list ?? [];
       if (agent && !list.some(item => item.id === agent)) return; // the route pre-checks; a race only misses the cache
     }
     const jsonl = await this.io.read(path, target);
+    // Only the main transcript holds the first-level Task rows; a nested subagent's Task rows
+    // sit in another subagent's file, which this scan does not read — those fall back to the
+    // ending and freshness rules.
+    if (subagentDir && !agent) this.parents.set(paneKey, { sessionId: session, parent: parentFinished(jsonl) });
     const images: TranscriptImage[] = [];
     const previews: string[] = [];
     const subagentIds = new Map<string, string>();
     for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
     const opts: ParseOpts = { images, previews, subagentIds, ...(agent ? { sidechain: true } : {}) };
+    if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
     const value: Cached = { sessionId: session, signature, turns: (resolved.agent === 'pi' ? parsePiTranscript : parseTranscript)(jsonl, opts), images, previews, subagents: list, at: Date.now() };
     this.cache.set(cacheKey, value);
     return value;
@@ -337,6 +501,47 @@ export class ChatLens {
     const value: Subagents = { sessionId, signature, list: found ? subagentsOf(found.agents) : [] };
     this.subagents.set(paneKey, value);
     return value;
+  }
+
+  /** The tree with each subagent judged `running` or `done`: done when the parent's records
+   *  name it, or its own file ends with a final assistant message; else done once its file
+   *  has been quiet past STALE_MS, running until then. One mtime round trip per refresh; a
+   *  tail is re-read only when its file moved. */
+  private async states(paneKey: string, dir: string, target: string | undefined, sessionId: string, list: Subagent[]): Promise<Subagent[]> {
+    const readMtimes = this.io.mtimes, readTail = this.io.tail;
+    if (!readMtimes || !list.length) return list;
+    let mtimes: Map<string, number> | undefined;
+    try { mtimes = await readMtimes(dir, target); } catch { return list; } // a failing check must not take the chat down
+    if (!mtimes) return list;
+    let cache = this.tails.get(paneKey);
+    if (!cache || cache.sessionId !== sessionId) {
+      cache = { sessionId, tails: new Map() };
+      this.tails.set(paneKey, cache);
+    }
+    const parent = this.parents.get(paneKey);
+    const records = parent && parent.sessionId === sessionId ? parent.parent : undefined;
+    const out: Subagent[] = [];
+    for (const agent of list) {
+      const mtime = mtimes.get(agent.id);
+      if (mtime === undefined) { out.push(agent); continue; } // the file is gone; the listing catches up when the directory moves
+      const recorded = records && agent.toolUseId !== undefined && (records.finished.has(agent.toolUseId) || records.notified.has(agent.id));
+      let done = Boolean(recorded);
+      if (!done) {
+        let tail = cache.tails.get(agent.id);
+        if (tail?.mtime !== mtime) {
+          let ending = false;
+          if (readTail) {
+            try { ending = endsDone(await readTail(join(dir, `agent-${agent.id}.jsonl`), TAIL_BYTES, target)); }
+            catch { /* a failing read leaves the judgement to freshness */ }
+          }
+          tail = { mtime, done: ending };
+          cache.tails.set(agent.id, tail);
+        }
+        done = tail.done || Date.now() - mtime > STALE_MS;
+      }
+      out.push({ ...agent, updatedAt: mtime, state: done ? 'done' : 'running' });
+    }
+    return out;
   }
 
   private schedule(paneKey: string, agent?: string): void {

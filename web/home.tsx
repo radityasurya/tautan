@@ -922,12 +922,14 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
     writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
   const listed = state && (needsYou.length > 0 || running.length > 0 || groups.length > 0);
-  // The top: title, search, Host chips. In the sidebar it stays put while only the list
-  // under it scrolls; on the phone the window scrolls and the TopBar is sticky, so neither
-  // part may be wrapped there.
+  // The top: title and search. In the sidebar it stays put while only the list under it
+  // scrolls, and it lines up with the Pane beside it: the title row is the Pane header's
+  // 64 px and the search band the Tab strip's 47 px, so the Host chips scroll with the
+  // list there. On the phone the window scrolls and the TopBar is sticky, so neither part
+  // may be wrapped there.
   const top = (
-    <>
       <TopBar
+        tall={compact}
         title="tautan"
         right={
           <>
@@ -959,21 +961,32 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
         }
         below={
           state ? (
-            <div className="px-4 pb-2">
-              <SearchInput
-                value={q}
-                onChange={setQ}
-                placeholder="Search panes"
-                shortcut={null}
-                style={{ width: '100%', height: 40 }}
-              />
-            </div>
+            compact ? (
+              // The sidebar's band is the field: flat, edge to edge, on the Tab strip's surface so
+              // it reads as the same second layer; the band's hairline is its bottom edge, and it
+              // shows an accent line like the open Tab's when it has focus.
+              <div className="relative bg-surface after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-accent after:opacity-0 after:transition-opacity focus-within:after:opacity-100">
+                <SearchInput
+                  value={q}
+                  onChange={setQ}
+                  placeholder="Search panes"
+                  shortcut={null}
+                  style={{ width: '100%', height: 46, padding: '0 16px', gap: 10, border: 'none', borderRadius: 0, background: 'transparent' }}
+                />
+              </div>
+            ) : (
+              <div className="px-4 pb-2">
+                <SearchInput value={q} onChange={setQ} placeholder="Search panes" shortcut={null} style={{ width: '100%', height: 40 }} />
+              </div>
+            )
           ) : undefined
         }
       />
-
+  );
+  const hostChips = (
+    <>
       {state && state.hosts.length > 1 && (
-        <div role="group" aria-label="Filter by Host" className="hscroll flex gap-2 px-4 pt-1.5 pb-0.5">
+        <div role="group" aria-label="Filter by Host" className={`hscroll flex gap-2 px-4 pb-0.5 ${compact ? 'pt-2.5' : 'pt-1.5'}`}>
           {[{ id: null, label: 'All', online: true }, ...state.hosts].map((h) => (
             <Chip key={h.id ?? 'all'} selected={host === h.id} onToggle={() => setHost(h.id)}>
               {h.label}
@@ -1220,10 +1233,14 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
       }
     >
       {compact ? <div className="shrink-0 border-b border-border">{top}</div> : top}
+      {(!compact || herdr) && hostChips}
       {herdr ? (
         herdrBody
       ) : compact ? (
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-4">{list}</div>
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-4">
+          {hostChips}
+          {list}
+        </div>
       ) : (
         list
       )}
