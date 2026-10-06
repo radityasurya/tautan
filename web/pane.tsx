@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
-import { classify } from '../shared/layout.ts';
+import { boxInner, classify, type LineKind } from '../shared/layout.ts';
 import type {
   NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
@@ -101,6 +101,69 @@ export function spanStyle(s: Span): CSSProperties {
     fontStyle: s.italic ? 'italic' : undefined,
     textDecoration: lines || undefined,
   };
+}
+
+/** The spans of one line between two plain-text offsets, styles kept. */
+function sliceSpans(spans: Span[], start: number, end: number): Span[] {
+  const out: Span[] = [];
+  let at = 0;
+  for (const sp of spans) {
+    const from = Math.max(start, at);
+    const to = Math.min(end, at + sp.text.length);
+    if (from < to) out.push({ ...sp, text: sp.text.slice(from - at, to - at) });
+    at += sp.text.length;
+  }
+  return out;
+}
+
+const runs = (spans: Span[]) => spans.map((sp, j) => <span key={j} style={spanStyle(sp)}>{sp.text}</span>);
+
+/** Box chrome redrawn by CSS: each edge and row is one block, so a run of them stacks into one box. */
+const CHROME: Partial<Record<LineKind, string>> = {
+  rule: 'mb-[0.5lh] h-[0.5lh] border-b',
+  'box-top': 'mt-[0.5lh] min-h-[0.5lh] rounded-t-chip border-x border-t px-[1ch]',
+  'box-row': 'min-h-[1lh] border-x px-[1ch]',
+  'box-bottom': 'mb-[0.5lh] min-h-[0.5lh] rounded-b-chip border-x border-b px-[1ch]',
+};
+
+/**
+ * One Screen line in Wrap. Prose reflows. A rule or a box around prose is drawn at the
+ * column's width by CSS, in the glyphs' own colour, and the words inside reflow — Claude
+ * Code draws these at the desktop's full width, which pinned the whole column at 1000+ px.
+ */
+function WrapLine({ spans, kind }: { spans: Span[]; kind: LineKind }) {
+  const chrome = CHROME[kind];
+  if (!chrome) return <span className="block min-h-[1lh] break-words whitespace-pre-wrap">{runs(spans)}</span>;
+  const glyph = spans.find((sp) => /\S/.test(sp.text));
+  const style = { borderColor: (glyph && spanStyle(glyph).color) || 'currentColor' };
+  if (kind === 'rule') return <span aria-hidden className={`block ${chrome}`} style={style} />;
+  const [start, end] = boxInner(spans.map((sp) => sp.text).join(''), kind);
+  return (
+    <span className={`block break-words whitespace-pre-wrap ${chrome}`} style={style}>
+      {runs(sliceSpans(spans, start, end))}
+    </span>
+  );
+}
+
+/** Wrapped lines; a run of structure lines shares one sideways scroller so its columns stay in step. */
+function Wrapped({ lines, kinds }: { lines: Span[][]; kinds: LineKind[] }) {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (kinds[i] !== 'structure') {
+      out.push(<WrapLine key={i} spans={lines[i]!} kind={kinds[i] ?? 'prose'} />);
+      continue;
+    }
+    const from = i;
+    while (kinds[i + 1] === 'structure') i++;
+    out.push(
+      <span key={from} className="block overflow-x-auto">
+        {lines.slice(from, i + 1).map((spans, j) => (
+          <span key={j} className="block min-h-[1lh] w-max whitespace-pre">{runs(spans)}</span>
+        ))}
+      </span>,
+    );
+  }
+  return <>{out}</>;
 }
 
 /** Styled ANSI text. Shared by the grid and the blocked card's detection excerpt. */
@@ -902,7 +965,8 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
             setBand(Math.floor(el.scrollTop / Math.max(1, cell.rh * scale) / 10));
             measure();
           }}
-          className="h-full overflow-auto pt-1 pb-2 pl-4 lg:pr-4"
+          // Wrap fits the column, so it gets the right gutter too: a box border never meets the edge.
+          className={`h-full overflow-auto pt-1 pb-2 pl-4 lg:pr-4 ${effectiveWrap ? 'pr-4' : ''}`}
           style={{
             ...(fade ? { maskImage: FADE, WebkitMaskImage: FADE } : null),
             // A vertical drag is the app's wheel while forwarding; sideways stays the
@@ -926,30 +990,15 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
               ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left' } : null),
             }}
           >
-            {lines.map((spans, i) =>
-              effectiveWrap ? (
-                <span
-                  key={i}
-                  className={`block min-h-[1lh] ${
-                    kinds?.[i] === 'structure' ? 'w-max whitespace-pre' : 'break-words whitespace-pre-wrap'
-                  }`}
-                >
-                  {spans.map((sp, j) => (
-                    <span key={j} style={spanStyle(sp)}>
-                      {sp.text}
-                    </span>
-                  ))}
-                </span>
-              ) : (
+            {effectiveWrap && kinds ? (
+              <Wrapped lines={lines} kinds={kinds} />
+            ) : (
+              lines.map((spans, i) => (
                 <Fragment key={i}>
-                  {spans.map((sp, j) => (
-                    <span key={j} style={spanStyle(sp)}>
-                      {sp.text}
-                    </span>
-                  ))}
+                  {runs(spans)}
                   {'\n'}
                 </Fragment>
-              ),
+              ))
             )}
             {/* Inside the `<pre>`, so the Fit transform scales the boxes with the text. A held
                 Screen is the last Pane's, so its Affordances would type into the wrong Pane. */}

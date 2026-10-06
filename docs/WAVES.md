@@ -387,6 +387,12 @@ prose lines keep `whitespace-pre-wrap`. The page scroller still pans a block sid
 per-block scroller, the page's own gesture already works. Affordances stay off in Wrap
 (unchanged today) and mouse forwarding is unchanged. No new dependency.
 
+**Superseded 2026-10-07.** One full-width Claude Code rule or box made the whole page pan on
+a phone. Now a rule-only line is a CSS hairline, and a `│ … │` box with prose inside is a
+bordered block whose text wraps (`rule`, `box-*` kinds in `shared/layout.ts`). Tables and
+aligned columns still keep their columns, but each run pans inside its own `overflow-x`
+block, so the page never pans.
+
 **Verify:** on the phone, open an agent Pane holding a permission box. The prose fills the
 width; the box stays square and pans; no border lands mid-word. On the desktop browser, a
 120-column agent Pane renders whole at the measured column, unwrapped.
