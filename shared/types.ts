@@ -23,6 +23,10 @@ export interface Explain {
 export interface Mux {
   readonly kind: 'herdr' | 'tmux';
   readonly id: string;
+  /** the socket this Mux is reached through (HerdrMux's unix socket, TmuxMux's `-S` path); test doubles may omit it */
+  readonly socketPath?: string;
+  /** last-known version for the state stream (herdr's snapshot, `tmux -V`); absent until learned */
+  cachedVersion?(): string | undefined;
   tree(): Promise<Tree>;
   read(paneId: string, mode: ScreenMode): Promise<Screen>;
   sendText(paneId: string, text: string): Promise<void>;
@@ -46,12 +50,21 @@ export interface Mux {
 
 export interface StateHost {
   id: string; label: string; online: boolean; error?: string;
+  /** epoch ms of the next reconnect attempt; set only while the Hub's backoff loop retries this Host */
+  retryAt?: number;
   /** ssh target or tailnet name; absent for the local machine */
   target?: string;
   /** where the Host came from: this machine, `herdr machine list`, or the config file */
   source?: 'local' | 'machines' | 'config';
 }
-export interface StateMux { key: string; hostId: string; kind: 'herdr' | 'tmux'; label: string; online: boolean }
+export interface StateMux {
+  key: string; hostId: string; kind: 'herdr' | 'tmux'; label: string; online: boolean;
+  /** the socket the Hub dials: the real path locally, the forwarded local path for a remote herdr
+   *  Mux (the remote tmux path, which the Hub addresses over ssh directly) */
+  socket?: string;
+  /** as the Mux itself reports it (herdr's snapshot, `tmux -V`); absent until the Hub learns it */
+  version?: string;
+}
 export interface StateWorkspace { key: string; muxKey: string; id: string; label: string; cwd?: string }
 export interface StateTab { key: string; muxKey: string; workspaceId: string; id: string; label: string }
 export interface StatePane {

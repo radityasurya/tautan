@@ -117,6 +117,9 @@ export class HerdrMux implements Mux {
     return this.versionRequest;
   }
 
+  /** The last snapshot's version, for the sync state stream; `version()` refreshes it. */
+  cachedVersion(): string | undefined { return this.serverVersion?.value; }
+
   async sendText(paneId: string, text: string): Promise<void> { await this.rpc('pane.send_text', { pane_id: paneId, text }); }
 
   /** The geometry lease's target (ADR 0004): the pane's terminal id and its operator rect. */

@@ -9,6 +9,8 @@ import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus } from '.
 import { Chip, EmptyState, IconButton, SearchInput, SegmentedControl, Skeleton, usePal } from './halaska-kit';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
+import { yesNoKeys } from '../shared/blocked.ts';
+import { fetchExplain, ON_WARN, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
 
 // ---- status ----
 
@@ -131,7 +133,14 @@ export interface RowActions {
  * scrolls the page's. A tap on an open row closes it instead of navigating. Long-press
  * opens the same actions as a menu, which is also the desktop path.
  */
-function Row({ pane, first, actions, context }: { pane: StatePane; first?: boolean; actions?: RowActions; context?: string }) {
+function Row({ pane, first, actions, context, compact }: {
+  pane: StatePane;
+  first?: boolean;
+  actions?: RowActions;
+  context?: string;
+  /** The desktop sidebar: one 36 px line, no preview. */
+  compact?: boolean;
+}) {
   const fresh = unseen(pane);
   const word = pane.status[0]!.toUpperCase() + pane.status.slice(1); // UX §7: the dot never carries Status alone
   const when = timeAgo(pane.statusChangedAt);
@@ -153,21 +162,28 @@ function Row({ pane, first, actions, context }: { pane: StatePane; first?: boole
           setX(0);
         }
       }}
-      className="press flex min-h-14 items-center gap-3 px-4 py-2.5 active:bg-surface [-webkit-touch-callout:none]"
+      className={`press flex items-center [-webkit-touch-callout:none] ${compact ? 'min-h-9 gap-2.5 px-4 py-1 hover:bg-bg active:bg-bg' : 'min-h-14 gap-3 px-4 py-2.5 active:bg-surface'}`}
       {...(actions ? press : {})}
     >
       <Dot status={pane.status} seen={!fresh} />
-      <span aria-hidden className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span className="shrink-0 text-body text-muted">{pane.agent ?? 'shell'}</span>
-          <span className={`truncate text-body ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
+      {compact ? (
+        <span aria-hidden className="flex min-w-0 flex-1 items-baseline gap-2">
+          <span className={`truncate text-[13px] ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
+          <span className="shrink-0 text-caption text-muted">{pane.agent ?? 'shell'}</span>
         </span>
-        <span className={`truncate text-caption text-muted ${pane.lastLine ? '' : 'font-mono'}`}>
-          {word && <span className={statusText[pane.status]}>{word} · </span>}
-          {preview(pane)}
-          {context && <span className="text-muted/70"> · {context}</span>}
+      ) : (
+        <span aria-hidden className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="shrink-0 text-body text-muted">{pane.agent ?? 'shell'}</span>
+            <span className={`truncate text-body ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
+          </span>
+          <span className={`truncate text-caption text-muted ${pane.lastLine ? '' : 'font-mono'}`}>
+            {word && <span className={statusText[pane.status]}>{word} · </span>}
+            {preview(pane)}
+            {context && <span className="text-muted/70"> · {context}</span>}
+          </span>
         </span>
-      </span>
+      )}
       <span aria-hidden className="shrink-0 font-mono text-caption tabular-nums text-muted">
         {when}
       </span>
@@ -196,7 +212,7 @@ function Row({ pane, first, actions, context }: { pane: StatePane; first?: boole
         </button>
       </div>
       <div
-        className={`relative bg-bg ${live ? '' : 'transition-transform duration-200 ease-out motion-reduce:transition-none'}`}
+        className={`relative ${compact ? 'bg-surface' : 'bg-bg'} ${live ? '' : 'transition-transform duration-200 ease-out motion-reduce:transition-none'}`}
         style={{ transform: `translateX(${x}px)`, touchAction: 'pan-y' }}
         onTouchStart={(e) => {
           const t = e.touches[0];
@@ -228,6 +244,184 @@ function Row({ pane, first, actions, context }: { pane: StatePane; first?: boole
         }}
       >
         {body}
+      </div>
+    </li>
+  );
+}
+
+/**
+ * A blocked Pane in Needs you: the Agent, its Workspace and Tab, the command from Explain,
+ * and the plain Yes / No of the Pane's own blocked card — the same keys through the same
+ * stale-prompt guard. A 409 never re-sends: the answers give way to Re-read. Explain loads
+ * only here, so only blocked Panes cost a fetch. `compact` is the desktop sidebar: one
+ * 36 px row with Yes only; No stays in the Pane, and the row itself opens it.
+ */
+function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: string; compact?: boolean }) {
+  const [explain, setExplain] = useState<ExplainResponse | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [changed, setChanged] = useState(false);
+  /** The send went through: hold the answers until the prompt on screen is a new one. */
+  const [sent, setSent] = useState(false);
+  const shown = useRef<ExplainResponse | null>(null);
+  const seq = useRef(0);
+  const inFlight = useRef(false);
+  const queued = useRef(false);
+
+  /** One request in flight per card. A load asked for meanwhile runs when it lands, and the
+   *  older answer is dropped by the sequence check. A background load never touches
+   *  `changed`: only Re-read clears it. */
+  const load = () => {
+    if (inFlight.current) {
+      queued.current = true;
+      return;
+    }
+    inFlight.current = true;
+    const id = ++seq.current;
+    fetchExplain(pane.key)
+      .then((next) => {
+        if (id !== seq.current || queued.current) return;
+        if ((next?.promptId ?? null) !== (shown.current?.promptId ?? null)) setSent(false);
+        shown.current = next;
+        setExplain(next);
+      }, () => {}) // offline: keep the Explain already shown
+      .finally(() => {
+        inFlight.current = false;
+        if (queued.current) {
+          queued.current = false;
+          load();
+        } else setLoaded(true);
+      });
+  };
+  /** The user asked to look again: hold the answers until the fresh Explain lands, so a
+   *  tap can never carry the prompt id that was just refused. */
+  const reread = () => {
+    setChanged(false);
+    setSent(false);
+    setLoaded(false);
+    seq.current++; // whatever is in flight was asked before the user looked again
+    load();
+  };
+  // The card exists only while the Pane is blocked, so mounting is the change into blocked.
+  useEffect(load, [pane.key]);
+  // A printing Pane moves its revision every second; re-read Explain once it settles for 2 s.
+  const revised = useRef(pane.revision);
+  useEffect(() => {
+    if (revised.current === pane.revision) return;
+    revised.current = pane.revision;
+    const t = setTimeout(load, 2000);
+    return () => clearTimeout(t);
+  }, [pane.revision]);
+
+  const yesNo = explain ? yesNoKeys(explain) : null;
+  const offer = !loaded || !!yesNo; // on the first load and a Re-read, the answers hold their place, disabled
+  const busy = !loaded || sending || sent;
+  const answer = async (key: string) => {
+    setSending(true);
+    try {
+      const outcome = await sendBlocked(pane.key, [key], explain?.promptId);
+      if (outcome === 'changed') setChanged(true);
+      else setSent(true);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const to = `#/pane/${encodeURIComponent(pane.key)}`;
+  const agent = pane.agent ?? 'shell';
+  const command = explain ? promptLine(explain) : pane.lastLine;
+  const when = timeAgo(pane.statusChangedAt);
+  const label = [agent, pane.title, 'needs you', where, command, when].filter(Boolean).join(', ');
+  const frame = 'rounded-card border border-warn/35 bg-warn/8';
+
+  if (compact) {
+    return (
+      <li className="px-2 py-0.5">
+        <div className={`flex min-h-9 items-center gap-2 pr-1 ${frame}`}>
+          <Link to={to} aria-label={label} title={command} className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pl-2">
+            <Dot status="blocked" />
+            <span aria-hidden className="truncate text-[13px] font-medium text-fg">{pane.title}</span>
+            <span aria-hidden className="shrink-0 text-caption text-warn">{changed ? 'prompt changed' : agent}</span>
+          </Link>
+          {changed ? (
+            <button type="button" onClick={reread} className="press h-7 shrink-0 rounded-chip px-2.5 text-[12px] font-medium text-accent">
+              Re-read
+            </button>
+          ) : (
+            offer && (
+              <button
+                type="button"
+                aria-label={`Yes to ${pane.title}`}
+                disabled={busy}
+                onClick={() => yesNo && void answer(yesNo.yes.key)}
+                className="press h-7 shrink-0 rounded-chip bg-warn px-2.5 text-[12px] font-semibold disabled:opacity-50"
+                style={{ color: ON_WARN }}
+              >
+                Yes
+              </button>
+            )
+          )}
+        </div>
+      </li>
+    );
+  }
+
+  const open = (
+    <Link to={to} className="press flex h-11 shrink-0 items-center px-3 text-[13px] font-medium text-accent">
+      Open
+    </Link>
+  );
+  return (
+    <li className="px-4 py-1.5">
+      <div role="group" aria-label={`${pane.title} needs you`} className={`flex flex-col gap-2.5 px-3.5 pt-3 pb-2.5 ${frame}`}>
+        <Link to={to} aria-label={label} className="flex min-w-0 flex-col gap-1">
+          <span aria-hidden className="flex min-w-0 items-center gap-2 text-[12px] font-semibold text-warn">
+            <Dot status="blocked" />
+            <span className="truncate">Needs you · {agent}{where && <span className="font-normal text-muted"> · {where}</span>}</span>
+            <span className="ml-auto shrink-0 font-mono font-normal tabular-nums text-muted">{when}</span>
+          </span>
+          <span aria-hidden className="truncate text-[15px] font-medium text-fg">{pane.title}</span>
+          {command && (
+            <code aria-hidden className="truncate font-mono text-caption text-muted">
+              {command}
+            </code>
+          )}
+        </Link>
+        {changed ? (
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 text-caption text-warn">The prompt changed. Read it again before you answer.</p>
+            <button type="button" onClick={reread} className="press h-11 shrink-0 rounded-chip border border-border bg-bg px-3 text-caption font-medium text-accent">
+              Re-read
+            </button>
+            {open}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            {offer && (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => yesNo && void answer(yesNo.yes.key)}
+                  className="press h-11 min-w-16 shrink-0 rounded-composer bg-warn px-4 text-[14px] font-semibold disabled:opacity-50"
+                  style={{ color: ON_WARN }}
+                >
+                  Yes
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => yesNo && void answer(yesNo.no.key)}
+                  className="press h-11 min-w-16 shrink-0 rounded-composer border border-border bg-surface px-4 text-[14px] text-fg disabled:opacity-50"
+                >
+                  No
+                </button>
+              </>
+            )}
+            <span className="ml-auto" />
+            {open}
+          </div>
+        )}
       </div>
     </li>
   );
@@ -397,7 +591,14 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const needle = q.trim().toLowerCase();
   const hit = (p: StatePane) => matchPane(p, needle, state);
   const wsLabel = (p: StatePane) => state?.workspaces.find((w) => w.muxKey === p.muxKey && w.id === p.workspaceId)?.label;
-  const needsYou = (state?.panes ?? []).filter((p) => visible(p.muxKey) && unseen(p) && (p.status === 'blocked' || p.status === 'done') && hit(p));
+  const needsYou = (state?.panes ?? [])
+    .filter((p) => visible(p.muxKey) && unseen(p) && (p.status === 'blocked' || p.status === 'done') && hit(p))
+    .sort(comparePanes); // blocked cards first, then the done rows
+  /** `Workspace › Tab`, for a Needs you card. */
+  const whereOf = (p: StatePane) => {
+    const tab = state?.tabs.find((t) => t.muxKey === p.muxKey && t.workspaceId === p.workspaceId && t.id === p.tabId)?.label;
+    return [wsLabel(p), tab].filter(Boolean).join(' › ') || undefined;
+  };
   /** Working Panes pinned beside Needs you, most recently changed first. */
   const running = (state?.panes ?? [])
     .filter((p) => visible(p.muxKey) && p.status === 'working' && hit(p))
@@ -563,9 +764,20 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
               <PinnedHeader label="Needs you" count={needsYou.length} open={openSection(NEEDS)} onToggle={() => toggle(NEEDS)} />
               {openSection(NEEDS) && (
                 <ul>
-                  {needsYou.map((p, i) => (
-                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} />
-                  ))}
+                  {needsYou.map((p, i) =>
+                    p.status === 'blocked' ? (
+                      <NeedsYouCard key={p.key} pane={p} where={whereOf(p)} compact={compact} />
+                    ) : (
+                      <Row
+                        key={p.key}
+                        pane={p}
+                        first={i === 0 || needsYou[i - 1]!.status === 'blocked'}
+                        actions={rowActions(p)}
+                        context={wsLabel(p)}
+                        compact={compact}
+                      />
+                    ),
+                  )}
                 </ul>
               )}
             </section>
@@ -577,7 +789,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
               {openSection(RUNNING) && (
                 <ul>
                   {running.map((p, i) => (
-                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} />
+                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} compact={compact} />
                   ))}
                 </ul>
               )}
@@ -616,7 +828,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                     {!shut && (
                       <ul>
                         {panes.map((p, i) => (
-                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} />
+                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} compact={compact} />
                         ))}
                         {h?.online === false && (
                           <li>
@@ -655,7 +867,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                     {!shut && (
                       <ul>
                         {panes.map((p, i) => (
-                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} />
+                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} compact={compact} />
                         ))}
                       </ul>
                     )}

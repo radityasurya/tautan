@@ -48,6 +48,8 @@ export function tmuxKey(name: string): string {
 export class TmuxMux implements Mux {
   readonly kind = 'tmux' as const;
   readonly id: string;
+  /** the socket this Mux serves on its Host: local path here, remote path over ssh */
+  readonly socketPath: string;
   private readonly exec: TmuxExec;
   private readonly treeIntervalMs: number;
   private readonly screenIntervalMs: number;
@@ -59,9 +61,12 @@ export class TmuxMux implements Mux {
   private treeTicking = false;
   private screenTicking = false;
   private signature?: string;
+  private versionValue?: string;
+  private versionProbed = false;
 
   constructor(o: { id: string; socket: string; exec?: TmuxExec; treeIntervalMs?: number; screenIntervalMs?: number }) {
     this.id = o.id;
+    this.socketPath = o.socket;
     this.treeIntervalMs = o.treeIntervalMs ?? 5_000;
     this.screenIntervalMs = o.screenIntervalMs ?? 1_000;
     this.exec = o.exec ?? (async args => {
@@ -80,6 +85,16 @@ export class TmuxMux implements Mux {
   }
 
   async tree(): Promise<Tree> {
+    // `tmux -V` answers without touching the socket; once per Mux, at first sight, for the state stream.
+    if (!this.versionProbed) {
+      this.versionProbed = true;
+      // The answer is new state but not a tree change: poke the Hub's change path (refresh →
+      // recompute → emitState) once, or a tree that never changes never ships the version.
+      void this.exec(['-V']).then(result => {
+        const version = result.code === 0 ? result.stdout.trim().replace(/^tmux\s+/, '') || undefined : undefined;
+        if (version !== undefined) { this.versionValue = version; this.emit('all'); }
+      }).catch(() => {});
+    }
     const tree = parseTree(await this.run(['list-panes', '-a', '-F', FORMAT]));
     const live = new Set(tree.panes.map(pane => pane.id));
     for (const pane of tree.panes) {
@@ -90,6 +105,9 @@ export class TmuxMux implements Mux {
     for (const id of this.revisions.keys()) if (!live.has(id)) { this.revisions.delete(id); this.lastReadAt.delete(id); }
     return tree;
   }
+
+  /** The one-shot `tmux -V` answer, for the state stream. */
+  cachedVersion(): string | undefined { return this.versionValue; }
 
   private record(paneId: string, text: string): number {
     const hash = createHash('sha1').update(text).digest('hex');

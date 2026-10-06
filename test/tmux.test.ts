@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { hostname } from 'node:os';
 import { remoteTmuxSockets } from '../server/tmux-discover.ts';
 import { parseTree, TmuxMux, tmuxKey, type TmuxExec } from '../server/tmux.ts';
+import { Hub } from '../server/mux.ts';
 import { AGENT_KEYS, SHELL_KEYS } from '../web/keys.ts';
 
 const row = (o: { workspace?: string; workspaceLabel?: string; tab?: string; tabLabel?: string; pane?: string; command?: string; cwd?: string; title?: string; cols?: number; rows?: number } = {}) => [
@@ -76,6 +77,27 @@ describe('TmuxMux', () => {
     expect(f.mux.rename({ paneId: '%0' }, 'x')).rejects.toThrow('unsupported');
     expect(f.mux.closePane('%0')).rejects.toThrow('unsupported');
     expect(await f.mux.explain('%0')).toBeNull();
+  });
+
+  test('the -V probe ships the version to Hub state without a tree change', async () => {
+    // -V resolves late, so the first refresh provably misses it; the tree text never changes,
+    // and with no refresh interval only the probe's own nudge can deliver the version.
+    const exec: TmuxExec = async args => {
+      if (args[0] === '-V') { await Bun.sleep(10); return { stdout: 'tmux 3.4\n', stderr: '', code: 0 }; }
+      return { stdout: row(), stderr: '', code: 0 };
+    };
+    const mux = new TmuxMux({ id: 'test', socket: '/unused', exec, treeIntervalMs: 60_000, screenIntervalMs: 60_000 });
+    const hub = new Hub({ refreshMs: 0, suggest: null });
+    try {
+      hub.add('local', mux);
+      expect((await hub.state()).muxes[0]!.version).toBeUndefined();
+      const deadline = Date.now() + 2_000;
+      let version: string | undefined;
+      while (Date.now() < deadline && !version) { await Bun.sleep(20); version = (await hub.state()).muxes[0]!.version; }
+      expect(version).toBe('3.4');
+    } finally {
+      hub.close();
+    }
   });
 
   test('polls tree and watched screens, then stops after unsubscribe', async () => {

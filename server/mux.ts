@@ -91,7 +91,8 @@ export class Hub {
     this.cached = undefined;
   }
 
-  setHost(host: StateHost): void { this.hosts.set(host.id, host); this.cached = undefined; this.recompute(); this.emitState(); }
+  // A host that comes back online drops any retryAt it carried in from a stale state read.
+  setHost(host: StateHost): void { this.hosts.set(host.id, host.online ? { ...host, retryAt: undefined } : host); this.cached = undefined; this.recompute(); this.emitState(); }
   removeHost(id: string): void {
     for (const [key, entry] of this.entries) if (entry.hostId === id) { entry.unsubscribe(); entry.mux.close(); clearTimeout(entry.timer); clearInterval(entry.interval); this.entries.delete(key); }
     this.hosts.delete(id); this.cached = undefined; this.recompute(); this.emitState();
@@ -181,7 +182,9 @@ export class Hub {
       hosts: registered.map(host => ({ ...host, online: host.id === localHostId ? true : host.online })), muxes: [], workspaces: [], tabs: [], panes: [],
     };
     for (const [muxKey, entry] of this.entries) {
-      state.muxes.push({ key: muxKey, hostId: entry.hostId, kind: entry.mux.kind, label: entry.mux.id, online: true });
+      const version = entry.mux.cachedVersion?.();
+      state.muxes.push({ key: muxKey, hostId: entry.hostId, kind: entry.mux.kind, label: entry.mux.id, online: true,
+        ...(entry.mux.socketPath ? { socket: entry.mux.socketPath } : {}), ...(version ? { version } : {}) });
       if (!entry.tree) continue;
       for (const workspace of entry.tree.workspaces) state.workspaces.push({ key: `${muxKey}/${workspace.id}`, muxKey, ...workspace });
       for (const tab of entry.tree.tabs) state.tabs.push({ key: `${muxKey}/${tab.id}`, muxKey, ...tab });

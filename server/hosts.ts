@@ -213,8 +213,9 @@ async function maintainForwarder(hub: Hub, host: HostDescriptor, remote: { name:
     await child.exited; managed.children.delete(child); const stderr = await stderrPromise;
     if (managed.stopped) break;
     hub.removeMux(host.id, remote.name);
-    hub.setHost({ ...host, online: false, error: lastError(stderr) });
-    const up = now() - started; await sleep(up >= 60_000 ? 1_000 : backoff); backoff = nextBackoff(backoff, up);
+    const up = now() - started, wait = up >= 60_000 ? 1_000 : backoff;
+    hub.setHost({ ...host, online: false, error: lastError(stderr), retryAt: now() + wait });
+    await sleep(wait); backoff = nextBackoff(backoff, up);
   }
 }
 

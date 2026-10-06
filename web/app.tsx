@@ -6,7 +6,7 @@ import { NeedsCard } from './alert.tsx';
 import { Diff } from './diff.tsx';
 import { FileScreen } from './file.tsx';
 import { Home, seedSeen, unseen } from './home.tsx';
-import { Hosts } from './hosts.tsx';
+import { HostDetail } from './hosts.tsx';
 import { AgentsTab, HostsTab, SettingsTab } from './icons.tsx';
 import { mockOpen } from './mock.ts';
 import { PaneScreen } from './pane.tsx';
@@ -232,11 +232,32 @@ function useRoute() {
 
 // ---- tab bar ----
 
+// Two tabs: Hosts live at the top of Settings, and `#/hosts` still lands there.
 const TABS = [
-  { to: '#/', label: 'Agents', Icon: AgentsTab },
-  { to: '#/hosts', label: 'Hosts', Icon: HostsTab },
+  { to: '#/', label: 'Panes', Icon: AgentsTab },
   { to: '#/settings', label: 'Settings', Icon: SettingsTab },
 ];
+
+/** A hash segment, decoded; undefined when it is malformed (`%E0%A4%A`), so render never throws. */
+const safeDecode = (text: string) => {
+  try { return decodeURIComponent(text); } catch { return undefined; }
+};
+
+/**
+ * The one parser for the Settings tab: `#/settings[/<section>]`, `#/hosts` (Settings › Hosts,
+ * so saved links keep working) and `#/hosts/<id>` (Host detail). An empty or malformed id is
+ * Settings › Hosts. Anything else is undefined.
+ */
+function settingsRoute(route: string): { section: string } | { hostId: string } | undefined {
+  const m = /^\/(settings|hosts)(?:\/(.*))?$/.exec(route);
+  if (!m) return undefined;
+  if (m[1] === 'settings') return { section: m[2] ?? '' };
+  const id = safeDecode(m[2] ?? '');
+  return id ? { hostId: id } : { section: 'hosts' };
+}
+
+/** Settings, its sections, Hosts, and Host detail all sit under the Settings tab. */
+const inSettings = (route: string) => settingsRoute(route) !== undefined;
 
 function TabBar({ route, badge }: { route: string; badge: number }) {
   const [typing, setTyping] = useState(false);
@@ -260,7 +281,7 @@ function TabBar({ route, badge }: { route: string; badge: number }) {
       className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+8px)] z-40 mx-auto flex h-13 w-auto max-w-[420px] items-center justify-around rounded-tabbar border border-border bg-elevated/88 px-2 shadow-elevated backdrop-blur-md"
     >
       {TABS.map(({ to, label, Icon }) => {
-        const on = to === `#${route}` || (to === '#/' && route === '/');
+        const on = to === '#/' ? route === '/' : inSettings(route);
         return (
           <Link
             key={to}
@@ -270,7 +291,7 @@ function TabBar({ route, badge }: { route: string; badge: number }) {
           >
             <Icon />
             <span className={`text-[10px] tracking-[0.02em] ${on ? 'font-semibold' : 'font-medium'}`}>{label}</span>
-            {label === 'Agents' && badge > 0 && (
+            {to === '#/' && badge > 0 && (
               <span
                 aria-label={`${badge} need you`}
                 className="absolute -top-[3px] right-[22px] h-4 min-w-4 rounded-chip bg-warn px-1 text-center text-[10px] leading-4 font-bold text-bg"
@@ -330,14 +351,25 @@ function useSidebar(enabled: boolean) {
   return open;
 }
 
-// ponytail: Settings and Hosts are still two routes, so the section nav links the routes.
-// Phase 22 folds Hosts into Settings; the nav then lists the sections of one screen.
-const SECTIONS = [
+/** The sidebar footer: Settings, and Hosts as a shortcut into its first section. */
+const FOOTER = [
   { to: '#/settings', label: 'Settings', Icon: SettingsTab },
   { to: '#/hosts', label: 'Hosts', Icon: HostsTab },
 ];
 
-function SectionNav({ route }: { route: string }) {
+/** Settings' own sections, Hosts first. Each is `#/settings/<id>`, so a link lands on it. */
+const SECTIONS = [
+  ['hosts', 'Hosts'],
+  ['appearance', 'Appearance'],
+  ['notifications', 'Notifications'],
+  ['replies', 'Replies'],
+  ['access', 'Access'],
+  ['about', 'About'],
+] as const;
+
+// ponytail: the current section is the route, not a scroll-spy; scrolling by hand does not
+// move the highlight. Add an IntersectionObserver if that reads wrong.
+function SectionNav({ current, down }: { current: string; down: number }) {
   return (
     <nav
       aria-label="Settings sections"
@@ -347,16 +379,20 @@ function SectionNav({ route }: { route: string }) {
         <span aria-hidden>‹</span>All panes
       </Link>
       <span className="px-2 pb-3 text-[22px] font-semibold tracking-tight">Settings</span>
-      {SECTIONS.map(({ to, label }) => {
-        const on = to === `#${route}`;
+      {SECTIONS.map(([id, label]) => {
+        const to = `#/settings/${id}`;
+        const on = id === current;
         return (
           <Link
-            key={to}
+            key={id}
             to={to}
-            aria-current={on ? 'page' : undefined}
-            className={`rounded-lg px-2.5 py-2 text-[14px] ${on ? 'bg-elevated text-fg' : 'text-muted'}`}
+            aria-current={on ? 'true' : undefined}
+            // The same link twice is no route change, so scroll back to the section by hand.
+            onClick={() => location.hash === to && document.getElementById(`settings-${id}`)?.scrollIntoView({ block: 'start' })}
+            className={`flex items-center rounded-lg px-2.5 py-2 text-[14px] ${on ? 'bg-elevated text-fg' : 'text-muted hover:text-fg'}`}
           >
             {label}
+            {id === 'hosts' && down > 0 && <span className="ml-auto text-caption text-danger">{down} down</span>}
           </Link>
         );
       })}
@@ -369,11 +405,11 @@ function SectionNav({ route }: { route: string }) {
 export function App() {
   const route = useRoute();
   const kitTheme = useKitTheme();
-  const paneKey = route.startsWith('/pane/') ? decodeURIComponent(route.slice('/pane/'.length)) : undefined;
-  const diffKey = route.startsWith('/diff/') ? decodeURIComponent(route.slice('/diff/'.length)) : undefined;
+  const paneKey = route.startsWith('/pane/') ? safeDecode(route.slice('/pane/'.length)) : undefined;
+  const diffKey = route.startsWith('/diff/') ? safeDecode(route.slice('/diff/'.length)) : undefined;
   const fileRoute = route.startsWith('/file/') ? route.slice('/file/'.length) : '';
   const [encodedFileKey, fileQuery = ''] = fileRoute.split('?', 2);
-  const fileKey = encodedFileKey ? decodeURIComponent(encodedFileKey) : undefined;
+  const fileKey = encodedFileKey ? safeDecode(encodedFileKey) : undefined;
   const filePath = fileKey ? (new URLSearchParams(fileQuery).get('path') ?? '') : '';
   const { state, screen, connected } = useEvents(paneKey);
   const desktop = useDesktop();
@@ -436,7 +472,12 @@ export function App() {
     setBadge(state?.panes.filter((p) => (p.status === 'blocked' || p.status === 'done') && unseen(p)).length ?? 0);
   }, [state]);
 
-  const section = route === '/hosts' || route === '/settings';
+  // A Host id the state does not know falls back to Settings › Hosts. Before the first state
+  // event it cannot be judged, so Host detail shows its loading line until then.
+  const at = settingsRoute(route);
+  const hostId = at && 'hostId' in at && (!state || state.hosts.some((h) => h.id === at.hostId)) ? at.hostId : undefined;
+  const settingsAt = !at || hostId !== undefined ? undefined : 'section' in at ? at.section : 'hosts';
+  const section = at !== undefined;
   // At `lg` the Pane list is the sidebar, so the `/` route has no list of its own to show
   // until `⌘B` hides the sidebar.
   const home = desktop && sidebar ? (
@@ -450,10 +491,10 @@ export function App() {
         <Diff workspaceKey={diffKey} state={state} />
       ) : fileKey ? (
         <FileScreen paneKey={fileKey} path={filePath} state={state} />
-      ) : route === '/hosts' ? (
-        <Hosts state={state} />
-      ) : route === '/settings' ? (
-        <Settings />
+      ) : hostId !== undefined ? (
+        <HostDetail hostId={hostId} state={state} />
+      ) : settingsAt !== undefined ? (
+        <Settings state={state} section={settingsAt} />
       ) : (
         home
       );
@@ -473,7 +514,7 @@ export function App() {
       {desktop ? (
         <div className="flex">
           {section ? (
-            <SectionNav route={route} />
+            <SectionNav current={hostId !== undefined ? 'hosts' : settingsAt || 'hosts'} down={state?.hosts.filter((h) => !h.online).length ?? 0} />
           ) : (
             sidebar && (
               <aside aria-label="All panes" className="sticky top-0 flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface">
@@ -481,7 +522,7 @@ export function App() {
                   <Home state={state} compact />
                 </div>
                 <nav aria-label="Sections" className="flex shrink-0 gap-1 border-t border-border p-2">
-                  {SECTIONS.map(({ to, label, Icon }) => (
+                  {FOOTER.map(({ to, label, Icon }) => (
                     <Link key={to} to={to} className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg text-[13px] text-muted">
                       <Icon size={16} />
                       {label}

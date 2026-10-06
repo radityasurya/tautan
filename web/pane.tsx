@@ -4,13 +4,13 @@ import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
 import { classify } from '../shared/layout.ts';
 import type {
-  InputBody, NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
+  NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
 import { AffordanceLayer, useCell, useMouseForward } from './affordances.tsx';
 
 import { api, haptic, navigate, opensWith, post, reducedMotion, useDesktop } from './app.tsx';
 import { yesNoKeys } from '../shared/blocked.ts';
-import { promptLine, type ExplainResponse } from './blocked.tsx';
+import { fetchExplain, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
 import { Chat, readLens, writeLens, type LensMode } from './chat.tsx';
 import { Composer, FADE } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
@@ -562,11 +562,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   }, [pane?.key]);
 
   // The blocked card outlives the status by 150 ms, so it fades instead of vanishing.
-  const loadExplain = () =>
-    fetch(`/api/panes/${encodeURIComponent(paneKey)}/explain`)
-      .then((r) => r.json() as Promise<ExplainResponse | null>)
-      .then(setExplain)
-      .catch(() => {});
+  const loadExplain = () => fetchExplain(paneKey).then(setExplain).catch(() => {});
   useEffect(() => {
     if (pane?.status === 'blocked') {
       loadExplain();
@@ -643,26 +639,10 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const renameTab = tabs.find((t) => t.id === tabRename);
   const closingTab = tabs.find((t) => t.id === tabClose);
 
-  /** The blocked card must see the 409, so its send returns the outcome instead of
-   *  swallowing it the way `post` does. */
-  const sendBlocked = async (names: string[], promptId?: string): Promise<'sent' | 'changed'> => {
-    haptic();
-    try {
-      const response = await fetch(`/api/panes/${encodeURIComponent(paneKey)}/input`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ keys: names, ...(promptId !== undefined ? { promptId } : {}) } satisfies InputBody),
-      });
-      return response.status === 409 ? 'changed' : 'sent';
-    } catch {
-      return 'sent'; // offline: the reconnect bar owns the error, and the card stays honest
-    }
-  };
-
   /** The one answer path for a blocked prompt: the card and the desktop header both send
    *  through it, so a 409 from either shows Re-read on both. */
   const answer = async (names: string[], promptId?: string) => {
-    const outcome = await sendBlocked(names, promptId);
+    const outcome = await sendBlocked(paneKey, names, promptId);
     if (outcome === 'changed') setStalePrompt(promptId ?? '');
     return outcome;
   };

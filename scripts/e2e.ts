@@ -281,6 +281,75 @@ try {
       desktop.off('request', watch);
     }
   });
+  await flow('pane list answers a blocked prompt without opening the Pane; 409 shows Re-read', async () => {
+    const asker = await pane('e2e-list');
+    const box = ['Bash command', 'echo e2e-list', 'Do you want to proceed?', '❯ 1. Yes', '────────────────────────────────', 'esc to cancel · enter to confirm'];
+    await print(asker, box);
+    await report(asker, 'blocked');
+    const sent: string[] = [];
+    const watch = (r: { method(): string; url(): string; postData(): string | null }) => {
+      if (r.method() === 'POST' && r.url().includes(encodeURIComponent(asker)) && r.url().endsWith('/input')) sent.push(r.postData() ?? '');
+    };
+    phone.on('request', watch);
+    try {
+      await phone.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+      const card = phone.getByRole('group', { name: /needs you$/ }).filter({ hasText: 'e2e-list' });
+      const yes = card.getByRole('button', { name: 'Yes', exact: true });
+      await yes.waitFor({ timeout: 8_000 });
+      for (let i = 0; i < 20 && await yes.isDisabled(); i++) await phone.waitForTimeout(250); // Explain loading
+      assert(await card.getByRole('button', { name: 'No', exact: true }).count() === 1, 'No offered');
+      assert(await card.getByRole('link', { name: 'Open', exact: true }).count() === 1, 'Open offered');
+      // 409: the box moves on under the card, so the card's prompt id is stale.
+      await print(asker, box.map(l => l.includes('echo') ? 'echo e2e-list-v2' : l));
+      await yes.click();
+      await card.getByText('The prompt changed. Read it again before you answer.').waitFor({ timeout: 8_000 });
+      assert(await yes.count() === 0, 'no answer offered after a 409');
+      await card.getByRole('button', { name: 'Re-read' }).click();
+      await yes.waitFor({ timeout: 8_000 });
+      for (let i = 0; i < 20 && await yes.isDisabled(); i++) await phone.waitForTimeout(250);
+      await yes.click();
+      await phone.waitForTimeout(900);
+      assert(!phone.url().includes('/pane/'), 'stayed on the list');
+      assert(sent.length === 2, `sent ${sent.length}`);
+      assert(sent.every(body => body.includes('"keys":["enter"]') && body.includes('"promptId"')), `bodies=${sent.join('|').slice(0, 120)}`);
+      assert(await card.getByText('The prompt changed.', { exact: false }).count() === 0, 'second answer accepted');
+    } finally {
+      phone.off('request', watch);
+    }
+    // The desktop sidebar: Yes only, the row opens the Pane.
+    await desktop.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+    const sidebar = desktop.getByRole('complementary', { name: 'All panes' });
+    const row = sidebar.locator('li').filter({ has: desktop.getByRole('link', { name: /needs you, e2e-list/ }) });
+    await row.getByRole('button', { name: /^Yes to / }).waitFor({ timeout: 8_000 });
+    assert(await row.getByRole('button', { name: 'No', exact: true }).count() === 0, 'sidebar has no No');
+    return 'answered from the list, refused once, sidebar Yes only';
+  });
+  await flow('settings: two tabs, #/hosts lands on Hosts, a Host row opens its Muxes', async () => {
+    await phone.goto(`${BASE}/#/hosts`, { waitUntil: 'networkidle' });
+    const bar = phone.getByRole('navigation', { name: 'Sections' });
+    const tabs = await bar.getByRole('link').allTextContents();
+    // The Panes tab may carry its Needs you badge count after the label.
+    assert(tabs.length === 2 && tabs[0]!.startsWith('Panes') && tabs[1] === 'Settings', `tabs=${tabs.join('|')}`);
+    assert(await bar.getByRole('link', { name: 'Settings' }).getAttribute('aria-current') === 'page', 'Settings tab current');
+    await phone.getByRole('heading', { name: 'Hosts', level: 2 }).waitFor({ timeout: 8_000 });
+    await phone.locator('a[href="#/hosts/HireOpz"]').click();
+    await phone.waitForTimeout(600);
+    assert(phone.url().endsWith('#/hosts/HireOpz'), `url=${phone.url().slice(-30)}`);
+    const herdr = phone.getByRole('region', { name: /^herdr / });
+    await herdr.getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
+    assert((await herdr.textContent() ?? '').includes('1 Tab'), 'Tab count shown');
+    // A malformed, empty or unknown id falls back to Settings › Hosts instead of throwing.
+    for (const bad of ['%E0%A4%A', '', 'no-such-host']) {
+      await phone.goto(`${BASE}/#/hosts/${bad}`, { waitUntil: 'networkidle' });
+      await phone.getByRole('heading', { name: 'Hosts', level: 2 }).waitFor({ timeout: 8_000 });
+    }
+    // Desktop: the same route opens Host detail; Settings › Hosts draws the Mux × Workspace table.
+    await desktop.goto(`${BASE}/#/hosts`, { waitUntil: 'networkidle' });
+    await desktop.getByRole('table').getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
+    await desktop.goto(`${BASE}/#/hosts/HireOpz`, { waitUntil: 'networkidle' });
+    await desktop.getByRole('region', { name: /^herdr / }).getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
+    return 'two tabs, Hosts in Settings, Host detail at both widths';
+  });
 } finally {
   await browser.close().catch(() => {});
   try { process.kill(-hub.pid!, 'SIGTERM'); } catch {}

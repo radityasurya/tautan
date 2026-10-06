@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
-import { discoverRemote, forwarderArgs, herdrSupportsMachines, hostId, listHosts, localSockPath, nextBackoff, readHostsConfig, runtimeDir, validTarget, validateHosts, writeHostsConfig } from '../server/hosts.ts';
+import { discoverRemote, forwarderArgs, herdrSupportsMachines, hostId, listHosts, localSockPath, nextBackoff, readHostsConfig, runtimeDir, startRemoteHost, stopRemoteHost, validTarget, validateHosts, writeHostsConfig } from '../server/hosts.ts';
 import { remoteAttachmentCommand, remoteAttachmentResult } from '../server/attach.ts';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
@@ -82,6 +82,44 @@ test('forwarder backoff doubles, caps, and resets after a stable minute', () => 
   const values = [1_000]; for (let i = 0; i < 6; i++) values.push(nextBackoff(values.at(-1)!, 0));
   expect(values).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
   expect(nextBackoff(30_000, 60_000)).toBe(1_000);
+});
+
+test('a dropped forwarder marks the Host unreachable with the next retry time', async () => {
+  const dir = await mkdtemp(join(os.tmpdir(), 'tautan-retry-')); dirs.push(dir);
+  const oldRun = process.env.XDG_RUNTIME_DIR, oldState = process.env.XDG_STATE_HOME;
+  process.env.XDG_RUNTIME_DIR = join(dir, 'run'); process.env.XDG_STATE_HOME = join(dir, 'state');
+  // An ssh that always fails, and never creates the forwarded socket.
+  const fakeSsh = (): ReturnType<typeof Bun.spawn> => {
+    const child = { exitCode: null as number | null, stdout: new Response('').body, stderr: new Response('ssh: connect failed').body } as any;
+    child.exited = Promise.resolve(255);
+    child.kill = () => { child.exitCode = 255; };
+    return child;
+  };
+  let clock = 1_000_000;
+  const hub = new Hub({ refreshMs: 0, suggest: null });
+  try {
+    await startRemoteHost(hub, { id: 'vps', label: 'vps', target: 'me@vps', online: false, source: 'config' }, {
+      spawn: (() => fakeSsh()) as typeof Bun.spawn,
+      discover: async () => [{ name: 'main', socketPath: '/remote/herdr.sock' }],
+      // Real 0 ms sleeps keep the retry loop from starving the event loop's timers.
+      sleep: async () => { await Bun.sleep(0); },
+      now: () => (clock += 1_000),
+    });
+    await Bun.sleep(30);
+    const stored = hub.host('vps')!;
+    expect(stored.online).toBe(false);
+    expect(stored.error).toBe('ssh: connect failed');
+    // Set from the injected clock plus the backoff, so it predates wall-clock time by far.
+    expect(stored.retryAt).toBeGreaterThan(0);
+    expect(stored.retryAt!).toBeLessThan(Date.now());
+    // Coming back online clears the retry time, so a stale one cannot ride along.
+    hub.setHost({ ...stored, online: true });
+    expect(hub.host('vps')!.retryAt).toBeUndefined();
+  } finally {
+    stopRemoteHost(hub, 'vps'); hub.close();
+    for (const [name, value] of [['XDG_RUNTIME_DIR', oldRun], ['XDG_STATE_HOME', oldState]] as const)
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  }
 });
 
 test('remote attachment command and returned paths are stable', () => {

@@ -17,7 +17,7 @@ test('Hub adds tabs, status timestamps, and cached agent last lines', async () =
     ],
   };
   const mux: Mux = {
-    kind: 'herdr', id: 'fake', tree: async () => tree,
+    kind: 'herdr', id: 'fake', socketPath: '/run/tautan/host-main.sock', tree: async () => tree,
     read: async (_paneId: string, mode: ScreenMode): Promise<Screen> => { reads++; return { text: 'first\n\x1b[31m last line \x1b[0m\n\n', ansi: true, revision: 1, mode }; },
     sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
     newTab: async (): Promise<Pane> => tree.panes[0]!, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
@@ -25,6 +25,7 @@ test('Hub adds tabs, status timestamps, and cached agent last lines', async () =
   };
   const hub = new Hub(); hub.add('local', mux);
   const first = await hub.state();
+  expect(first.muxes).toEqual([{ key: 'local/fake', hostId: 'local', kind: 'herdr', label: 'fake', online: true, socket: '/run/tautan/host-main.sock' }]);
   expect(first.tabs).toEqual([{ key: 'local/fake/t1', muxKey: 'local/fake', id: 't1', workspaceId: 'w1', label: 'Tab' }]);
   expect(first.panes.find(pane => pane.id === 'agent')?.lastLine).toBe('last line');
   expect(first.panes.find(pane => pane.id === 'shell')?.lastLine).toBeUndefined();

@@ -1,13 +1,39 @@
 import { useState } from 'react';
 import { offeredKeys } from '../shared/blocked.ts';
 import { BOX } from '../shared/layout.ts';
-import type { Explain } from '../shared/types.ts';
+import type { Explain, InputBody } from '../shared/types.ts';
+import { haptic } from './app.tsx';
 import { keyGlyph } from './keys.ts';
 import { Ansi } from './pane.tsx';
 import { tokens } from './halaska-kit';
 
 /** GET /api/panes/:key/explain — the Hub stamps the id of the prompt it derived this from. */
 export type ExplainResponse = Explain & { promptId?: string };
+
+/** Explain for one Pane, null when it is not blocked. Rejects when offline, so a caller can
+ *  keep the Explain it already shows. */
+export const fetchExplain = (paneKey: string): Promise<ExplainResponse | null> =>
+  fetch(`/api/panes/${encodeURIComponent(paneKey)}/explain`).then((r) => r.json() as Promise<ExplainResponse | null>);
+
+/**
+ * The one send for an answer to a blocked prompt: the Pane's card, the desktop header and
+ * the Pane list all use it. The `promptId` makes the Hub refuse with 409 when the prompt on
+ * screen moved on, and the caller must see that, so the outcome comes back instead of being
+ * swallowed the way `post` does.
+ */
+export async function sendBlocked(paneKey: string, keys: string[], promptId?: string): Promise<'sent' | 'changed'> {
+  haptic();
+  try {
+    const response = await fetch(`/api/panes/${encodeURIComponent(paneKey)}/input`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keys, ...(promptId !== undefined ? { promptId } : {}) } satisfies InputBody),
+    });
+    return response.status === 409 ? 'changed' : 'sent';
+  } catch {
+    return 'sent'; // offline: the reconnect bar owns the error, and the card stays honest
+  }
+}
 
 const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -37,7 +63,7 @@ export function promptLine(explain: Explain): string {
 }
 
 /** The dark ink on a warning fill, as the header's Yes uses it. */
-const ON_WARN = tokens.dark.bg;
+export const ON_WARN = tokens.dark.bg;
 
 /**
  * The blocked moment, in the composer's place of the suggestions. The phone (`rows`) keeps
