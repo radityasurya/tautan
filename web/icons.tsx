@@ -163,3 +163,18 @@ export const Keyboard = (p: Props) => (
     <path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M6.5 14h11" />
   </Icon>
 );
+
+/** The Chat lens: a speech bubble. 16 px in the phone header's icon pair. */
+export const ChatLens = (p: Props) => (
+  <Icon size={16} {...p}>
+    <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.4A8 8 0 1 1 21 12z" />
+  </Icon>
+);
+
+/** The Screen lens: a terminal window with a prompt chevron. */
+export const ScreenLens = (p: Props) => (
+  <Icon size={16} {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M7 9l3 3-3 3" />
+  </Icon>
+);

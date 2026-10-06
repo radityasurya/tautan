@@ -222,7 +222,7 @@ try {
     await phone.waitForTimeout(1200);
     const chat = await fetch(`${BASE}/api/panes/${encodeURIComponent(`HireOpz/default/${agent}`)}/chat`);
     assert(chat.status === 404, `api=${chat.status}`);
-    const switchButton = phone.getByText('Chat', { exact: true }).first();
+    const switchButton = phone.getByRole('button', { name: 'Chat', exact: true }).first();
     if (await switchButton.count()) {
       await switchButton.click();
       await phone.waitForTimeout(1000);
@@ -230,6 +230,26 @@ try {
       return 'switch fell back to Screen';
     }
     return 'no switch offered (agent pane without lens support) — Screen only';
+  });
+
+  await flow('desktop header answers through the 409 guard; ⌘2 opens Tab 2', async () => {
+    const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-tabs' });
+    const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
+    const second = (await mux.newTab(workspace.id, { cwd: fixture.dir, label: 'second' })).id;
+    const box = ['Bash command', 'echo e2e-desk', 'Do you want to proceed?', '❯ 1. Yes', '────────────────────────────────', 'esc to cancel · enter to confirm'];
+    await print(first, box);
+    await report(first, 'blocked');
+    await desktop.goto(`${BASE}/#/pane/${encodeURIComponent(`HireOpz/default/${first}`)}`, { waitUntil: 'networkidle' });
+    const yes = desktop.getByRole('banner').getByRole('button', { name: /^Yes, key/ });
+    await yes.waitFor({ timeout: 8_000 });
+    await print(first, box.map(l => l.includes('echo') ? 'echo e2e-desk-v2' : l)); // the box moves on
+    await report(first, 'blocked');
+    await yes.click();
+    await desktop.getByRole('banner').getByText('The prompt changed.').waitFor({ timeout: 8_000 });
+    await desktop.getByText('The prompt changed. Read it again before you answer.').waitFor({ timeout: 8_000 });
+    await desktop.keyboard.press('Meta+Digit2');
+    await desktop.waitForTimeout(900);
+    return assert(decodeURIComponent(desktop.url()).endsWith(second), `url=${desktop.url().slice(-30)}`);
   });
 } finally {
   await browser.close().catch(() => {});

@@ -242,7 +242,7 @@ function TabBar({ route, badge }: { route: string; badge: number }) {
   const [typing, setTyping] = useState(false);
   useEffect(() => {
     // The keyboard must never cover a focused composer. One rule, both platforms.
-    const is = (t: EventTarget | null) => t instanceof HTMLElement && t.matches('input, textarea, [contenteditable]');
+    const is = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || t.matches('input, textarea'));
     const down = (e: FocusEvent) => is(e.target) && setTyping(true);
     const up = (e: FocusEvent) => is(e.target) && setTyping(false);
     document.addEventListener('focusin', down);
@@ -291,7 +291,7 @@ function TabBar({ route, badge }: { route: string; badge: number }) {
 const LG = '(min-width: 1024px)';
 
 /** True at `lg` and up. Follows a window resize with no reload. */
-function useDesktop() {
+export function useDesktop() {
   const [on, setOn] = useState(() => matchMedia(LG).matches);
   useEffect(() => {
     const mq = matchMedia(LG);
@@ -316,7 +316,7 @@ function useSidebar(enabled: boolean) {
       if (e.key.toLowerCase() !== 'b' || e.altKey || e.shiftKey) return;
       // Ctrl+B is the tmux prefix: it toggles only outside an editable, and is never swallowed there.
       const t = e.target;
-      const typing = t instanceof HTMLElement && t.matches('input, textarea, [contenteditable]');
+      const typing = t instanceof HTMLElement && (t.isContentEditable || t.matches('input, textarea'));
       if (!(e.metaKey || (e.ctrlKey && !typing))) return;
       e.preventDefault();
       setOpen((was) => {

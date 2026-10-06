@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { State, StatePane } from '../shared/types.ts';
 import { Sheet } from './sheets.tsx';
 import { navigate } from './app.tsx';
@@ -32,7 +32,8 @@ function PaneRow({ pane, currentKey, onPick }: { pane: StatePane; currentKey: st
 /**
  * Two taps to any Pane on any Host: search, Host chips, then the same shape Home uses —
  * Needs you first, Running under it, everything else grouped by Workspace. Opened from the
- * Pane status line.
+ * Pane status line. The Tab picker opens it at Tab level: `head` lists the Workspace's Tabs
+ * above the Pane sections, and stays out of the way while a search is typed.
  */
 export function SwitchDrawer({
   open,
@@ -40,7 +41,11 @@ export function SwitchDrawer({
   state,
   currentKey,
   onPick,
+  title = 'Switch Pane',
+  head,
 }: {
+  title?: string;
+  head?: ReactNode;
   open: boolean;
   onClose: () => void;
   state: State | null;
@@ -77,7 +82,7 @@ export function SwitchDrawer({
     })
     .filter((g) => g.panes.length > 0);
   return (
-    <Sheet open={open} title="Switch Pane" onClose={onClose}>
+    <Sheet open={open} title={title} onClose={onClose}>
       <SearchInput value={q} onChange={setQ} placeholder="Switch to…" shortcut={null} style={{ width: '100%' }} />
 
       <div role="group" aria-label="Filter by Host" className="hscroll mt-3 flex shrink-0 gap-2">
@@ -89,6 +94,7 @@ export function SwitchDrawer({
       </div>
 
         <div className="mt-2 overflow-y-auto overscroll-contain pb-2" style={{ maxHeight: "calc(100dvh - 240px)" }}>
+          {head && !needle && head}
           {matches.length === 0 && <p className="px-3 py-6 text-body text-muted">Nothing matches “{q}”.</p>}
           {needsYou.length > 0 && (
             <section>

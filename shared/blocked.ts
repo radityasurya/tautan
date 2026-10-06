@@ -32,6 +32,15 @@ export function offeredKeys(explain: Explain): Explain['hintKeys'] {
   return keys.filter((key, i) => keys.findIndex(other => other.key === key.key) === i);
 }
 
+/**
+ * The plain Yes and No of a yes/no prompt, for a one-tap surface (the desktop header), or
+ * null when the prompt is not one. Never an option from the hint keys: a label such as
+ * "Yes, and don't ask again" is an Always key and stays in the card.
+ */
+export function yesNoKeys(explain: Explain): { yes: { key: string; label: string }; no: { key: string; label: string } } | null {
+  return asksYesNo(explain) ? { yes: PRESET[0]!, no: PRESET[1]! } : null;
+}
+
 // ---- prompt id ----
 
 /** Random per Hub process, so an id cannot survive a restart. Tests rotate it. */

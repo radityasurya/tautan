@@ -24,14 +24,28 @@ const content = (detection: string) =>
     .filter((l) => plain(l).trim());
 
 /**
+ * The prompt as one line, for a surface with no room for the card (the desktop header).
+ * Claude Code heads its box `Bash command` and prints the command under it; any other box
+ * leads with its question.
+ */
+// ponytail: only the `… command` head is special-cased; add a head per App profile when a
+// second agent's box reads wrong here.
+export function promptLine(explain: Explain): string {
+  const [head = 'Blocked', next] = content(explain.detection).map((l) => plain(l).trim());
+  return /command$/i.test(head) && next ? next : head;
+}
+
+/**
  * The blocked moment as flat rows in the dock: herdr's offered keys are the options, no row
  * is chosen by default (herdr has no ground to recommend one), a pick takes the accent, and
  * Send posts the chosen key with the prompt id the card was drawn from. A 409 swaps the
  * action for Re-read: the prompt moved on, so the answer must not land.
  */
-export function Blocked({ explain, agent, onSend, onReread }: {
+export function Blocked({ explain, agent, stale, onSend, onReread }: {
   explain: ExplainResponse;
   agent?: string;
+  /** A 409 from another surface (the desktop header) answering this same prompt. */
+  stale?: boolean;
   onSend: (keys: string[], promptId?: string) => Promise<'sent' | 'changed'>;
   onReread: () => void;
 }) {
@@ -92,7 +106,7 @@ export function Blocked({ explain, agent, onSend, onReread }: {
         <Ansi text={rest.join('\n')} />
       </pre>
 
-      {changed ? (
+      {changed || stale ? (
         <div className="flex shrink-0 items-center justify-between gap-2 pt-0.5">
           <p className="text-caption text-warn">The prompt changed. Read it again before you answer.</p>
           <button type="button" onClick={onReread} className="press shrink-0 rounded-chip border border-border bg-bg px-3 py-2 text-caption font-medium text-accent">

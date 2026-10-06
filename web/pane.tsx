@@ -8,13 +8,14 @@ import type {
 } from '../shared/types.ts';
 import { AffordanceLayer, hintPills, useCell, useMouseForward } from './affordances.tsx';
 
-import { api, haptic, Link, navigate, opensWith, post, reducedMotion } from './app.tsx';
-import { Blocked, type ExplainResponse } from './blocked.tsx';
-import { Chat, LensSwitch, readLens, writeLens, type LensMode } from './chat.tsx';
-import { TopBar } from './header.tsx';
+import { api, haptic, navigate, opensWith, post, reducedMotion, useDesktop } from './app.tsx';
+import { yesNoKeys } from '../shared/blocked.ts';
+import { Blocked, promptLine, type ExplainResponse } from './blocked.tsx';
+import { Chat, readLens, writeLens, type LensMode } from './chat.tsx';
+import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
-import { commonAgent, Dot, markSeen, statusText } from './home.tsx';
-import { Attach, Back, ChevronDown, Down, Keyboard, Mic, More, Plus, Send, Speaker } from './icons.tsx';
+import { commonAgent, Dot, markSeen } from './home.tsx';
+import { Attach, ChevronDown, Down, Keyboard, Mic, Plus, Send } from './icons.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
@@ -164,6 +165,7 @@ function useLongPress(fn: () => void) {
   };
 }
 
+/** The phone's underline Tab (variant A): 40 px tall, the slide underline drawn by the strip. */
 function TabStripButton({
   label,
   status,
@@ -190,7 +192,7 @@ function TabStripButton({
         onOpen();
       }}
       onContextMenu={onMenu ? (e) => e.preventDefault() : undefined}
-      className={`press flex shrink-0 items-center gap-1.5 px-2.5 pt-2 pb-3 text-[13px] whitespace-nowrap ${
+      className={`press flex h-10 shrink-0 items-center gap-1.5 px-2.5 text-[13px] whitespace-nowrap ${
         onMenu ? '[-webkit-touch-callout:none]' : ''
       } ${selected ? 'font-semibold text-fg' : 'font-medium text-muted'}`}
       {...(onMenu ? hold.press : {})}
@@ -201,6 +203,153 @@ function TabStripButton({
     </button>
   );
 }
+
+/**
+ * The desktop browser Tab (variant A): the open Tab takes the Pane's background and a 2 px
+ * accent top edge; close shows on hover and always on the open Tab. Right-click is the menu.
+ */
+function DesktopTab({
+  label,
+  status,
+  paneCount,
+  selected,
+  onOpen,
+  onClose,
+  onMenu,
+}: {
+  label: string;
+  status: Status;
+  paneCount: number;
+  selected: boolean;
+  onOpen: () => void;
+  onClose?: () => void;
+  onMenu?: () => void;
+}) {
+  return (
+    <div
+      role="presentation"
+      onContextMenu={onMenu ? (e) => { e.preventDefault(); onMenu(); } : undefined}
+      className={`group flex h-[38px] shrink-0 items-center rounded-t-[10px] ${
+        selected ? 'bg-bg text-fg shadow-[0_1px_0_var(--bg),inset_0_2px_0_var(--accent)]' : 'text-muted hover:bg-bg/50'
+      }`}
+    >
+      <button
+        type="button"
+        role="tab"
+        aria-selected={selected}
+        onClick={onOpen}
+        className={`flex h-full items-center gap-2 text-[13px] whitespace-nowrap ${onClose ? 'pr-1.5 pl-3.5' : 'px-3.5'} ${
+          selected ? 'font-medium' : ''
+        }`}
+      >
+        <Dot status={status} seen={status === 'idle' || status === 'unknown'} size={7} />
+        {label}
+        {paneCount > 1 && <span className="font-mono text-[10px] text-muted">{paneCount}</span>}
+      </button>
+      {onClose && (
+        <button
+          type="button"
+          aria-label={`Close ${label}`}
+          onClick={onClose}
+          className={`mr-2.5 flex size-5 items-center justify-center rounded-[5px] text-muted hover:bg-surface hover:text-fg focus-visible:opacity-100 ${
+            selected ? '' : 'opacity-0 group-hover:opacity-100'
+          }`}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The picker dots: Status colour per Tab, the open Tab a 14 px accent pill. */
+const PICKER_DOT: Record<Status, string> = {
+  blocked: 'bg-warn',
+  working: 'bg-accent',
+  done: 'bg-ok',
+  idle: 'bg-border',
+  unknown: 'bg-border',
+};
+
+/** Past five Tabs the phone strip becomes one picker button (variant C). Long-press is the
+ *  open Tab's menu, the same gesture as a strip Tab. */
+function TabPicker({
+  label,
+  status,
+  n,
+  of,
+  blocked,
+  onOpen,
+  onMenu,
+}: {
+  label: string;
+  status: Status;
+  n: number;
+  of: number;
+  blocked: number;
+  onOpen: () => void;
+  onMenu?: () => void;
+}) {
+  const hold = useLongPress(() => onMenu?.());
+  return (
+    <button
+      type="button"
+      aria-haspopup="dialog"
+      aria-label={`${label}, Tab ${n} of ${of}${blocked ? `, ${blocked} blocked` : ''}. Switch Tab`}
+      onClick={(e) => {
+        if (hold.consume()) return e.preventDefault();
+        onOpen();
+      }}
+      onContextMenu={onMenu ? (e) => e.preventDefault() : undefined}
+      className="press flex h-10 min-w-0 flex-1 items-center gap-2 rounded-composer bg-surface px-3 text-left text-[14px] [-webkit-touch-callout:none]"
+      {...(onMenu ? hold.press : {})}
+    >
+      <Dot status={status} seen={status === 'idle' || status === 'unknown'} size={7} />
+      <span className="truncate font-semibold text-fg">{label}</span>
+      <span className="shrink-0 text-[12px] text-muted">
+        Tab {n} of {of}
+      </span>
+      {blocked > 0 && (
+        <span className="ml-auto flex shrink-0 items-center gap-1 text-[12px] text-warn">
+          <Dot status="blocked" size={6} />
+          {blocked} blocked
+        </span>
+      )}
+      <span aria-hidden className={`flex shrink-0 text-muted ${blocked ? '' : 'ml-auto'}`}>
+        <ChevronDown size={14} />
+      </span>
+    </button>
+  );
+}
+
+/** The open Tab's Panes, shown only for a split Tab. Same row at both widths until lane
+ *  10.8 puts split Panes side by side. */
+function PaneChips({ panes, paneKey, className }: { panes: StatePane[]; paneKey: string; className: string }) {
+  return (
+    <div role="group" aria-label="Panes in this Tab" className={`hscroll flex gap-1.5 ${className}`}>
+      {panes.map((p) => (
+        <button
+          key={p.key}
+          type="button"
+          aria-current={p.key === paneKey ? 'true' : undefined}
+          onClick={() => {
+            haptic();
+            navigate(`#/pane/${encodeURIComponent(p.key)}`);
+          }}
+          className={`press flex h-7 shrink-0 items-center gap-1.5 rounded-chip px-2.5 text-[12px] whitespace-nowrap ${
+            p.key === paneKey ? 'bg-surface font-medium text-fg' : 'text-muted'
+          }`}
+        >
+          <Dot status={p.status} size={6} seen={p.key !== paneKey} />
+          {p.agent ?? 'shell'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The shortcut hint shows on a Mac only: elsewhere Meta belongs to the OS. */
+const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 
 function closeTabCost(panes: StatePane[], lastTab: boolean): string {
   const active = panes
@@ -405,6 +554,14 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const [tabMenu, setTabMenu] = useState<string | null>(null);
   const [tabRename, setTabRename] = useState<string | null>(null);
   const [tabClose, setTabClose] = useState<string | null>(null);
+  const desktop = useDesktop();
+  /** The Tab picker opens Switch at Tab level; the header's trigger opens it at Pane level. */
+  const [switchTabs, setSwitchTabs] = useState(false);
+  /** The prompt id whose answer came back 409, from the card or the header alike. */
+  const [stalePrompt, setStalePrompt] = useState<string | null>(null);
+  /** The header's Yes or No is on its way: both stay disabled, so one tap is one answer. */
+  const [answering, setAnswering] = useState(false);
+  const card = useRef<HTMLDivElement>(null);
   const [lensChoice, setLensChoice] = useState<{ paneKey: string; mode: LensMode }>(() => ({
     paneKey,
     mode: readLens(paneKey),
@@ -602,6 +759,33 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     if (tab.id === pane?.tabId) navigate(nextKey ? `#/pane/${encodeURIComponent(nextKey)}` : '#/');
   };
 
+  /** Phase 14's rule: a Tab whose close would stop work asks first; anything else just goes. */
+  const requestCloseTab = (tab: (typeof tabs)[number]) => {
+    if (closeTabCost(tab.panes, tabs.length === 1)) setTabClose(tab.id);
+    else void closeTab(tab);
+  };
+
+  // `⌘1–9` opens Tab n and `⌘T` New Tab, at `lg` only. Meta only: Ctrl+T and Ctrl+digits
+  // belong to the browser (and to the terminal), so there is no Ctrl fallback. `code`, not
+  // `key`, so an AZERTY row still reads as digits.
+  useEffect(() => {
+    if (!desktop) return;
+    const on = (e: KeyboardEvent) => {
+      if (e.altKey || e.shiftKey || e.ctrlKey || !e.metaKey) return;
+      const digit = /^Digit([1-9])$/.exec(e.code);
+      const tab = digit && tabs[Number(digit[1]) - 1];
+      if (tab) {
+        e.preventDefault();
+        openTab(tab.id);
+      } else if (e.code === 'KeyT' && writable) {
+        e.preventDefault();
+        setShowNewTab(true);
+      }
+    };
+    addEventListener('keydown', on);
+    return () => removeEventListener('keydown', on);
+  }, [desktop, tabs, writable, paneKey]);
+
   const menuTab = tabs.find((t) => t.id === tabMenu);
   const renameTab = tabs.find((t) => t.id === tabRename);
   const closingTab = tabs.find((t) => t.id === tabClose);
@@ -696,6 +880,26 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     } catch {
       return 'sent'; // offline: the reconnect bar owns the error, and the card stays honest
     }
+  };
+
+  /** The one answer path for a blocked prompt: the card and the desktop header both send
+   *  through it, so a 409 from either shows Re-read on both. */
+  const answer = async (names: string[], promptId?: string) => {
+    const outcome = await sendBlocked(names, promptId);
+    if (outcome === 'changed') setStalePrompt(promptId ?? '');
+    return outcome;
+  };
+  const reread = () => {
+    setStalePrompt(null);
+    void loadExplain();
+  };
+
+  /** Review (phone, blocked): bring the card into view and put focus on its first option. */
+  const review = () => {
+    haptic();
+    const el = card.current;
+    el?.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    el?.querySelector<HTMLElement>('[role="radio"]')?.focus({ preventScroll: true });
   };
 
   /** A text pill is a draft, not an answer: it lands in the composer for review. */
@@ -899,6 +1103,52 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // No engine, no button: Send stays in place, disabled, rather than a mic that does nothing.
   const canDictate = 'webkitSpeechRecognition' in window;
   const active = tabs.find((t) => t.id === pane?.tabId);
+  const activeIndex = active ? tabs.indexOf(active) : -1;
+  // Past five Tabs the phone strip turns into a picker. Desktop tabs scroll instead.
+  const manyTabs = !desktop && tabs.length > 5 && !!active;
+  const tabMenuFor = (id: string) => (writable ? () => {
+    haptic();
+    setTabMenu(id);
+  } : undefined);
+  // Desktop's quick answer: only the plain Yes and No of a yes/no prompt (the card's own
+  // preset keys), never an Always-type hint key.
+  const yesNo = explain && status === 'blocked' ? yesNoKeys(explain) : null;
+  const stale = !!explain && stalePrompt === (explain.promptId ?? '');
+  const quick = desktop && explain && yesNo
+    ? {
+        command: promptLine(explain),
+        choices: [yesNo.yes, yesNo.no],
+        stale,
+        sending: answering,
+        onAnswer: (key: string) => {
+          setAnswering(true);
+          void answer([key], explain.promptId).finally(() => setAnswering(false));
+        },
+        onReread: reread,
+      }
+    : null;
+  const mouseChip = forwarding && (
+    // Taps on the grid are going to the program, not to tautan.
+    <span className="shrink-0 rounded-chip border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
+      mouse
+    </span>
+  );
+  const newTab = writable && (
+    <button
+      type="button"
+      aria-label="New Tab"
+      onClick={() => setShowNewTab(true)}
+      className={
+        desktop
+          ? 'press mb-0.5 flex size-[34px] shrink-0 items-center justify-center rounded-chip text-accent hover:bg-bg/50'
+          : manyTabs
+            ? 'press flex size-10 shrink-0 items-center justify-center rounded-composer bg-surface text-accent'
+            : 'press flex h-10 w-9 shrink-0 items-center justify-center text-accent'
+      }
+    >
+      <Plus size={desktop ? 16 : 18} />
+    </button>
+  );
   const grid = pane?.cols && pane.rows ? `${pane.cols}×${pane.rows}` : 'fit';
   // The App profile decides for every Pane running that program; the switch decides for
   // this one. Effective Wrap wins over both, so the row says so rather than lying about it.
@@ -931,143 +1181,143 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
       ref={frame}
       className="flex h-dvh w-full flex-col"
     >
-      {/* Home's bar, compact: back · title on the left; the status chip, read aloud and ⋯
-          on the right, the way Home puts its counts and + there. */}
-      <TopBar
-        size="compact"
-        leading={
-          <Link to="#/" aria-label="All panes" className="-ml-2.5 flex size-11 shrink-0 items-center justify-center text-accent">
-            <Back />
-          </Link>
-        }
+      <PaneHeader
+        desktop={desktop}
         title={pane?.title ?? '…'}
-        right={
-          <>
-            {agent && <LensSwitch value={lens} onChange={setLens} />}
-            {/* Status and the ⌄ are one trigger: one drawer, one name, one hit area. It keeps
-                its own width up to 45 % of the row, and past that the agent name truncates. */}
-            <button
-              type="button"
-              aria-label="Switch Pane"
-              onClick={() => setShowSwitch(true)}
-              className="press mr-0.5 flex h-11 max-w-[45cqw] min-w-0 items-center gap-1.5 pl-2 text-caption text-muted"
-            >
-              <Dot status={status} />
-              <span aria-live="polite" className={`shrink-0 ${statusText[status]}`}>
-                {status}
-              </span>
-              <span className="truncate">· {agent ?? 'shell'}</span>
-              <span aria-hidden className="flex shrink-0 items-center">
-                <ChevronDown />
-              </span>
-            </button>
-            {agent && (
-              <button
-                type="button"
-                aria-label="Read aloud"
-                onClick={speak}
-                className="press -mr-1 flex size-11 items-center justify-center text-muted"
-              >
-                <Speaker />
-              </button>
-            )}
-            <button
-              type="button"
-              aria-label="More"
-              onClick={() => setShowMore(true)}
-              className="press -mr-2.5 flex size-11 items-center justify-center text-muted"
-            >
-              <More />
-            </button>
-          </>
-        }
+        path={[host?.label, ws?.label, active?.label]}
+        status={status}
+        agent={agent}
+        tab={active?.label}
+        lens={lens}
+        onLens={agent ? setLens : undefined}
+        onSwitch={() => {
+          setSwitchTabs(false);
+          setShowSwitch(true);
+        }}
+        onSpeak={agent ? speak : undefined}
+        onMore={() => setShowMore(true)}
+        onReview={review}
+        reviewReady={!!explain}
+        quick={quick}
       />
 
-      {/* The strip is one section of two rows: the Workspace's Tabs, and the open Tab's
-          Panes under them. Swipe here, never on the grid. */}
-      <div
-        className="shrink-0 px-3 pt-0.5 pb-1.5"
-        onTouchStart={(e) => {
-          swipe.current = { x: e.touches[0]?.clientX ?? 0, scroll: strip.current?.scrollLeft ?? 0 };
-        }}
-        onTouchEnd={(e) => {
-          const dx = (e.changedTouches[0]?.clientX ?? 0) - swipe.current.x;
-          const scrolled = Math.abs((strip.current?.scrollLeft ?? 0) - swipe.current.scroll) > 4;
-          if (scrolled || Math.abs(dx) < 40 || !active) return;
-          const i = tabs.indexOf(active) + (dx < 0 ? 1 : -1);
-          if (tabs[i]) openTab(tabs[i].id);
-        }}
-      >
-        <div className="flex items-stretch border-b border-border">
-          {writable && (
-            <button
-              type="button"
-              aria-label="New Tab"
-              onClick={() => setShowNewTab(true)}
-              className="press mr-1 flex w-9 shrink-0 items-center justify-center self-end pb-2 text-accent"
-            >
-              <Plus />
-            </button>
-          )}
-          <div ref={strip} role="tablist" aria-label="Tabs" className="hscroll relative flex min-w-0 flex-1 items-end gap-0.5">
-            {tabs.map((t) => (
-              <TabStripButton
-                key={t.id}
-                label={t.label}
-                status={t.status}
-                paneCount={t.panes.length}
-                selected={t.id === pane?.tabId}
-                onOpen={() => openTab(t.id)}
-                onMenu={writable ? () => {
-                  haptic();
-                  setTabMenu(t.id);
-                } : undefined}
-              />
-            ))}
-            <span
-              aria-hidden
-              data-testid="tab-underline"
-              className="absolute bottom-[-1px] left-0 h-0.5 bg-accent transition-[transform,width] duration-200 ease-out motion-reduce:transition-none"
-              style={{ width: underline.w, transform: `translateX(${underline.x}px)` }}
-            />
-          </div>
-          {/* Taps on the grid are going to the program, not to tautan. */}
-          {forwarding && (
-            <span className="mb-2 ml-1.5 shrink-0 self-end rounded-chip border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
-              mouse
+      {desktop ? (
+        /* Browser tabs. The tablist sits a pixel into the bar's bottom border, so the open
+           Tab's 1 px background shadow covers the line under it and the Tab joins the Pane. */
+        <div className="shrink-0">
+          <div className="flex items-end gap-1 border-b border-border bg-surface px-3 pt-2">
+            <div role="tablist" aria-label="Tabs" className="hscroll -mb-px flex min-w-0 items-end gap-0.5 pb-px">
+              {tabs.map((t) => (
+                <DesktopTab
+                  key={t.id}
+                  label={t.label}
+                  status={t.status}
+                  paneCount={t.panes.length}
+                  selected={t.id === pane?.tabId}
+                  onOpen={() => openTab(t.id)}
+                  onClose={writable ? () => requestCloseTab(t) : undefined}
+                  onMenu={tabMenuFor(t.id)}
+                />
+              ))}
+            </div>
+            {newTab}
+            <span className="flex-1" />
+            <span className="mb-2.5 flex shrink-0 items-center gap-3 text-[12px] text-muted">
+              {mouseChip}
+              {MAC && (
+                <span>
+                  <span className="font-mono">⌘1–9</span> switch
+                  {writable && (
+                    <>
+                      {' · '}
+                      <span className="font-mono">⌘T</span> new
+                    </>
+                  )}
+                </span>
+              )}
             </span>
+          </div>
+          {/* ponytail: lane 10.8 deferred split Panes side by side; desktop keeps the chips row. */}
+          {active && active.panes.length > 1 && (
+            <PaneChips panes={active.panes} paneKey={paneKey} className="px-4 py-2" />
           )}
         </div>
+      ) : (
+        /* The strip is one section of two rows: the Workspace's Tabs, and the open Tab's
+           Panes under them. Swipe here, never on the grid. */
+        <div
+          className="shrink-0 px-3 pb-1.5"
+          onTouchStart={(e) => {
+            swipe.current = { x: e.touches[0]?.clientX ?? 0, scroll: strip.current?.scrollLeft ?? 0 };
+          }}
+          onTouchEnd={(e) => {
+            const dx = (e.changedTouches[0]?.clientX ?? 0) - swipe.current.x;
+            const scrolled = Math.abs((strip.current?.scrollLeft ?? 0) - swipe.current.scroll) > 4;
+            if (scrolled || Math.abs(dx) < 40 || !active) return;
+            const i = tabs.indexOf(active) + (dx < 0 ? 1 : -1);
+            if (tabs[i]) openTab(tabs[i].id);
+          }}
+        >
+          {manyTabs ? (
+            <div className="flex flex-col gap-2 pt-1">
+              <div className="flex items-center gap-2">
+                <TabPicker
+                  label={active!.label}
+                  status={active!.status}
+                  n={activeIndex + 1}
+                  of={tabs.length}
+                  blocked={tabs.filter((t) => t.status === 'blocked').length}
+                  onOpen={() => {
+                    setSwitchTabs(true);
+                    setShowSwitch(true);
+                  }}
+                  onMenu={tabMenuFor(active!.id)}
+                />
+                {mouseChip}
+                {newTab}
+              </div>
+              {/* Where the swipe is and what each Tab is doing, without the labels. */}
+              <div aria-hidden className="flex justify-center gap-[5px]">
+                {tabs.map((t, i) => (
+                  <span
+                    key={t.id}
+                    className={`h-[5px] rounded-full transition-[width] duration-200 motion-reduce:transition-none ${
+                      i === activeIndex ? 'w-3.5 bg-accent' : `w-[5px] ${PICKER_DOT[t.status]}`
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 border-b border-border">
+              <div ref={strip} role="tablist" aria-label="Tabs" className="hscroll relative flex min-w-0 flex-1 items-end gap-0.5">
+                {tabs.map((t) => (
+                  <TabStripButton
+                    key={t.id}
+                    label={t.label}
+                    status={t.status}
+                    paneCount={t.panes.length}
+                    selected={t.id === pane?.tabId}
+                    onOpen={() => openTab(t.id)}
+                    onMenu={tabMenuFor(t.id)}
+                  />
+                ))}
+                <span
+                  aria-hidden
+                  data-testid="tab-underline"
+                  className="absolute bottom-[-1px] left-0 h-0.5 bg-accent transition-[transform,width] duration-200 ease-out motion-reduce:transition-none"
+                  style={{ width: underline.w, transform: `translateX(${underline.x}px)` }}
+                />
+              </div>
+              {mouseChip}
+              {newTab}
+            </div>
+          )}
 
-        {/* Row two: the Panes of the Tab the underline points at. It carries the section's
-            hairline on its own top edge — pulled up by the pixel the row above draws, so the
-            two rows share one line — and starts where the Tab labels do, not under the +. */}
-        {active && active.panes.length > 1 && (
-          <div
-            role="group"
-            aria-label="Panes in this Tab"
-            className={`hscroll -mt-px flex gap-1.5 border-t border-border pt-1.5 ${writable ? 'pl-10' : ''}`}
-          >
-            {active.panes.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                aria-current={p.key === paneKey ? 'true' : undefined}
-                onClick={() => {
-                  haptic();
-                  navigate(`#/pane/${encodeURIComponent(p.key)}`);
-                }}
-                className={`press flex shrink-0 items-center gap-1.5 rounded-chip px-2.5 py-1 text-[12px] whitespace-nowrap ${
-                  p.key === paneKey ? 'bg-surface font-medium text-fg' : 'text-muted'
-                }`}
-              >
-                <Dot status={p.status} size={6} seen={p.key !== paneKey} />
-                {p.agent ?? 'shell'}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+          {/* Row two: the Panes of the open Tab, only when the Tab is split. */}
+          {active && active.panes.length > 1 && <PaneChips panes={active.panes} paneKey={paneKey} className="pt-2" />}
+        </div>
+      )}
 
       {agent && lens === 'chat' ? (
         <Chat key={paneKey} paneKey={paneKey} revision={pane?.revision ?? 0} onUnavailable={showScreen} />
@@ -1176,15 +1426,16 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         {/* The blocked card lives here, above the composer, on its width and gutter. The
             live region must exist before the card does, or a screen reader announces
             nothing: it stays mounted at zero height while no prompt asks. */}
-        <div aria-live="polite" className={explain ? 'px-4' : 'h-0 overflow-hidden px-4'}>
+        <div ref={card} aria-live="polite" className={explain ? 'px-4' : 'h-0 overflow-hidden px-4'}>
           <div className={`transition-opacity duration-150 ${pane?.status === 'blocked' && explain ? 'opacity-100' : 'opacity-0'}`}>
             {explain && (
               <Blocked
                 key={explain.promptId ?? 'mock'}
                 explain={explain}
                 agent={agent}
-                onSend={sendBlocked}
-                onReread={() => void loadExplain()}
+                stale={stale}
+                onSend={answer}
+                onReread={reread}
               />
             )}
           </div>
@@ -1461,7 +1712,42 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         )}
       </div>
 
-      <SwitchDrawer open={showSwitch} onClose={() => setShowSwitch(false)} state={state} currentKey={paneKey} onPick={haptic} />
+      <SwitchDrawer
+        open={showSwitch}
+        onClose={() => setShowSwitch(false)}
+        state={state}
+        currentKey={paneKey}
+        onPick={haptic}
+        title={switchTabs ? 'Switch Tab' : 'Switch Pane'}
+        head={switchTabs && (
+          <section>
+            <h3 className="label-caps px-3 pt-3.5 pb-1">Tabs in {ws?.label ?? 'this Workspace'}</h3>
+            <ul>
+              {tabs.map((t, i) => (
+                <li key={t.id}>
+                  <button
+                    type="button"
+                    aria-current={t.id === pane?.tabId ? 'true' : undefined}
+                    onClick={() => {
+                      setShowSwitch(false);
+                      openTab(t.id);
+                    }}
+                    className={`flex min-h-11 w-full items-center gap-2.5 rounded-chip px-3 text-left ${
+                      t.id === pane?.tabId ? 'bg-muted/20' : 'active:bg-bg'
+                    }`}
+                  >
+                    <Dot status={t.status} seen={t.status === 'idle' || t.status === 'unknown'} />
+                    <span className="min-w-0 flex-1 truncate text-body">{t.label}</span>
+                    {t.status === 'blocked' && <span className="shrink-0 text-caption text-warn">needs you</span>}
+                    {t.panes.length > 1 && <span className="shrink-0 text-caption text-muted">{t.panes.length} Panes</span>}
+                    <span className="w-4 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted">{i + 1}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      />
       <MenuSheet
         open={menuTab !== undefined}
         title={menuTab?.label ?? 'Tab'}
@@ -1478,15 +1764,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
               }))
             : []),
           { label: 'Rename tab', onClick: () => menuTab && setTabRename(menuTab.id) },
-          {
-            label: 'Close tab',
-            danger: true,
-            onClick: () => {
-              if (!menuTab) return;
-              if (closeTabCost(menuTab.panes, tabs.length === 1)) setTabClose(menuTab.id);
-              else void closeTab(menuTab);
-            },
-          },
+          { label: 'Close tab', danger: true, onClick: () => menuTab && requestCloseTab(menuTab) },
         ]}
       />
       <RenameSheet
@@ -1512,6 +1790,8 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         onClose={() => setShowMore(false)}
         head={<ThemePicker />}
         items={[
+          // The phone header has no room for it; at `lg` it sits in the header.
+          ...(agent && !desktop ? [{ label: 'Read aloud', onClick: speak }] : []),
           { label: wrap ? 'Wrap: on' : 'Wrap: off', onClick: () => setWrap(!wrap) },
           {
             // ADR 0004: a geometry lease makes the agent draw at this screen's columns; the
