@@ -360,6 +360,7 @@ export function Home({ state }: { state: State | null }) {
   const [created, setCreated] = useState<string | null>(null);
   const sections = useRef(new Map<string, HTMLElement>());
   const scrolled = useRef(false);
+  const pal = usePal();
 
   const write = (next: string[]) => {
     setCollapsed(next);
@@ -491,7 +492,7 @@ export function Home({ state }: { state: State | null }) {
                 label="New Workspace"
                 onClick={() => setNewWorkspace(true)}
                 icon={<Plus size={20} />}
-                style={{ color: usePal().accent }}
+                style={{ color: pal.accent }}
               />
             )}
           </>
