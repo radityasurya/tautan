@@ -1,15 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { timeAgo } from './home.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
+import { Markdown } from './markdown.tsx';
+import { ChevronRight } from './icons.tsx';
+import type { Turn } from '../shared/chat.ts';
 
 export type LensMode = 'chat' | 'screen';
 
-interface Turn {
-  role: 'user' | 'assistant';
-  text: string;
-  tools: { name: string; brief: string }[];
-  at?: number;
-}
 
 interface ChatResponse {
   sessionId: string;
@@ -49,6 +46,26 @@ function Stamp({ at }: { at?: number }) {
     <time dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()} className="shrink-0 font-mono text-[10px] tabular-nums text-muted">
       {timeAgo(at)}
     </time>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  // Clipboard needs a secure context; over plain http the button is left out, not broken.
+  if (!navigator.clipboard) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }, () => {});
+      }}
+      className="absolute right-1.5 top-1.5 min-h-8 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg"
+    >
+      <span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
+    </button>
   );
 }
 
@@ -96,7 +113,7 @@ export function Chat({
         const el = event.currentTarget;
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
       }}
-      className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4"
+      className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-10"
     >
       {!data ? (
         <div className="flex flex-col gap-4">
@@ -115,28 +132,36 @@ export function Chat({
               <li key={turnIndex} className={`flex flex-col ${assistant ? 'items-start' : 'items-end'}`}>
                 {turn.text && (
                   <div
-                    className={`max-w-[88%] whitespace-pre-wrap break-words rounded-card px-3 py-2.5 text-body ${
+                    className={`min-w-0 max-w-[88%] break-words rounded-card px-3 py-2.5 text-body ${
                       assistant ? 'bg-surface text-fg' : 'bg-accent/10 text-fg'
                     }`}
                   >
-                    {turn.text}
+                    <Markdown text={turn.text} />
                   </div>
                 )}
                 {tools.length > 0 && (
                   <ul className="mt-1.5 flex w-[min(92%,42rem)] flex-col gap-1">
                     {tools.map((tool, toolIndex) => (
-                      <li
-                        key={`${tool.name}-${toolIndex}`}
-                        className="grid min-h-7 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-chip bg-surface px-2 py-1 font-mono text-caption"
-                      >
-                        <span
-                          title={tool.name}
-                          className="max-w-32 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 text-[10px] leading-none text-fg"
-                        >
-                          {tool.name}
-                        </span>
-                        <span title={tool.brief} className="truncate text-muted">{tool.brief}</span>
-                        {toolIndex === tools.length - 1 && <Stamp at={turn.at} />}
+                      <li key={`${tool.name}-${toolIndex}`} className="min-w-0 rounded-chip bg-surface">
+                        <details className="group">
+                          <summary className="grid min-h-11 cursor-pointer list-none grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-chip px-2 py-1 font-mono text-caption lg:min-h-8 [&::-webkit-details-marker]:hidden">
+                            <span
+                              title={tool.name}
+                              className="max-w-32 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 text-[10px] leading-none text-fg"
+                            >
+                              {tool.name}
+                            </span>
+                            <span title={tool.brief} className="truncate text-muted">{tool.brief}</span>
+                            {toolIndex === tools.length - 1 ? <Stamp at={turn.at} /> : <span />}
+                            <ChevronRight className="text-muted transition-transform group-open:rotate-90" />
+                          </summary>
+                          <div className="relative border-t border-border">
+                            <pre className="max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words px-2 py-2 pr-16 font-mono text-caption text-fg">
+                              {tool.detail || tool.brief}
+                            </pre>
+                            <CopyButton text={tool.detail || tool.brief} />
+                          </div>
+                        </details>
                       </li>
                     ))}
                   </ul>

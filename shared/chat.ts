@@ -1,7 +1,7 @@
 export interface Turn {
   role: 'user' | 'assistant';
   text: string;
-  tools: { name: string; brief: string }[];
+  tools: { name: string; brief: string; detail: string }[];
   at?: number;
 }
 
@@ -34,6 +34,31 @@ function brief(input: unknown): string {
 
 function cap(text: string): string { return text.length > 4_000 ? `${text.slice(0, 3_999)}…` : text; }
 
+const str = (value: unknown) => typeof value === 'string' && value.trim() ? value : undefined;
+const preview = (text: string) => text.length > 600 ? `${text.slice(0, 599)}…` : text;
+
+/** The full tool input for the expanded row: newlines kept, capped like turn text. */
+function detail(name: string, input: unknown): string {
+  const value = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const lines: string[] = [];
+  if (str(value.command)) {
+    if (str(value.description)) lines.push(`# ${value.description as string}`);
+    lines.push(value.command as string);
+  } else if (str(value.file_path)) {
+    lines.push(value.file_path as string);
+    const edits = Array.isArray(value.edits) ? value.edits as Record<string, unknown>[] : [value];
+    for (const edit of edits) {
+      if (typeof edit?.old_string !== 'string' || typeof edit.new_string !== 'string') continue;
+      lines.push('', `- ${preview(edit.old_string).replace(/\n/g, '\n- ')}`, `+ ${preview(edit.new_string).replace(/\n/g, '\n+ ')}`);
+    }
+  } else if (str(value.pattern)) {
+    lines.push(value.pattern as string);
+    if (str(value.path)) lines.push(`in ${value.path as string}`);
+  }
+  if (lines.length) return cap(lines.join('\n'));
+  try { return cap(JSON.stringify(input, null, 2) ?? name); } catch { return ''; }
+}
+
 /** Parse Claude Code's JSONL into display-safe turns; raw transcript lines never leave this module. */
 export function parseTranscript(jsonl: string): Turn[] {
   const turns: Turn[] = [];
@@ -56,14 +81,14 @@ export function parseTranscript(jsonl: string): Turn[] {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const block = item as Block;
       if (block.type === 'text' && typeof block.text === 'string') text += block.text;
-      if (block.type === 'tool_use' && typeof block.name === 'string') tools.push({ name: block.name, brief: brief(block.input) });
+      if (block.type === 'tool_use' && typeof block.name === 'string') tools.push({ name: block.name, brief: brief(block.input), detail: detail(block.name, block.input) });
     }
     if (role === 'user' && wrapper(text)) continue;
     if (!text && !tools.length) continue;
     const at = time(entry.timestamp);
     const previous = turns.at(-1);
     if (previous?.role === role) {
-      previous.text = cap(previous.text && text ? `${previous.text}\n${text}` : previous.text || text);
+      previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
       previous.tools.push(...tools);
     } else turns.push({ role, text: cap(text), tools, ...(at !== undefined ? { at } : {}) });
   }

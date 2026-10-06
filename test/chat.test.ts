@@ -21,8 +21,27 @@ describe('parseTranscript', () => {
     ].map(entry => JSON.stringify(entry)).join('\n');
     expect(parseTranscript(jsonl)).toEqual([
       { role: 'user', text: 'Explain this failure.', tools: [], at: Date.parse('2026-10-06T00:00:00.000Z') },
-      { role: 'assistant', text: 'I will inspect it.', tools: [{ name: 'Bash', brief: 'git status --short' }] },
+      { role: 'assistant', text: 'I will inspect it.', tools: [{ name: 'Bash', brief: 'git status --short', detail: 'git status --short' }] },
     ]);
+  });
+
+  test('keeps the full tool input as detail, newlines kept and capped', () => {
+    const command = 'cd /home/tama/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/generate.ts \\\n  && git commit -m "slides"';
+    const jsonl = [
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', name: 'Bash', input: { command, description: 'Commit the slides script' } },
+        { type: 'tool_use', name: 'Edit', input: { file_path: '/a.ts', old_string: 'one\ntwo', new_string: 'three' } },
+        { type: 'tool_use', name: 'Grep', input: { pattern: 'TODO', path: 'web' } },
+        { type: 'tool_use', name: 'Task', input: { prompt: 'x'.repeat(5_000) } },
+      ] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const [bash, edit, grep, task] = parseTranscript(jsonl)[0]!.tools;
+    expect(bash!.brief).toBe('cd /home/tama/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/ge…');
+    expect(bash!.detail).toBe(`# Commit the slides script\n${command}`);
+    expect(edit!.detail).toBe('/a.ts\n\n- one\n- two\n+ three');
+    expect(grep!.detail).toBe('TODO\nin web');
+    expect(task!.detail).toHaveLength(4_000);
+    expect(task!.detail.endsWith('…')).toBe(true);
   });
 
   test('merges adjacent turns and caps their text', () => {

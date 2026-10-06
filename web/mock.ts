@@ -6,6 +6,7 @@ import type {
   Explain, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
   ScreenMode, SeenBody, Settings, SettingsBody, State, StatePane, Status, SuggestSettingBody,
 } from '../shared/types.ts';
+import type { Turn } from '../shared/chat.ts';
 
 // ---- fixtures ----
 
@@ -531,6 +532,70 @@ export function assertMockInvariants(): void {
   if (problems.length) throw new Error(`mock fixtures lost ${problems.join(', ')}`);
 }
 
+// ---- chat ----
+
+/** A Claude transcript as `GET /api/panes/:key/chat` returns it, with the Markdown Claude writes. */
+const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
+  sessionId: '11111111-1111-1111-1111-111111111111',
+  at: Date.now(),
+  turns: [
+    { role: 'user', text: 'Why does a dim run keep its **bold** weight after `SGR 22`? See shared/ansi.ts.', tools: [], at: ago(9) },
+    {
+      role: 'assistant', at: ago(8),
+      text: 'I will read the parser and its tests first.',
+      tools: [
+        { name: 'Read', brief: 'shared/ansi.ts', detail: '/home/dev/projects/tautan/shared/ansi.ts' },
+        { name: 'Read', brief: 'test/ansi.test.ts', detail: '/home/dev/projects/tautan/test/ansi.test.ts' },
+      ],
+    },
+    {
+      role: 'assistant', at: ago(6), tools: [
+        { name: 'Edit', brief: 'shared/ansi.ts', detail: '/home/dev/projects/tautan/shared/ansi.ts\n\n- case 22: style.bold = false; break;\n+ case 22: // normal intensity\n+   style.bold = false;\n+   style.dim = false;\n+   break;' },
+        { name: 'Bash', brief: 'bun test test/ansi.test.ts', detail: '# Run the ANSI parser tests\nbun test test/ansi.test.ts' },
+      ],
+      text: [
+        '## Root cause',
+        '',
+        'SGR `22` means *normal intensity*: it clears **both** bold and dim. The parser cleared only `bold`, so',
+        'a dim-only run kept `dim` and the span merge copied it forward.',
+        '',
+        '### What changed',
+        '',
+        '1. `applySgr()` clears `bold` and `dim` together on `22`.',
+        '2. `mergeSpans()` compares the full style, not just the colour:',
+        '   - foreground and background',
+        '   - `bold`, `dim`, `italic`, `underline`',
+        '3. A regression test covers `ESC[2m … ESC[22m`.',
+        '',
+        '```ts',
+        "case 22: // normal intensity — not \"bold off\"",
+        '  style.bold = false;',
+        '  style.dim = false;',
+        '  break;',
+        '```',
+        '',
+        '| Sequence | Before | After |',
+        '|:---|:---:|---:|',
+        '| `ESC[1m … ESC[22m` | ok | ok |',
+        '| `ESC[2m … ESC[22m` | ~~dim kept~~ | ok |',
+        '| `ESC[1;2m … ESC[22m` | dim kept | ok |',
+        '',
+        '> The spec is ECMA-48 §8.3.117; xterm documents the same at https://invisible-island.net/xterm/ctlseqs/ctlseqs.html.',
+        '',
+        '---',
+        '',
+        'All **41** tests pass. See [the ANSI notes](https://github.com/radityasurya/tautan/blob/main/docs/UI.md) for the palette rules. A `<script>` tag in the transcript stays text.',
+      ].join('\n'),
+    },
+    { role: 'user', text: 'Nice. Run the full suite and then:\n- commit\n- open a PR', tools: [], at: ago(2) },
+    { role: 'assistant', text: 'Running `pnpm test` now.', tools: [{
+      name: 'Bash',
+      brief: 'cd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/ge…',
+      detail: '# Commit the slides generator\ncd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/generate-deck.ts \\\n  .claude/skills/slides/SKILL.md \\\n  && git commit -m "slides: generate the deck from the outline" \\\n  && pnpm test',
+    }], at: ago(1) },
+  ],
+});
+
 // ---- fake Hub ----
 
 interface Store {
@@ -885,7 +950,7 @@ function route(s: Store, url: URL, method: string, body: unknown): Response | un
   const wrote = write(s, url, method, body);
   if (wrote) return wrote;
 
-  const match = url.pathname.match(/^\/api\/panes\/([^/]+)\/(screen|input|mouse|seen|explain|attach|suggest|close)$/);
+  const match = url.pathname.match(/^\/api\/panes\/([^/]+)\/(screen|input|mouse|seen|explain|attach|suggest|close|chat)$/);
   if (!match) return undefined;
   let key: string;
   try { key = decodeURIComponent(match[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
@@ -896,6 +961,8 @@ function route(s: Store, url: URL, method: string, body: unknown): Response | un
     const mode: ScreenMode = url.searchParams.get('mode') === 'recent' ? 'recent' : 'visible';
     return json(s.screens[key]![mode]);
   }
+  // Claude Panes only, like the Hub: any other Agent answers 404 and the lens falls back to Screen.
+  if (method === 'GET' && match[2] === 'chat') return pane.agent === 'claude' ? json(mockChat()) : json({ error: 'no-transcript' }, 404);
   if (method === 'GET' && match[2] === 'explain') return json(mockExplains[key] ?? null);
   if (method === 'POST' && match[2] === 'input') {
     input(s, key, (body ?? {}) as InputBody);
