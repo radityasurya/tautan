@@ -31,12 +31,25 @@ test.skipIf(!herdrAvailable)('phone-width lease: resize, swap, restore, reap', a
       });
     const release = () =>
       fetch(`${base}/api/panes/${encodeURIComponent(key)}/lease`, { method: 'DELETE', headers: { origin: base } });
+    // Each call prints a fresh tag after the size, and waits for THAT tag: earlier
+    // assertions leave their own `rows cols` lines on screen, and without the tag a
+    // read that lands before this call's output renders returns the previous size.
+    let call = 0;
     const stty = async () => {
-      await mux.sendText(paneId, 'stty size'); await mux.sendKeys(paneId, ['enter']);
-      const read = async () => String((await mux.read(paneId, 'visible')).text).trim().split(/\r|\n/).filter((line) => /^\d+ \d+$/.test(line.trim())).at(-1);
+      const tag = `SZ${++call}`;
+      // The quotes keep the tag out of the echoed command line (its `S"Z"1` form does not
+      // contain `SZ1`), so matching the tag means the command's OUTPUT rendered, not its echo.
+      await mux.sendText(paneId, `stty size; echo S"Z"${call}`); await mux.sendKeys(paneId, ['enter']);
+      const read = async (): Promise<string | undefined> => {
+        const lines = String((await mux.read(paneId, 'visible')).text).trim().split(/\r|\n/);
+        const at = lines.findIndex((line) => line.includes(tag));
+        if (at < 1) return undefined;
+        for (let i = at - 1; i >= 0; i--) if (/^\d+ \d+$/.test(lines[i]!.trim())) return lines[i]!.trim();
+        return undefined;
+      };
       // zsh can take seconds to start on a loaded machine, so re-read the same output
       // until it appears — never re-type, which would stack commands on the pane.
-      for (let attempt = 0; attempt < 8 && !(await read()); attempt++) await Bun.sleep(500);
+      for (let attempt = 0; attempt < 10 && !(await read()); attempt++) await Bun.sleep(500);
       return read();
     };
 
