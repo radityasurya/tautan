@@ -2,10 +2,11 @@
 // output, so nothing here builds HTML from a string and raw HTML stays text.
 // ponytail: a line-based subset of CommonMark + GFM — ATX headings, paragraphs, lists nested
 // by indent, blockquotes, fences, rules, pipe tables; inline code, bold, italic, strike,
-// links and bare URLs. No setext headings, reference links, footnotes, task boxes, HTML,
-// images, or emphasis that crosses another span's boundary. Add a real parser (micromark)
+// links, bare URLs and images (https only, see web/image.tsx). No setext headings, reference
+// links, footnotes, task boxes, HTML, linked images, or emphasis that crosses another span's boundary. Add a real parser (micromark)
 // when a transcript needs one of those.
 import { useState, type ReactNode } from 'react';
+import { Picture, safeImage } from './image.tsx';
 
 type Align = 'left' | 'center' | 'right' | undefined;
 type Block =
@@ -107,6 +108,7 @@ const INLINE = new RegExp([
   /~~(?=\S)([\s\S]*?\S)~~/.source, // 10 strike
   /\*(?=[^\s*])([^*]*?[^\s*])\*/.source, // 11 italic
   /(?<!\w)_(?=[^\s_])([^_]*?[^\s_])_(?!\w)/.source, // 12 italic
+  /!\[([^\]\n]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/.source, // 13,14 image; it starts left of its link, so it wins
 ].join('|'), 'g');
 
 const SAFE_URL = /^(https?:|mailto:)/i;
@@ -134,6 +136,10 @@ export function inline(text: string): ReactNode[] {
     else if (m[7] !== undefined) out.push(<strong key={k} className="font-semibold"><em>{inline(m[7])}</em></strong>);
     else if (m[8] !== undefined || m[9] !== undefined) out.push(<strong key={k} className="font-semibold">{inline((m[8] ?? m[9])!)}</strong>);
     else if (m[10] !== undefined) out.push(<s key={k}>{inline(m[10])}</s>);
+    else if (m[14] !== undefined) {
+      const src = /^https:/i.test(m[14]) ? safeImage(m[14]) : undefined;
+      out.push(src ? <Picture key={k} src={src} alt={m[13]!.trim() || 'Image'} /> : m[0]);
+    }
     else out.push(<em key={k}>{inline((m[11] ?? m[12])!)}</em>);
   }
   push(text.slice(last));

@@ -110,4 +110,23 @@ describe('inline', () => {
   test('backslash escapes', () => {
     expect(md('\\*not italic\\*')).toBe('<p>*not italic*</p>');
   });
+
+  test('an https image renders as an <img> inside a button, title dropped', () => {
+    const out = md('Before ![the chart](https://example.com/c.png "Chart") after');
+    expect(out).toContain('<img referrerPolicy="no-referrer" loading="lazy" decoding="async" src="https://example.com/c.png" alt="the chart"/>');
+    expect(out).toContain('<button type="button" aria-label="Open the chart" aria-haspopup="dialog">');
+    expect(out.startsWith('<p>Before <button')).toBe(true);
+  });
+
+  test('an image with an unsafe or non-https URL stays text', () => {
+    for (const src of ['http://example.com/a.png', 'javascript:alert(1)', 'data:image/png;base64,AAAA', '/api/panes/x/file?path=a.png', 'file:///etc/passwd']) {
+      const out = md(`![x](${src})`);
+      expect(out).not.toContain('<img');
+      expect(out).toContain('![x](');
+    }
+  });
+
+  test('an image with empty alt text is labelled Image', () => {
+    expect(md('![](https://example.com/a.png)')).toContain('alt="Image"');
+  });
 });

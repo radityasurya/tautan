@@ -534,16 +534,26 @@ export function assertMockInvariants(): void {
 
 // ---- chat ----
 
+/** web/public/icon-192.png, standing in for a screenshot pasted into the prompt. */
+const PASTED_PNG = 'data:image/png;base64,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';
+
 /** A Claude transcript as `GET /api/panes/:key/chat` returns it, with the Markdown Claude writes. */
 const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
   sessionId: '11111111-1111-1111-1111-111111111111',
   at: Date.now(),
   turns: [
-    { role: 'user', text: 'Why does a dim run keep its **bold** weight after `SGR 22`? See shared/ansi.ts.', tools: [], at: ago(9) },
+    {
+      role: 'user', at: ago(9), tools: [],
+      text: 'Why does a dim run keep its **bold** weight after `SGR 22`? See shared/ansi.ts and the screenshot. [Image #1]',
+      // A pasted image within the caps, and one over them.
+      images: [{ src: PASTED_PNG }, {}],
+    },
     {
       role: 'assistant', at: ago(8),
-      text: 'I will read the parser and its tests first.',
+      text: 'I will read the parser, its tests, and the last screenshot first.',
       tools: [
+        // Images the Hub file route serves from the Pane cwd.
+        { name: 'Read', brief: '/home/dev/projects/tautan/docs/shots/dim-run.png', detail: '/home/dev/projects/tautan/docs/shots/dim-run.png', image: '/home/dev/projects/tautan/docs/shots/dim-run.png' },
         { name: 'Read', brief: 'shared/ansi.ts', detail: '/home/dev/projects/tautan/shared/ansi.ts' },
         { name: 'Read', brief: 'test/ansi.test.ts', detail: '/home/dev/projects/tautan/test/ansi.test.ts' },
       ],
@@ -584,6 +594,10 @@ const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
         '',
         '---',
         '',
+        'The stage chart after the fix:',
+        '',
+        '![p99 latency by stage, after the fix](https://images.tautan.test/p99-by-stage.png)',
+        '',
         'All **41** tests pass. See [the ANSI notes](https://github.com/radityasurya/tautan/blob/main/docs/UI.md) for the palette rules. A `<script>` tag in the transcript stays text.',
       ].join('\n'),
     },
@@ -598,7 +612,14 @@ const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
       role: 'assistant', at: ago(1),
       text: 'Inspecting the flagged slide through the image tool.\n\nThe headline now leads: about 62 px against 20 px ticks, and nothing clips.',
       tools: [{
+        // A signed z.ai URL that has expired: the row shows "Image unavailable".
+        name: 'analyze_image', via: 'z.ai', brief: 'acme-slide-1.png',
+        image: 'https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/0c51d2aa/acme-slide-1.png?Expires=1759700000',
+        detail: '{\n  "imageSource": "https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/0c51d2aa/acme-slide-1.png?Expires=1759700000",\n  "prompt": "Is the logo lockup centred?"\n}',
+        output: 'The logo lockup is centred within 2 px.',
+      }, {
         name: 'analyze_image', via: 'z.ai', brief: 'dark-slide-3.png', truncated: true,
+        image: 'https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/9ba4f7e5/dark-slide-3.png',
         detail: '{\n  "imageSource": "https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/9ba4f7e5/dark-slide-3.png",\n  "prompt": "Measure the cap height of the headline, badge, axis ticks, legend and footer. Is any text clipped?"\n}',
         output: '# Text Measurement Analysis\n\n## Approximate Cap Heights (pixel measurements)\n\n| Element | Cap Height | Notes |\n|---|---|---|\n| (1) Headline "Where the p99 goes" | **~45–48 px** | Cap height of "W"; full font size ~62–64 px |\n| (2) Badge/pill "Latency" | ~14 px | Uppercase, tracked |\n| (3) Axis ticks | ~15 px | Tabular numbers |\n\nThe headline is the largest text on the slide. No text is clipped or overlapping…',
       }],

@@ -8,16 +8,22 @@ export interface Tool {
   output?: string;
   /** z.ai cut the output short before it reached the transcript. */
   truncated?: boolean;
+  /** The image the tool read or analysed: a file path for Read, a URL for a z.ai tool. */
+  image?: string;
 }
+
+/** An image pasted into a user turn, as a data URL; no `src` when it is over the cap. */
+export interface Pasted { src?: string }
 
 export interface Turn {
   role: 'user' | 'assistant';
   text: string;
   tools: Tool[];
+  images?: Pasted[];
   at?: number;
 }
 
-type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown };
+type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; source?: unknown };
 
 const commandWrapper = /^(?:command-name|command-message|local-command(?:-[\w-]+)?|task-notification|bash-(?:input|stdout))$/;
 const shortened = (text: string) => text.length > 80 ? `${text.slice(0, 79)}…` : text;
@@ -130,6 +136,8 @@ function liftZai(text: string, pending: Tool[]): { text: string; tools: Tool[] }
     let input: unknown = raw ?? '';
     try { if (raw) input = JSON.parse(raw); } catch {}
     const tool: Tool = { name: name.trim(), via: 'z.ai', brief: zaiBrief(input), detail: cap(typeof input === 'string' ? input : JSON.stringify(input, null, 2)) };
+    const image = str((input as Record<string, unknown> | null)?.imageSource);
+    if (image) tool.image = image;
     tools.push(tool);
     pending.push(tool);
     return '\n';
@@ -143,6 +151,28 @@ function liftZai(text: string, pending: Tool[]): { text: string; tools: Tool[] }
     return '\n';
   });
   return { text: text.replace(/^[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim(), tools };
+}
+
+// The Hub's file route serves these four as images; anything else would arrive as text.
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp)$/i;
+const PASTED_TYPE = /^image\/(?:png|jpeg|gif|webp)$/;
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+// ponytail: pasted images ride inside the chat JSON, which is refetched on every revision. Caps:
+// about 1 MB each, 4 per turn, 4 MB per transcript (newest kept). Serve them from a route if that bites.
+const PASTED_MAX = 1_400_000; // base64 characters, about 1 MB decoded
+const PASTED_PER_TURN = 4;
+const PASTED_TOTAL = 5_700_000; // four full-size images and their data: prefixes
+
+function readImage(input: unknown): string | undefined {
+  const path = str((input as Record<string, unknown> | null)?.file_path);
+  return path && IMAGE_FILE.test(path) ? path : undefined;
+}
+
+function pasted(source: unknown): Pasted {
+  const { type, media_type: media, data } = source && typeof source === 'object' ? source as Record<string, unknown> : {};
+  return type === 'base64' && typeof media === 'string' && PASTED_TYPE.test(media) && typeof data === 'string' && data.length <= PASTED_MAX && BASE64.test(data)
+    ? { src: `data:${media};base64,${data}` }
+    : {};
 }
 
 /** Parse Claude Code's JSONL into display-safe turns; raw transcript lines never leave this module. */
@@ -164,6 +194,7 @@ export function parseTranscript(jsonl: string): Turn[] {
     const role = entry.type;
     let text = turnText(content);
     const tools: Turn['tools'] = [];
+    const images: Pasted[] = [];
     if (Array.isArray(content)) for (const item of content) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const block = item as Block;
@@ -173,16 +204,30 @@ export function parseTranscript(jsonl: string): Turn[] {
         text += lifted.text;
         tools.push(...lifted.tools);
       }
-      if (block.type === 'tool_use' && typeof block.name === 'string') tools.push({ name: block.name, brief: brief(block.input), detail: detail(block.name, block.input) });
+      if (block.type === 'tool_use' && typeof block.name === 'string') {
+        const image = block.name === 'Read' ? readImage(block.input) : undefined;
+        tools.push({ name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(image ? { image } : {}) });
+      }
+      if (block.type === 'image' && role === 'user') {
+        images.push(pasted(block.source));
+      }
     }
     if (role === 'user' && wrapper(text)) continue;
-    if (!text && !tools.length) continue;
+    if (!text && !tools.length && !images.length) continue;
     const at = time(entry.timestamp);
     const previous = turns.at(-1);
     if (previous?.role === role) {
       previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
       previous.tools.push(...tools);
-    } else turns.push({ role, text: cap(text), tools, ...(at !== undefined ? { at } : {}) });
+      if (images.length) previous.images = [...previous.images ?? [], ...images];
+    } else turns.push({ role, text: cap(text), tools, ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
+  }
+  let budget = PASTED_TOTAL;
+  for (const turn of [...turns].reverse()) {
+    let kept = 0;
+    for (const image of turn.images ?? []) {
+      if (image.src && (++kept > PASTED_PER_TURN || (budget -= image.src.length) < 0)) delete image.src;
+    }
   }
   return turns;
 }

@@ -82,6 +82,53 @@ describe('parseTranscript', () => {
     expect(turn!.tools.map(t => [t.brief, t.output, t.truncated])).toEqual([['a.png', '**A** fine', undefined], ['b.png', 'B cut…', true]]);
   });
 
+  test('a z.ai tool carries its imageSource; a Read of an image carries its path', () => {
+    const call = `**🌐 Z.ai Built-in Tool: analyze_image**\n\n**Input:**\n\`\`\`json\n{"imageSource":"https://x.test/a.png?sig=1","prompt":"p"}\n\`\`\`\n*Executing on server...*\n`;
+    const jsonl = [
+      { type: 'assistant', message: { content: [
+        { type: 'text', text: call },
+        { type: 'tool_use', name: 'Read', input: { file_path: '/repo/shots/home.PNG' } },
+        { type: 'tool_use', name: 'Read', input: { file_path: '/repo/icon.svg' } },
+        { type: 'tool_use', name: 'Write', input: { file_path: '/repo/out.png', content: 'x' } },
+      ] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    expect(parseTranscript(jsonl)[0]!.tools.map(t => t.image)).toEqual(['https://x.test/a.png?sig=1', '/repo/shots/home.PNG', undefined, undefined]);
+  });
+
+  test('pasted images become data URLs within the caps; the rest become placeholders', () => {
+    const image = (data: string, media_type = 'image/png') => ({ type: 'image', source: { type: 'base64', media_type, data } });
+    const jsonl = [
+      { type: 'user', message: { content: [
+        { type: 'text', text: 'Look [Image #1]' },
+        image('iVBORw0KGgo='),
+        image('PHN2Zz4=', 'image/svg+xml'),
+        image('not base64!'),
+        image('A'.repeat(1_400_001)),
+        image('AAAA'), image('AAAA'), image('AAAA'), image('AAAA'),
+      ] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const [turn] = parseTranscript(jsonl);
+    expect(turn!.text).toBe('Look [Image #1]');
+    expect(turn!.images!.map(i => i.src)).toEqual([
+      'data:image/png;base64,iVBORw0KGgo=', undefined, undefined, undefined,
+      'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA', undefined,
+    ]);
+  });
+
+  test('pasted images over the transcript budget keep the newest', () => {
+    const big = 'A'.repeat(1_400_000);
+    const turn = { type: 'user', message: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: big } }] } };
+    const reply = { type: 'assistant', message: { content: 'ok' } };
+    const jsonl = [turn, reply, turn, reply, turn, reply, turn, reply, turn].map(entry => JSON.stringify(entry)).join('\n');
+    const kept = parseTranscript(jsonl).filter(t => t.role === 'user').map(t => Boolean(t.images![0]!.src));
+    expect(kept).toEqual([false, true, true, true, true]);
+  });
+
+  test('an image-only user turn is kept', () => {
+    const jsonl = JSON.stringify({ type: 'user', message: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/gif', data: 'R0lG' } }] } });
+    expect(parseTranscript(jsonl)).toEqual([{ role: 'user', text: '', tools: [], images: [{ src: 'data:image/gif;base64,R0lG' }] }]);
+  });
+
   test('leaves a plain Output heading in the text', () => {
     const text = 'Run it.\n\n**Output:**\n**exit:** 0';
     expect(parseTranscript(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }))[0]!.text).toBe(text);
