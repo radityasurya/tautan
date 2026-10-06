@@ -179,3 +179,14 @@
 @media (max-width: 719px) {
   html, body { overflow-x: clip !important; }
 }
+
+/* Horizontal strips (Tab strip, Pane chips, Host chips, suggestion pills) scroll without a
+   scrollbar: the right-edge content and the swipe are the affordance. Restored: ef9b051
+   dropped it while seven files still used it, so those strips could not scroll. */
+@utility hscroll {
+  overflow-x: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
