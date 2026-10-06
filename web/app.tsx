@@ -6,7 +6,7 @@ import { NeedsCard } from './alert.tsx';
 import { Diff } from './diff.tsx';
 import { FileScreen } from './file.tsx';
 import { Home, seedSeen, unseen } from './home.tsx';
-import { HostDetail } from './hosts.tsx';
+import { HostDetail, Hosts } from './hosts.tsx';
 import { AgentsTab, HostsTab, SettingsTab } from './icons.tsx';
 import { mockOpen } from './mock.ts';
 import { PaneScreen } from './pane.tsx';
@@ -232,9 +232,10 @@ function useRoute() {
 
 // ---- tab bar ----
 
-// Two tabs: Hosts live at the top of Settings, and `#/hosts` still lands there.
+// Three tabs. Hosts and Settings are two screens; each owns its own routes.
 const TABS = [
   { to: '#/', label: 'Panes', Icon: AgentsTab },
+  { to: '#/hosts', label: 'Hosts', Icon: HostsTab },
   { to: '#/settings', label: 'Settings', Icon: SettingsTab },
 ];
 
@@ -244,20 +245,23 @@ const safeDecode = (text: string) => {
 };
 
 /**
- * The one parser for the Settings tab: `#/settings[/<section>]`, `#/hosts` (Settings › Hosts,
- * so saved links keep working) and `#/hosts/<id>` (Host detail). An empty or malformed id is
- * Settings › Hosts. Anything else is undefined.
+ * The one parser for the two non-Pane screens: `#/settings[/<section>]`, `#/hosts`, and
+ * `#/hosts/<id>` (Host detail). An empty or malformed id is the Hosts list, and so is
+ * `#/settings/hosts`, where Phase 22 kept Hosts, so saved links keep working.
  */
-function settingsRoute(route: string): { section: string } | { hostId: string } | undefined {
+function screenRoute(route: string): { section: string } | { hosts: true; hostId?: string } | undefined {
   const m = /^\/(settings|hosts)(?:\/(.*))?$/.exec(route);
   if (!m) return undefined;
-  if (m[1] === 'settings') return { section: m[2] ?? '' };
+  if (m[1] === 'settings') return m[2] === 'hosts' ? { hosts: true } : { section: m[2] ?? '' };
   const id = safeDecode(m[2] ?? '');
-  return id ? { hostId: id } : { section: 'hosts' };
+  return id ? { hosts: true, hostId: id } : { hosts: true };
 }
 
-/** Settings, its sections, Hosts, and Host detail all sit under the Settings tab. */
-const inSettings = (route: string) => settingsRoute(route) !== undefined;
+/** Which tab a route belongs to. Pane, Diff and File screens hide the bar, so they need none. */
+const tabOf = (route: string) => {
+  const at = screenRoute(route);
+  return !at ? '#/' : 'hosts' in at ? '#/hosts' : '#/settings';
+};
 
 function TabBar({ route, badge }: { route: string; badge: number }) {
   const [typing, setTyping] = useState(false);
@@ -281,7 +285,7 @@ function TabBar({ route, badge }: { route: string; badge: number }) {
       className="fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+8px)] z-40 mx-auto flex h-13 w-auto max-w-[420px] items-center justify-around rounded-tabbar border border-border bg-elevated/88 px-2 shadow-elevated backdrop-blur-md"
     >
       {TABS.map(({ to, label, Icon }) => {
-        const on = to === '#/' ? route === '/' : inSettings(route);
+        const on = tabOf(route) === to;
         return (
           <Link
             key={to}
@@ -351,15 +355,14 @@ function useSidebar(enabled: boolean) {
   return open;
 }
 
-/** The sidebar footer: Settings, and Hosts as a shortcut into its first section. */
+/** The sidebar footer, and the cross-link at the foot of each screen's own nav. */
 const FOOTER = [
   { to: '#/settings', label: 'Settings', Icon: SettingsTab },
   { to: '#/hosts', label: 'Hosts', Icon: HostsTab },
 ];
 
-/** Settings' own sections, Hosts first. Each is `#/settings/<id>`, so a link lands on it. */
+/** Settings' own sections. Each is `#/settings/<id>`, so a link lands on it. */
 const SECTIONS = [
-  ['hosts', 'Hosts'],
   ['appearance', 'Appearance'],
   ['notifications', 'Notifications'],
   ['replies', 'Replies'],
@@ -367,35 +370,72 @@ const SECTIONS = [
   ['about', 'About'],
 ] as const;
 
+const NAV_LINK = 'flex min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-[14px] focus-visible:outline-2 focus-visible:outline-accent';
+const navLink = (on: boolean) => `${NAV_LINK} ${on ? 'bg-elevated text-fg' : 'text-muted hover:bg-elevated/60 hover:text-fg'}`;
+
+/**
+ * The left column of Settings and of Hosts at `lg`: back to the Panes, the screen's title,
+ * its own links, and the other screen at the foot. Settings lists its sections; Hosts lists
+ * every Host, each with its reachability dot.
+ */
 // ponytail: the current section is the route, not a scroll-spy; scrolling by hand does not
 // move the highlight. Add an IntersectionObserver if that reads wrong.
-function SectionNav({ current, down }: { current: string; down: number }) {
+function ScreenNav({ hosts, current, state }: { hosts: boolean; current: string; state: State | null }) {
+  const other = FOOTER.find((f) => f.to !== (hosts ? '#/hosts' : '#/settings'))!;
   return (
     <nav
-      aria-label="Settings sections"
+      aria-label={hosts ? 'Hosts' : 'Settings sections'}
       className="sticky top-0 flex h-dvh w-[240px] shrink-0 flex-col gap-0.5 border-r border-border bg-surface px-4 py-6"
     >
-      <Link to="#/" className="flex items-center gap-2 px-2 pb-4 text-[13px] text-muted">
+      <Link to="#/" className="flex items-center gap-2 px-2 pb-4 text-[13px] text-muted hover:text-fg">
         <span aria-hidden>‹</span>All panes
       </Link>
-      <span className="px-2 pb-3 text-[22px] font-semibold tracking-tight">Settings</span>
-      {SECTIONS.map(([id, label]) => {
-        const to = `#/settings/${id}`;
-        const on = id === current;
-        return (
-          <Link
-            key={id}
-            to={to}
-            aria-current={on ? 'true' : undefined}
-            // The same link twice is no route change, so scroll back to the section by hand.
-            onClick={() => location.hash === to && document.getElementById(`settings-${id}`)?.scrollIntoView({ block: 'start' })}
-            className={`flex items-center rounded-lg px-2.5 py-2 text-[14px] ${on ? 'bg-elevated text-fg' : 'text-muted hover:text-fg'}`}
-          >
-            {label}
-            {id === 'hosts' && down > 0 && <span className="ml-auto text-caption text-danger">{down} down</span>}
+      <span className="px-2 pb-3 text-[22px] font-semibold tracking-tight">{hosts ? 'Hosts' : 'Settings'}</span>
+      {hosts ? (
+        <>
+          <Link to="#/hosts" aria-current={current === '' ? 'true' : undefined} className={navLink(current === '')}>
+            All Hosts
+            <span className="ml-auto text-caption tabular-nums text-muted">{state?.hosts.length ?? ''}</span>
           </Link>
-        );
-      })}
+          {state?.hosts.map((h) => {
+            const on = h.id === current;
+            return (
+              <Link
+                key={h.id}
+                to={`#/hosts/${encodeURIComponent(h.id)}`}
+                aria-current={on ? 'true' : undefined}
+                className={navLink(on)}
+              >
+                <span aria-hidden className={`size-2 shrink-0 rounded-full ${h.online ? 'bg-ok' : 'bg-danger'}`} />
+                <span className="min-w-0 truncate">{h.label}</span>
+                {!h.online && <span className="ml-auto shrink-0 text-caption text-danger">down</span>}
+              </Link>
+            );
+          })}
+        </>
+      ) : (
+        SECTIONS.map(([id, label]) => {
+          const to = `#/settings/${id}`;
+          const on = id === current;
+          return (
+            <Link
+              key={id}
+              to={to}
+              aria-current={on ? 'true' : undefined}
+              // The same link twice is no route change, so scroll back to the section by hand.
+              onClick={() => location.hash === to && document.getElementById(`settings-${id}`)?.scrollIntoView({ block: 'start' })}
+              className={navLink(on)}
+            >
+              {label}
+            </Link>
+          );
+        })
+      )}
+      <span className="flex-1" />
+      <Link to={other.to} className={`${NAV_LINK} text-muted hover:bg-elevated/60 hover:text-fg`}>
+        <other.Icon size={16} />
+        {other.label}
+      </Link>
     </nav>
   );
 }
@@ -472,11 +512,13 @@ export function App() {
     setBadge(state?.panes.filter((p) => (p.status === 'blocked' || p.status === 'done') && unseen(p)).length ?? 0);
   }, [state]);
 
-  // A Host id the state does not know falls back to Settings › Hosts. Before the first state
+  // A Host id the state does not know falls back to the Hosts list. Before the first state
   // event it cannot be judged, so Host detail shows its loading line until then.
-  const at = settingsRoute(route);
-  const hostId = at && 'hostId' in at && (!state || state.hosts.some((h) => h.id === at.hostId)) ? at.hostId : undefined;
-  const settingsAt = !at || hostId !== undefined ? undefined : 'section' in at ? at.section : 'hosts';
+  const at = screenRoute(route);
+  const hostsAt = at && 'hosts' in at ? at : undefined;
+  const hostId =
+    hostsAt?.hostId !== undefined && (!state || state.hosts.some((h) => h.id === hostsAt.hostId)) ? hostsAt.hostId : undefined;
+  const settingsAt = at && 'section' in at ? at.section : undefined;
   const section = at !== undefined;
   // At `lg` the Pane list is the sidebar, so the `/` route has no list of its own to show
   // until `⌘B` hides the sidebar.
@@ -493,8 +535,10 @@ export function App() {
         <FileScreen paneKey={fileKey} path={filePath} state={state} />
       ) : hostId !== undefined ? (
         <HostDetail hostId={hostId} state={state} />
+      ) : hostsAt ? (
+        <Hosts state={state} />
       ) : settingsAt !== undefined ? (
-        <Settings state={state} section={settingsAt} />
+        <Settings section={settingsAt} />
       ) : (
         home
       );
@@ -514,7 +558,7 @@ export function App() {
       {desktop ? (
         <div className="flex">
           {section ? (
-            <SectionNav current={hostId !== undefined ? 'hosts' : settingsAt || 'hosts'} down={state?.hosts.filter((h) => !h.online).length ?? 0} />
+            <ScreenNav hosts={!!hostsAt} current={hostsAt ? (hostId ?? '') : (settingsAt ?? '')} state={state} />
           ) : (
             sidebar && (
               <aside aria-label="All panes" className="sticky top-0 flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface">
@@ -524,7 +568,7 @@ export function App() {
                 </div>
                 <nav aria-label="Sections" className="flex shrink-0 gap-1 border-t border-border p-2">
                   {FOOTER.map(({ to, label, Icon }) => (
-                    <Link key={to} to={to} className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg text-[13px] text-muted">
+                    <Link key={to} to={to} className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg text-[13px] text-muted hover:bg-elevated/60 hover:text-fg">
                       <Icon size={16} />
                       {label}
                     </Link>

@@ -157,65 +157,137 @@ export function ErrorLine({ error, busy, onRetry }: { error: string; busy: boole
   );
 }
 
-/** A list of actions, from the ⋯ button and from a long-press. */
+/** A menu row runs edge to edge like a Switch row; the inset is its own padding. */
+const MENU_ROW = 'flex min-h-12 w-full items-center gap-3 px-6 py-1.5 text-left';
+/** A menu section heading: the Settings small caps, inset like the rows. */
+const MENU_HEADING = 'px-6 pt-3 pb-1 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase';
+
+export interface MenuItem {
+  label: string;
+  onClick?: () => void;
+  hint?: string;
+  sub?: string;
+  danger?: boolean;
+  disabled?: boolean;
+  /** A small heading over this row and the ones after it that share it. */
+  group?: string;
+}
+
+/** `Wrap: on` → `['Wrap', true]`: a setting row, drawn with a switch instead of the word. */
+// ponytail: read from the label, so callers keep passing one string; add an `on` field to
+// MenuItem if a setting ever needs a label that does not end in `: on` / `: off`.
+const setting = (label: string) => {
+  const m = /^(.+): (on|off)$/.exec(label);
+  return m ? ([m[1]!, m[2] === 'on'] as const) : undefined;
+};
+
+function MenuRow({ it, onClose }: { it: MenuItem; onClose: () => void }) {
+  const toggle = setting(it.label);
+  // A hint with words is a sentence and goes under the label; a bare value (`80×24`) sits right.
+  const aside = it.hint && !/\s/.test(it.hint) ? it.hint : undefined;
+  const sub = it.sub ?? (aside ? undefined : it.hint);
+  return (
+    <li>
+      <button
+        type="button"
+        disabled={it.disabled}
+        {...(toggle ? { role: 'switch', 'aria-checked': toggle[1] } : {})}
+        onClick={() => {
+          it.onClick?.();
+          onClose();
+        }}
+        className={`${MENU_ROW} text-body outline-none focus-visible:bg-bg focus-visible:shadow-[inset_2px_0_0_var(--accent)] disabled:cursor-default disabled:opacity-40 ${
+          it.danger ? 'text-danger' : 'text-fg'
+        } ${it.disabled ? '' : 'hover:bg-bg active:bg-bg'}`}
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">
+            {toggle ? toggle[0] : it.label}
+            {/* The word stays in the text for screen readers and for getByText; the switch shows it. */}
+            {toggle && <span className="sr-only">: {toggle[1] ? 'on' : 'off'}</span>}
+          </span>
+          {/* Where a setting's value came from, in the same place a Toggle says it. */}
+          {sub && <span className="mt-0.5 block text-caption text-muted">{sub}</span>}
+        </span>
+        {aside && <span className="shrink-0 font-mono text-caption tabular-nums text-muted">{aside}</span>}
+        {toggle && (
+          <span
+            aria-hidden
+            className={`relative h-[18px] w-8 shrink-0 rounded-full transition-colors duration-150 ${toggle[1] ? 'bg-accent' : 'bg-border'}`}
+          >
+            <span
+              className={`absolute top-0.5 size-3.5 rounded-full bg-white shadow-sm transition-[left] duration-150 motion-reduce:transition-none ${
+                toggle[1] ? 'left-[16px]' : 'left-0.5'
+              }`}
+            />
+          </span>
+        )}
+      </button>
+    </li>
+  );
+}
+
+/**
+ * A list of actions, from the ⋯ button and from a long-press. The same frame as the Switch
+ * drawer: the title, the context line and `head` stay put; one full-width list scrolls under
+ * them. Rows group under their `group` heading in the order given, and the destructive ones
+ * always come last, apart, whatever order the caller listed them in.
+ */
 export function MenuSheet({
   open,
   title,
+  meta,
   onClose,
   items,
   head,
 }: {
   open: boolean;
   title: string;
+  /** One line of context under the title, such as the Host or the Agent and its Status. */
+  meta?: ReactNode;
   onClose: () => void;
-  items: { label: string; onClick?: () => void; hint?: string; sub?: string; danger?: boolean; disabled?: boolean }[];
+  items: MenuItem[];
   /** Anything the menu shows before its rows, such as the Pane sheet's theme picker. */
   head?: ReactNode;
 }) {
-  const pal = usePal();
+  const sections: { group?: string; rows: MenuItem[] }[] = [];
+  for (const it of items.filter((i) => !i.danger)) {
+    const last = sections.at(-1);
+    if (last && last.group === it.group) last.rows.push(it);
+    else sections.push({ group: it.group, rows: [it] });
+  }
+  const danger = items.filter((i) => i.danger);
   return (
-    <Sheet open={open} title={title} onClose={onClose}>
-      {head && <div style={{ marginBottom: 12 }}>{head}</div>}
-      <div>
-        {items.map((it) => (
-          <button
-            key={it.label}
-            type="button"
-            disabled={it.disabled}
-            onClick={() => {
-              it.onClick?.();
-              onClose();
-            }}
-            style={{
-              display: 'flex',
-              width: '100%',
-              alignItems: 'center',
-              gap: 12,
-              minHeight: 48,
-              padding: '6px 2px',
-              background: 'transparent',
-              border: 'none',
-              borderTop: `1px solid ${pal.borderSubtle}`,
-              textAlign: 'left',
-              cursor: it.disabled ? 'default' : 'pointer',
-              fontSize: 15,
-              fontFamily: 'inherit',
-              color: it.danger ? pal.danger : pal.text,
-              opacity: it.disabled ? 0.4 : 1,
-            }}
-          >
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ display: 'block' }}>{it.label}</span>
-              {/* Where a setting's value came from, in the same place a Toggle says it. */}
-              {it.sub && (
-                <span style={{ display: 'block', marginTop: 2, fontSize: 12, color: pal.textTertiary }}>{it.sub}</span>
-              )}
-            </span>
-            {it.hint && (
-              <span style={{ fontFamily: 'var(--halaska-mono, Geist Mono), monospace', fontSize: 12, color: pal.textTertiary }}>{it.hint}</span>
-            )}
-          </button>
-        ))}
+    <Sheet open={open} title={title} onClose={onClose} flush>
+      <div className="flex flex-col" style={FLUSH_BODY}>
+        <div className={`shrink-0 border-b border-border px-6 ${meta || head ? 'pb-3' : ''}`}>
+          {/* Pulled up under the kit's title row, the same place Sheet puts its meta. */}
+          {meta && (
+            <div className="-mt-3.5 truncate">
+              <Caption>{meta}</Caption>
+            </div>
+          )}
+          {head && <div className={meta ? 'mt-3' : ''}>{head}</div>}
+        </div>
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pt-1.5 pb-6" style={{ scrollbarGutter: 'stable' }}>
+          {sections.map((sec, i) => (
+            <section key={sec.group ?? i} className={i > 0 && !sec.group ? 'mt-1.5 border-t border-border/60 pt-1.5' : ''}>
+              {sec.group && <h3 className={MENU_HEADING}>{sec.group}</h3>}
+              <ul>
+                {sec.rows.map((it) => (
+                  <MenuRow key={it.label} it={it} onClose={onClose} />
+                ))}
+              </ul>
+            </section>
+          ))}
+          {danger.length > 0 && (
+            <ul className={sections.length ? 'mt-1.5 border-t border-border/60 pt-1.5' : ''}>
+              {danger.map((it) => (
+                <MenuRow key={it.label} it={it} onClose={onClose} />
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </Sheet>
   );

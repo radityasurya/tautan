@@ -3,11 +3,11 @@ import { useEffect, useState } from 'react';
 import { api, getTheme, setTheme, THEMES, useDesktop } from './app.tsx';
 import { Select } from './halaska-kit';
 import type { Theme } from './app.tsx';
-import { GROUP, HostsSection, InstallHint, SectionTitle, Toggle, useHubSettings } from './hosts.tsx';
+import { GROUP, InstallHint, SectionTitle, Toggle, useHubSettings } from './hosts.tsx';
 import { disablePush, enablePush, pushOn } from './push.ts';
 
 import type { ReactNode } from 'react';
-import type { Settings as HubSettings, State, SuggestSettingBody } from '../shared/types.ts';
+import type { Settings as HubSettings, SuggestSettingBody } from '../shared/types.ts';
 
 const LABELS: Record<Theme, string> = {
   system: 'System',
@@ -83,9 +83,9 @@ export function ThemePicker() {
   );
 }
 
-export function Settings({ state, section }: { state: State | null; section?: string }) {
+export function Settings({ section }: { section?: string }) {
   const desktop = useDesktop();
-  const { prefs, setPrefs, read, writeHosts } = useHubSettings();
+  const { prefs, setPrefs, read } = useHubSettings();
   const [access, setAccess] = useState('');
   const [quota, setQuota] = useState<QuotaReport | null>();
   const [haptics, setHaptics] = useState(() => localStorage.getItem('tautan.haptics') !== 'off');
@@ -101,7 +101,7 @@ export function Settings({ state, section }: { state: State | null; section?: st
     void api<QuotaReport>('/api/settings/quota', undefined, 'GET').then(setQuota, () => setQuota(null));
   }, []);
 
-  // `#/settings/<section>` (and `#/hosts`) lands on that section; plain `#/settings` on the top.
+  // `#/settings/<section>` lands on that section; plain `#/settings` on the top.
   useEffect(() => {
     const el = section && document.getElementById(`settings-${section}`);
     if (el) el.scrollIntoView({ block: 'start' });
@@ -128,8 +128,6 @@ export function Settings({ state, section }: { state: State | null; section?: st
     <div className="mx-auto max-w-2xl pb-28 lg:max-w-[880px] lg:px-6 lg:pt-8 lg:pb-10">
       {/* At `lg` the section nav carries the "Settings" title. */}
       {!desktop && <TopBar title="Settings" />}
-
-      <HostsSection state={state} prefs={prefs} writeHosts={writeHosts} />
 
       <Section id="appearance" title="Appearance">
         <div className="px-4 lg:px-0">
@@ -273,7 +271,7 @@ export function Settings({ state, section }: { state: State | null; section?: st
 /** One Settings section: an anchor the section nav scrolls to, its title, then its rows. */
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
-    <section id={`settings-${id}`} aria-labelledby={`settings-${id}-title`} className="scroll-mt-16 pt-6 lg:pt-10">
+    <section id={`settings-${id}`} aria-labelledby={`settings-${id}-title`} className="scroll-mt-16 pt-6 lg:pt-10 lg:first:pt-0">
       <SectionTitle id={`settings-${id}-title`}>{title}</SectionTitle>
       {children}
     </section>

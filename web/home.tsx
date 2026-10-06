@@ -105,14 +105,35 @@ export function matchPane(pane: StatePane, needle: string, state?: State | null)
   return `${pane.agent ?? 'shell'} ${pane.title} ${workspace?.label ?? ''}`.toLowerCase().includes(needle);
 }
 
-/** The most urgent status present, as the collapsed group's one-line summary. */
-function summary(panes: StatePane[]): string {
-  for (const s of Object.keys(RANK) as Status[]) {
-    const n = panes.filter((p) => p.status === s).length;
-    if (n) return `${n} ${s}`;
-  }
-  return '';
+/** A group's Status counts, most urgent first, as `[Status, n]`. `limit` keeps the top ones. */
+function tally(panes: StatePane[], limit: number): [Status, number][] {
+  return (Object.keys(RANK) as Status[])
+    .map((s): [Status, number] => [s, panes.filter((p) => p.status === s).length])
+    .filter(([, n]) => n > 0)
+    .slice(0, limit);
 }
+
+/** The pill's tint per Status: the Status colour at 12 %, and none for the quiet two. */
+const PILL: Record<Status, string> = {
+  blocked: 'bg-warn/12 text-warn',
+  working: 'bg-accent/12 text-accent',
+  done: 'bg-ok/12 text-ok',
+  idle: 'text-muted',
+  unknown: 'text-muted',
+};
+
+/** `● 1 blocked`: a Status count as a compact pill. Filled dot for the loud three, ring for the quiet. */
+function StatusPill({ status, n }: { status: Status; n: number }) {
+  return (
+    <span className={`inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] font-medium tabular-nums ${PILL[status]}`}>
+      <Dot status={status} seen={status === 'idle' || status === 'unknown'} size={6} />
+      {n} {status}
+    </span>
+  );
+}
+
+/** Focus ring for the list's own buttons: inside the edge, so a full-width row never clips it. */
+const RING = 'outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent';
 
 // ---- rows ----
 
@@ -162,7 +183,7 @@ function Row({ pane, first, actions, context, compact }: {
           setX(0);
         }
       }}
-      className={`press flex items-center [-webkit-touch-callout:none] ${compact ? 'min-h-9 gap-2.5 px-4 py-1 hover:bg-bg active:bg-bg' : 'min-h-14 gap-3 px-4 py-2.5 active:bg-surface'}`}
+      className={`press flex items-center [-webkit-touch-callout:none] ${RING} ${compact ? 'min-h-9 gap-2.5 px-4 py-1 hover:bg-bg active:bg-bg' : 'min-h-14 gap-3 px-4 py-2.5 hover:bg-surface active:bg-surface'}`}
       {...(actions ? press : {})}
     >
       <Dot status={pane.status} seen={!fresh} />
@@ -446,58 +467,77 @@ function useLongPress(fn: () => void) {
   };
 }
 
-/** A list group header. Workspace groups also open their menu on long-press or ⋯. */
+/**
+ * A list group header, one row: chevron, the label (the first thing to truncate), the Host as
+ * a muted chip, the Status counts as pills on the right, then ⋯. Workspace groups also open
+ * their menu on long-press. With a pointer, the row lights up on hover and ⋯ brightens; it
+ * is always there, so nothing moves.
+ */
 function GroupHeader({
   label,
   secondary,
   host,
-  summary,
+  panes,
   open,
+  compact,
   onToggle,
   onMenu,
 }: {
   label: string;
   secondary?: string;
   host?: string;
-  summary: string;
+  panes: StatePane[];
   open: boolean;
+  /** The 300 px sidebar: one pill, the most urgent, so the label keeps its room. */
+  compact?: boolean;
   onToggle: () => void;
   onMenu?: () => void;
 }) {
   const press = useLongPress(() => onMenu?.());
+  const Chevron = open ? ChevronDown : ChevronRight;
   return (
-    <h2 className="flex items-end">
+    <h2
+      className={`group/header flex items-center ${compact ? 'mt-2 hover:bg-bg' : 'mt-4 hover:bg-surface'} ${onMenu ? (compact ? 'pr-1.5' : 'pr-2') : 'pr-4'}`}
+    >
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
         {...(onMenu ? press : {})}
-        className={`label-caps flex min-w-0 flex-1 px-4 pt-6 pb-1.5 text-left [-webkit-touch-callout:none] ${secondary ? 'items-start' : 'items-center'}`}
+        className={`flex min-w-0 flex-1 items-center gap-2 self-stretch pl-4 text-left [-webkit-touch-callout:none] ${RING} ${
+          compact ? 'min-h-9 py-1.5' : 'min-h-11 py-2'
+        }`}
       >
-        {open ? (
-          <ChevronDown className={`mr-1.5 shrink-0 ${secondary ? 'mt-0.5' : ''}`} />
-        ) : (
-          <ChevronRight className={`mr-1.5 shrink-0 ${secondary ? 'mt-0.5' : ''}`} />
-        )}
+        <Chevron className={`shrink-0 text-muted ${secondary ? 'self-start mt-1.5' : ''}`} />
         <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-center">
-            <span className="truncate">{label}</span>
-            {host && <span className="ml-1.5 shrink-0 font-medium tracking-normal normal-case text-muted">· {host}</span>}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={`truncate font-semibold tracking-tight text-fg ${compact ? 'text-[13px]' : 'text-[15px]'}`}>{label}</span>
+            {host && (
+              <span className="max-w-[45%] shrink-0 truncate rounded-[5px] bg-fg/6 px-1.5 py-px text-[11px] font-medium text-muted">
+                {host}
+              </span>
+            )}
           </span>
           {secondary && (
-            <span title={secondary} className="mt-0.5 block truncate font-mono text-caption font-normal tracking-normal normal-case text-muted">
+            <span title={secondary} className="mt-0.5 block truncate font-mono text-caption text-muted">
               {secondary}
             </span>
           )}
         </span>
-        <span className="shrink-0 pl-2 font-medium tracking-normal normal-case text-muted">{summary}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          {tally(panes, compact ? 1 : 2).map(([s, n]) => (
+            <StatusPill key={s} status={s} n={n} />
+          ))}
+        </span>
       </button>
       {onMenu && (
         <button
           type="button"
           aria-label={`${label} actions`}
           onClick={onMenu}
-          className="press mb-0.5 flex size-11 shrink-0 items-center justify-center text-muted"
+          className={`press ml-0.5 flex shrink-0 items-center justify-center rounded-chip text-muted transition-opacity hover:bg-fg/6 hover:text-fg [@media(hover:hover)]:opacity-60 group-hover/header:opacity-100 focus-visible:opacity-100 ${RING} ${
+            compact ? 'size-8' : 'size-10'
+          }`}
         >
           <More size={18} />
         </button>
@@ -506,19 +546,21 @@ function GroupHeader({
   );
 }
 
-/** A pinned section header — Needs you, Running — collapsible like a Workspace group. */
-function PinnedHeader({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
+/** A pinned section header — Needs you, Running — collapsible like a Workspace group, and
+ *  drawn the same way: chevron, label, and the count where a group has its pills. */
+function PinnedHeader({ label, count, open, compact, onToggle }: { label: string; count: number; open: boolean; compact?: boolean; onToggle: () => void }) {
+  const Chevron = open ? ChevronDown : ChevronRight;
   return (
-    <h2>
+    <h2 className={`flex ${compact ? 'mt-2 hover:bg-bg' : 'mt-3 hover:bg-surface'}`}>
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className="label-caps flex w-full items-center px-4 pt-3.5 pb-1.5 text-left"
+        className={`flex w-full items-center gap-2 px-4 text-left ${RING} ${compact ? 'min-h-9 py-1.5' : 'min-h-11 py-2'}`}
       >
-        {open ? <ChevronDown className="mr-1.5 shrink-0" /> : <ChevronRight className="mr-1.5 shrink-0" />}
-        {label}
-        <span className="ml-auto shrink-0 pl-2 font-medium tracking-normal normal-case tabular-nums text-muted">{count}</span>
+        <Chevron className="shrink-0 text-muted" />
+        <span className={`font-semibold tracking-tight text-fg ${compact ? 'text-[13px]' : 'text-[15px]'}`}>{label}</span>
+        <span className="ml-auto shrink-0 text-[12px] font-medium tabular-nums text-muted">{count}</span>
       </button>
     </h2>
   );
@@ -782,7 +824,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
         <>
           {needsYou.length > 0 && (
             <section>
-              <PinnedHeader label="Needs you" count={needsYou.length} open={openSection(NEEDS)} onToggle={() => toggle(NEEDS)} />
+              <PinnedHeader label="Needs you" count={needsYou.length} compact={compact} open={openSection(NEEDS)} onToggle={() => toggle(NEEDS)} />
               {openSection(NEEDS) && (
                 <ul>
                   {needsYou.map((p, i) =>
@@ -806,7 +848,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
 
           {running.length > 0 && (
             <section>
-              <PinnedHeader label="Running" count={running.length} open={openSection(RUNNING)} onToggle={() => toggle(RUNNING)} />
+              <PinnedHeader label="Running" count={running.length} compact={compact} open={openSection(RUNNING)} onToggle={() => toggle(RUNNING)} />
               {openSection(RUNNING) && (
                 <ul>
                   {running.map((p, i) => (
@@ -833,7 +875,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                     <GroupHeader
                       label={w.label}
                       host={h?.label}
-                      summary={summary(all)}
+                      panes={all}
+                      compact={compact}
                       open={!shut}
                       onToggle={() => toggle(w.key)}
                       onMenu={() => setMenu(w)}
@@ -873,7 +916,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                       label={basename(path) || path || 'Unknown folder'}
                       secondary={path || 'No directory reported'}
                       host={h?.label}
-                      summary={summary(all)}
+                      panes={all}
+                      compact={compact}
                       open={!shut}
                       onToggle={() => toggle(key)}
                     />
@@ -922,17 +966,18 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
       <MenuSheet
         open={menu !== null}
         title={menu?.label ?? ''}
+        meta={menu && [hostLabel(menu.muxKey), `${panesOf(menu).length} Pane${panesOf(menu).length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
         onClose={() => setMenu(null)}
         items={[
           ...(writable(menu?.muxKey)
             ? [
                 { label: 'New Tab', onClick: () => setNewTab(menu) },
                 { label: 'Rename', onClick: () => setRename(menu) },
-                { label: 'Close Workspace', danger: true, onClick: () => menu && setClose(menu) },
               ]
             : []),
           { label: 'Diff', onClick: () => menu && navigate(`#/diff/${encodeURIComponent(menu.key)}`) },
           { label: collapsed.includes(menu?.key ?? '') ? 'Expand' : 'Collapse', onClick: () => menu && toggle(menu.key) },
+          ...(writable(menu?.muxKey) ? [{ label: 'Close Workspace', danger: true, onClick: () => menu && setClose(menu) }] : []),
         ]}
       />
       <RenameSheet
@@ -954,6 +999,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
       <MenuSheet
         open={paneMenu !== null}
         title={paneMenu?.title ?? ''}
+        meta={paneMenu && [paneMenu.agent ?? 'shell', paneMenu.status, wsLabel(paneMenu)].filter(Boolean).join(' · ')}
         onClose={() => setPaneMenu(null)}
         items={[
           { label: 'Rename', onClick: () => paneMenu && setPaneRename(paneMenu) },

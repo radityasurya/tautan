@@ -3,9 +3,10 @@ import type { ReactNode } from 'react';
 import type { HostConfig, ProbeResult, Settings, State, StateHost, StateMux, StatePane, Status } from '../shared/types.ts';
 import { api, Link, navigate, opensWith, useDesktop } from './app.tsx';
 import { Dot, statusText } from './home.tsx';
-import { Back, ChevronRight, HostsTab, Install } from './icons.tsx';
+import { Back, ChevronRight, HostsTab, Install, Plus } from './icons.tsx';
+import { TopBar } from './header.tsx';
 import { ErrorLine, Sheet, useWrite } from './sheets.tsx';
-import { Button, LinkButton, StatusDot, SwitchToggle, TextInput, usePal } from './halaska-kit';
+import { Button, IconButton, LinkButton, StatusDot, SwitchToggle, TextInput, usePal } from './halaska-kit';
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
@@ -157,7 +158,7 @@ function WorkspaceStatus({
   );
 }
 
-// ---- Settings › Hosts ----
+// ---- Hosts ----
 
 /** One phone row: the Host, its Mux kinds and versions, and its Workspace count. */
 function HostRow({ host, state, prefs }: { host: StateHost; state: State; prefs: Settings }) {
@@ -331,23 +332,17 @@ function HostCard({
 }
 
 /**
- * Hosts, the first section of Settings. The phone lists one row per Host that opens Host
- * detail; at `lg` each Host is a card with its Mux × Workspace table.
+ * The Hosts screen, `#/hosts`. The phone lists one row per Host that opens Host detail; at
+ * `lg` each Host is a card with its Mux × Workspace table.
  */
-export function HostsSection({
-  state,
-  prefs,
-  writeHosts,
-}: {
-  state: State | null;
-  prefs: Settings;
-  writeHosts: (next: HostConfig[]) => Promise<void>;
-}) {
+export function Hosts({ state }: { state: State | null }) {
   const desktop = useDesktop();
+  const { prefs, writeHosts } = useHubSettings();
   const [edit, setEdit] = useState<HostConfig | null>(null);
   const [add, setAdd] = useState(() => opensWith('add-host') || opensWith('addhost'));
   const [note, setNote] = useState('');
   const hosts = prefs.hosts ?? [];
+  useEffect(() => scrollTo(0, 0), []);
 
   const remove = (entry: HostConfig) => {
     setNote('');
@@ -355,15 +350,14 @@ export function HostsSection({
       setNote(e instanceof Error ? e.message : 'network'),
     );
   };
+  const counts = state && count(state.hosts.length, 'Host');
 
   return (
-    <section id="settings-hosts" aria-labelledby="settings-hosts-title" className="scroll-mt-16 pt-2 lg:pt-0">
+    <div className="mx-auto max-w-2xl pb-28 lg:max-w-[880px] lg:px-6 lg:pt-8 lg:pb-10">
       {desktop ? (
-        <div className="flex flex-wrap items-center gap-3 pb-4">
+        <div className="flex flex-wrap items-center gap-3 pb-5">
           <span className="flex flex-1 flex-col gap-1">
-            <h2 id="settings-hosts-title" className="text-[20px] font-semibold">
-              Hosts
-            </h2>
+            <h1 className="text-[20px] font-semibold">Hosts</h1>
             <span className="text-[13px] text-muted">Each Host runs one or more Muxes. Each Mux holds Workspaces.</span>
           </span>
           <Button variant="primary" size="md" onClick={() => setAdd(true)}>
@@ -371,24 +365,21 @@ export function HostsSection({
           </Button>
         </div>
       ) : (
-        <SectionTitle
-          id="settings-hosts-title"
-          action={
-            <button
-              type="button"
-              onClick={() => setAdd(true)}
-              className="-my-2 flex h-9 items-center px-1 text-[13px] font-medium text-accent"
-            >
-              + Add
-            </button>
+        <TopBar
+          title="Hosts"
+          right={
+            <>
+              {counts && <span className="mr-1.5 text-caption tabular-nums text-muted">{counts}</span>}
+              <IconButton size={40} label="Add Host" onClick={() => setAdd(true)} icon={<Plus size={20} />} style={{ color: 'var(--accent)' }} />
+            </>
           }
-        >
-          Hosts
-        </SectionTitle>
+        />
       )}
 
       {!state ? (
         <p className="px-5 py-3 text-caption text-muted lg:px-0">Reading Hosts…</p>
+      ) : state.hosts.length === 0 ? (
+        <p className="px-5 py-3 text-body text-muted lg:px-0">No Hosts yet. Add one to see its Muxes here.</p>
       ) : desktop ? (
         <div className="flex flex-col gap-4">
           {state.hosts.map((h) => (
@@ -404,7 +395,7 @@ export function HostsSection({
           ))}
         </div>
       ) : (
-        <ul className={`${GROUP} divide-y divide-border`}>
+        <ul className={`${GROUP} mt-2 divide-y divide-border`}>
           {state.hosts.map((h) => (
             <HostRow key={h.id} host={h} state={state} prefs={prefs} />
           ))}
@@ -426,7 +417,7 @@ export function HostsSection({
         }}
         onSubmit={(entry) => writeHosts([...hosts.filter((c) => c.id !== entry.id), entry])}
       />
-    </section>
+    </div>
   );
 }
 
@@ -461,7 +452,7 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
   const remove = (entry: HostConfig) => {
     setNote('');
     writeHosts(hosts.filter((c) => c.id !== entry.id)).then(
-      () => navigate('#/settings/hosts'),
+      () => navigate('#/hosts'),
       (e: unknown) => setNote(e instanceof Error ? e.message : 'network'),
     );
   };
@@ -470,7 +461,7 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
     <div className="mx-auto max-w-2xl pb-28 lg:pb-10">
       <header className="sticky top-0 z-30 bg-bg/90 pt-[env(safe-area-inset-top)] backdrop-blur-md">
         <div className="flex h-14 items-center gap-1 pr-4 pl-1">
-          <Link to="#/settings/hosts" aria-label="Hosts" className="flex size-11 shrink-0 items-center justify-center text-accent">
+          <Link to="#/hosts" aria-label="Hosts" className="flex size-11 shrink-0 items-center justify-center text-accent">
             <Back />
           </Link>
           <div className="flex min-w-0 flex-1 flex-col">
@@ -491,7 +482,7 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
         </div>
       </header>
 
-      {/* An unknown id never gets here: App falls back to Settings › Hosts once state arrives. */}
+      {/* An unknown id never gets here: App falls back to the Hosts list once state arrives. */}
       {!state || !host ? (
         <p className="px-5 pt-4 text-caption text-muted">Reading Hosts…</p>
       ) : !host.online ? (

@@ -324,31 +324,35 @@ try {
     assert(await row.getByRole('button', { name: 'No', exact: true }).count() === 0, 'sidebar has no No');
     return 'answered from the list, refused once, sidebar Yes only';
   });
-  await flow('settings: two tabs, #/hosts lands on Hosts, a Host row opens its Muxes', async () => {
+  await flow('hosts: three tabs, #/hosts is its own screen, a Host row opens its Muxes', async () => {
     await phone.goto(`${BASE}/#/hosts`, { waitUntil: 'networkidle' });
     const bar = phone.getByRole('navigation', { name: 'Sections' });
     const tabs = await bar.getByRole('link').allTextContents();
     // The Panes tab may carry its Needs you badge count after the label.
-    assert(tabs.length === 2 && tabs[0]!.startsWith('Panes') && tabs[1] === 'Settings', `tabs=${tabs.join('|')}`);
-    assert(await bar.getByRole('link', { name: 'Settings' }).getAttribute('aria-current') === 'page', 'Settings tab current');
-    await phone.getByRole('heading', { name: 'Hosts', level: 2 }).waitFor({ timeout: 8_000 });
+    assert(tabs.length === 3 && tabs[0]!.startsWith('Panes') && tabs[1] === 'Hosts' && tabs[2] === 'Settings', `tabs=${tabs.join('|')}`);
+    assert(await bar.getByRole('link', { name: 'Hosts' }).getAttribute('aria-current') === 'page', 'Hosts tab current');
+    await phone.getByRole('heading', { name: 'Hosts', level: 1 }).waitFor({ timeout: 8_000 });
     await phone.locator('a[href="#/hosts/HireOpz"]').click();
     await phone.waitForTimeout(600);
     assert(phone.url().endsWith('#/hosts/HireOpz'), `url=${phone.url().slice(-30)}`);
     const herdr = phone.getByRole('region', { name: /^herdr / });
     await herdr.getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
     assert((await herdr.textContent() ?? '').includes('1 Tab'), 'Tab count shown');
-    // A malformed, empty or unknown id falls back to Settings › Hosts instead of throwing.
+    // A malformed, empty or unknown id falls back to the Hosts list instead of throwing.
     for (const bad of ['%E0%A4%A', '', 'no-such-host']) {
       await phone.goto(`${BASE}/#/hosts/${bad}`, { waitUntil: 'networkidle' });
-      await phone.getByRole('heading', { name: 'Hosts', level: 2 }).waitFor({ timeout: 8_000 });
+      await phone.getByRole('heading', { name: 'Hosts', level: 1 }).waitFor({ timeout: 8_000 });
     }
-    // Desktop: the same route opens Host detail; Settings › Hosts draws the Mux × Workspace table.
+    // Settings no longer lists Hosts.
+    await phone.goto(`${BASE}/#/settings`, { waitUntil: 'networkidle' });
+    await phone.getByRole('heading', { name: 'Appearance' }).waitFor({ timeout: 8_000 });
+    assert(await phone.locator('a[href="#/hosts/HireOpz"]').count() === 0, 'no Host rows in Settings');
+    // Desktop: Hosts draws the Mux × Workspace table, and the same route opens Host detail.
     await desktop.goto(`${BASE}/#/hosts`, { waitUntil: 'networkidle' });
     await desktop.getByRole('table').getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
     await desktop.goto(`${BASE}/#/hosts/HireOpz`, { waitUntil: 'networkidle' });
     await desktop.getByRole('region', { name: /^herdr / }).getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
-    return 'two tabs, Hosts in Settings, Host detail at both widths';
+    return 'three tabs, Hosts apart from Settings, Host detail at both widths';
   });
 } finally {
   await browser.close().catch(() => {});
