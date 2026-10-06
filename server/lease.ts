@@ -16,6 +16,9 @@ type Lease = {
   child: Bun.Subprocess<'ignore', 'ignore', 'pipe'>;
   /** The operator's rect as it was before the lease: restored on release. */
   restore: { cols: number; rows: number };
+  /** The SSE stream that asked for the lease (ADR 0006): when that stream ends, the lease
+   *  releases, whoever else still watches the Pane. Absent → the old rule: any watcher keeps it. */
+  owner?: string;
 };
 
 const ATTACH_REFUSED = /already has an attached client|retry with --takeover/;
@@ -31,11 +34,16 @@ export class LeaseHolder {
     // A lease never outlives the watchers: reaped every 15 s. A pane that closed, or that no
     // SSE client watches any more, releases — the desktop gets its width back.
     setInterval(() => void this.reap(), 15_000).unref();
+    // ADR 0006: an owned lease follows its owner stream, not the watch set — a desktop split
+    // watching the same Pane must not keep a phone's lease alive after the phone leaves.
+    this.hub.onStreamEnd?.(stream => {
+      for (const [key, lease] of [...this.leases]) if (lease.owner === stream) void this.release(key);
+    });
   }
 
   has(paneKey: string): boolean { return this.leases.has(paneKey); }
 
-  async acquire(paneKey: string, opts: { cols: number; rows: number; takeover?: boolean }): Promise<void> {
+  async acquire(paneKey: string, opts: { cols: number; rows: number; takeover?: boolean; owner?: string }): Promise<void> {
     await this.hub.state();
     const found = this.hub.resolvePane(paneKey);
     if (!found) throw new LeaseError('not-found');
@@ -62,7 +70,7 @@ export class LeaseHolder {
     // Drain stderr forever, or a refused attach's message fills the pipe and wedges it.
     const stderrText = new Response(child.stderr).text();
     stderrText.then((text) => { refusedText = text; }).catch(() => {});
-    this.leases.set(paneKey, { terminal, child, restore });
+    this.leases.set(paneKey, { terminal, child, restore, owner: opts.owner });
     try {
       // The initial size does not re-assert on a takeover (probed): resize explicitly once
       // the attach has had a beat to connect, then again to be safe against its own startup.
@@ -98,7 +106,10 @@ export class LeaseHolder {
   private async reap(): Promise<void> {
     const watched = this.hub.watchedPaneKeys();
     for (const key of [...this.leases.keys()]) {
-      if (!await this.hub.hasPane(key) || !watched.has(key)) await this.release(key);
+      if (!await this.hub.hasPane(key)) { await this.release(key); continue; }
+      const lease = this.leases.get(key)!;
+      // An owned lease lives and dies with its stream; an anonymous one with the watch set.
+      if (lease.owner ? this.hub.streamActive?.(lease.owner) === false : !watched.has(key)) await this.release(key);
     }
   }
 }

@@ -8,6 +8,8 @@ export interface Tab { id: string; workspaceId: string; label: string }
 export interface Pane {
   id: string; tabId: string; workspaceId: string; title: string; cwd?: string;
   agent?: string; agentSession?: string; status: Status; revision: number; cols?: number; rows?: number;
+  /** cell origin in cells, relative to the Tab (ADR 0006); both absent when the Tab's layout is zoomed */
+  x?: number; y?: number;
   /** foreground command name (tmux: pane_current_command; herdr: last foreground process), used to pick the App profile */ command?: string;
 }
 export interface Tree { workspaces: Workspace[]; tabs: Tab[]; panes: Pane[] }
@@ -71,6 +73,8 @@ export interface StatePane {
   key: string; muxKey: string; workspaceId: string; tabId: string; id: string; title: string;
   cwd?: string; agent?: string; status: Status; revision: number; seenRevision: number;
   cols?: number; rows?: number;
+  /** cell origin in cells, relative to the Tab (ADR 0006); both absent when the Tab's layout is zoomed */
+  x?: number; y?: number;
   /** foreground command name (tmux: pane_current_command; herdr: last foreground process), used to pick the App profile */ command?: string;
   /** last non-empty line of the visible Screen; agent Panes only, cached per revision by the Hub */
   lastLine?: string;

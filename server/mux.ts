@@ -20,7 +20,10 @@ export function mouseBytes(body: MouseBody): string {
 export interface HubListener {
   onState(s: State): void;
   onScreen?(s: ScreenEvent): void;
-  paneKey?: string;
+  /** the Panes this stream watches, each polled on its own backoff (ADR 0006) */
+  paneKeys?: string[];
+  /** this stream's announced id: when the stream ends, leases it owns release (ADR 0006) */
+  stream?: string;
   mode?: ScreenMode;
 }
 
@@ -39,7 +42,9 @@ export class Hub {
   // off while quiet. ponytail: drop this if herdr gains a surface stream.
   private static readonly WATCH_FAST = 250;
   private static readonly WATCH_SLOW = 2_000;
-  private watchers = new Map<HubListener, { timer?: ReturnType<typeof setTimeout>; delay: number; last?: string }>();
+  // One watch per (listener, key), so each watched Pane backs off on its own (ADR 0006).
+  private watchers = new Map<HubListener, Map<string, { timer?: ReturnType<typeof setTimeout>; delay: number; last?: string }>>();
+  private streamEndCallbacks = new Set<(stream: string) => void>();
   private cached?: State;
   private statuses = new Map<string, { status: string; at: number }>();
   private lastLines = new Map<string, { revision: number; line?: string; excerpt?: string; command?: string }>();
@@ -119,10 +124,11 @@ export class Hub {
     // rejection: the routes that do await refresh still see the error and answer 502.
     entry.timer = setTimeout(() => void this.refresh(muxKey).catch(() => {}), 200);
     for (const listener of this.listeners) {
-      if (!listener.paneKey || !listener.onScreen) continue;
-      const parsed = this.resolve(listener.paneKey);
-      if (!parsed || parsed.muxKey !== muxKey || ids !== 'all' && !ids.includes(parsed.paneId)) continue;
-      this.scheduleWatch(listener, 150);
+      for (const paneKey of this.watchers.get(listener)?.keys() ?? []) {
+        const parsed = this.resolve(paneKey);
+        if (!parsed || parsed.muxKey !== muxKey || ids !== 'all' && !ids.includes(parsed.paneId)) continue;
+        this.scheduleWatch(listener, paneKey, 150);
+      }
     }
   }
 
@@ -293,8 +299,19 @@ export class Hub {
   /** The pane keys some SSE client currently watches — a lease reaper's keep-alive set. */
   watchedPaneKeys(): Set<string> {
     const keys = new Set<string>();
-    for (const listener of this.listeners) if (listener.paneKey) keys.add(listener.paneKey);
+    for (const listener of this.listeners) for (const key of listener.paneKeys ?? []) keys.add(key);
     return keys;
+  }
+
+  /** ADR 0006: is the SSE stream that announced this id still subscribed? A lease-reaper backstop. */
+  streamActive(stream: string): boolean {
+    return [...this.listeners].some(listener => listener.stream === stream);
+  }
+
+  /** ADR 0006: be told when an SSE stream (by its announced id) ends. */
+  onStreamEnd(callback: (stream: string) => void): () => void {
+    this.streamEndCallbacks.add(callback);
+    return () => this.streamEndCallbacks.delete(callback);
   }
 
   private resolve(paneKey: string): { muxKey: string; paneId: string; entry: Entry } | undefined {
@@ -387,38 +404,41 @@ export class Hub {
 
   subscribe(listener: HubListener): () => void {
     this.listeners.add(listener);
-    if (listener.paneKey && listener.onScreen) {
-      this.watchers.set(listener, { delay: Hub.WATCH_FAST });
-      queueMicrotask(() => void this.sendScreen(listener));
+    if (listener.paneKeys?.length && listener.onScreen) {
+      this.watchers.set(listener, new Map(listener.paneKeys.map(key => [key, { delay: Hub.WATCH_FAST }])));
+      // One microtask per key: a slow read of one Pane cannot delay another Pane's first Screen.
+      for (const key of listener.paneKeys) queueMicrotask(() => void this.sendScreen(listener, key));
     }
     return () => {
       this.listeners.delete(listener);
-      clearTimeout(this.watchers.get(listener)?.timer);
-      this.watchers.delete(listener);
+      const watches = this.watchers.get(listener);
+      if (watches) { for (const watch of watches.values()) clearTimeout(watch.timer); this.watchers.delete(listener); }
+      // ADR 0006: leases owned by this stream release now, whoever else still watches the Pane.
+      if (listener.stream) for (const callback of this.streamEndCallbacks) callback(listener.stream);
     };
   }
 
-  /** Poll the watched Pane again in `ms`, or sooner than already planned. */
-  private scheduleWatch(listener: HubListener, ms: number): void {
-    const watch = this.watchers.get(listener); if (!watch) return;
+  /** Poll a watched Pane again in `ms`, or sooner than already planned. */
+  private scheduleWatch(listener: HubListener, paneKey: string, ms: number): void {
+    const watch = this.watchers.get(listener)?.get(paneKey); if (!watch) return;
     clearTimeout(watch.timer);
-    watch.timer = setTimeout(() => void this.sendScreen(listener), ms);
+    watch.timer = setTimeout(() => void this.sendScreen(listener, paneKey), ms);
   }
 
-  private async sendScreen(listener: HubListener): Promise<void> {
-    const watch = this.watchers.get(listener);
-    if (!watch || !this.listeners.has(listener) || !listener.paneKey || !listener.onScreen) return;
+  private async sendScreen(listener: HubListener, paneKey: string): Promise<void> {
+    const watch = this.watchers.get(listener)?.get(paneKey);
+    if (!watch || !this.listeners.has(listener) || !listener.onScreen) return;
     try {
-      const screen = await this.read(listener.paneKey, listener.mode ?? 'visible');
+      const screen = await this.read(paneKey, listener.mode ?? 'visible');
       if (screen.text !== watch.last) {
         watch.last = screen.text;
         watch.delay = Hub.WATCH_FAST;
-        listener.onScreen({ key: listener.paneKey, ...screen });
+        listener.onScreen({ key: paneKey, ...screen });
       } else {
         watch.delay = Math.min(Hub.WATCH_SLOW, Math.round(watch.delay * 1.5));
       }
     } catch { watch.delay = Hub.WATCH_SLOW; }
-    if (this.watchers.has(listener)) this.scheduleWatch(listener, watch.delay);
+    if (this.watchers.get(listener)?.has(paneKey)) this.scheduleWatch(listener, paneKey, watch.delay);
   }
   private emitState(): void {
     const wait = Math.max(0, 500 - (Date.now() - this.lastStateAt));
@@ -436,7 +456,7 @@ export class Hub {
     for (const callback of this.closeCallbacks) callback();
     for (const entry of this.entries.values()) { entry.unsubscribe(); entry.mux.close(); clearTimeout(entry.timer); clearInterval(entry.interval); }
     clearTimeout(this.stateTimer); clearTimeout(this.seenTimer);
-    for (const watch of this.watchers.values()) clearTimeout(watch.timer);
+    for (const watches of this.watchers.values()) for (const watch of watches.values()) clearTimeout(watch.timer);
     this.watchers.clear();
   }
 }

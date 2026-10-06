@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import type { Explain, Mux, Pane, Screen, ScreenMode, Tree, Workspace } from '../shared/types.ts';
+import type { Explain, Mux, Pane, Screen, ScreenEvent, ScreenMode, Tree, Workspace } from '../shared/types.ts';
 import { startHttp } from '../server/http.ts';
 import { hostId } from '../server/hosts.ts';
 import { Hub } from '../server/mux.ts';
@@ -97,3 +97,71 @@ test('offeredKeys leads with Yes/No on an approval box and leaves a plain menu a
   };
   expect(offeredKeys(menu)).toEqual(footer);
 });
+
+// ADR 0006: one listener watches two Panes; each key polls on its own 250 ms \u2192 \u00d71.5 \u2192 2 s backoff.
+const watchFixture = () => {
+  const reads = { a: [] as number[], b: [] as number[] };
+  const text: Record<string, () => string> = {};
+  let fire: (ids: string[]) => void = () => {};
+  const tree: Tree = {
+    workspaces: [{ id: 'w1', label: 'W' }],
+    tabs: [{ id: 't1', workspaceId: 'w1', label: 'T' }],
+    panes: [
+      { id: 'a', tabId: 't1', workspaceId: 'w1', title: 'A', status: 'unknown', revision: 1 },
+      { id: 'b', tabId: 't1', workspaceId: 'w1', title: 'B', status: 'unknown', revision: 1 },
+    ],
+  };
+  const mux: Mux = {
+    kind: 'herdr', id: 'fake', socketPath: '/run/tautan/watch.sock',
+    tree: async () => tree,
+    read: async (paneId: string, mode: ScreenMode): Promise<Screen> => {
+      reads[paneId as 'a' | 'b'].push(Date.now());
+      return { text: text[paneId] ? text[paneId]!() : 'same', ansi: true, revision: 1, mode };
+    },
+    sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {},
+    onChange: cb => { fire = cb; return () => {}; },
+    newTab: async (): Promise<Pane> => tree.panes[0]!, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
+    rename: async () => {}, closePane: async () => {}, closeWorkspace: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+  };
+  const hub = new Hub({ refreshMs: 0, suggest: null });
+  hub.add('local', mux);
+  return { reads, fire, textFor: (pane: 'a' | 'b', fn: () => string) => { text[pane] = fn; }, hub };
+};
+
+const until = async <T>(read: () => T, accepts: (value: T) => boolean, timeout: number) => {
+  const deadline = Date.now() + timeout;
+  let value = await read();
+  while (!accepts(value) && Date.now() < deadline) { await Bun.sleep(10); value = await read(); }
+  return value;
+};
+
+test('two watched panes on one listener back off independently', async () => {
+  const f = watchFixture();
+  let tick = 0;
+  f.textFor('a', () => `tick ${tick++}`); // a new Screen every read \u2192 key a stays fast
+  const screens: ScreenEvent[] = [];
+  const off = f.hub.subscribe({ paneKeys: ['local/fake/a', 'local/fake/b'], onState: () => {}, onScreen: screen => screens.push(screen) });
+  try {
+    await until(() => screens.length, count => count >= 2, 2_000);
+    await Bun.sleep(2_400); // key b goes 250 \u2192 \u00d71.5 \u2192 \u2026; key a keeps changing
+    const gap = (pane: 'a' | 'b') => { const at = f.reads[pane]; return at.at(-1)! - at.at(-2)!; };
+    expect(f.reads.a.length).toBeGreaterThan(f.reads.b.length);
+    expect(gap('a')).toBeLessThan(450);
+    expect(gap('b')).toBeGreaterThan(700);
+  } finally { off(); f.hub.close(); }
+}, 8_000);
+
+test('a change on one key re-polls only that key', async () => {
+  const f = watchFixture(); // both panes return a constant screen
+  const screens: ScreenEvent[] = [];
+  const off = f.hub.subscribe({ paneKeys: ['local/fake/a', 'local/fake/b'], onState: () => {}, onScreen: screen => screens.push(screen) });
+  try {
+    await until(() => screens.length, count => count >= 2, 2_000); // first Screens out; next polls due at +250 ms
+    f.textFor('b', () => 'changed');
+    f.fire(['b']); // a Mux change for b only \u2192 b re-polls at 150 ms, a keeps its own schedule
+    await until(() => screens, list => list.some(screen => screen.key === 'local/fake/b' && screen.text === 'changed'), 1_000);
+    expect(f.reads.b.length).toBeGreaterThanOrEqual(2);
+    // a was not pulled to the 150 ms re-poll: any extra read of a is its own \u2265250 ms cadence.
+    expect(f.reads.a.slice(1).every(at => at - f.reads.a[0]! >= 240)).toBe(true);
+  } finally { off(); f.hub.close(); }
+}, 5_000);

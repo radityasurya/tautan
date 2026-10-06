@@ -13,9 +13,16 @@ let server: Server;
 const snapshot = {
   snapshot: {
     workspaces: [{ workspace_id: 'w1', label: 'w1' }],
-    tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1' }],
-    layouts: [{ panes: [{ pane_id: 'w1:p1', rect: { width: 80, height: 50 } }] }],
-    panes: [{ pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1', revision: 7, agent_status: 'idle' }],
+    tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1' }, { tab_id: 'w1:t2', workspace_id: 'w1' }],
+    layouts: [
+      { zoomed: false, panes: [{ pane_id: 'w1:p1', rect: { x: 0, y: 0, width: 80, height: 50 } }, { pane_id: 'w1:p2', rect: { x: 80, y: 0, width: 40, height: 50 } }] },
+      { zoomed: true, panes: [{ pane_id: 'w1:p3', rect: { x: 0, y: 0, width: 120, height: 50 } }] },
+    ],
+    panes: [
+      { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1', revision: 7, agent_status: 'idle' },
+      { pane_id: 'w1:p2', tab_id: 'w1:t1', workspace_id: 'w1', revision: 1, agent_status: 'idle' },
+      { pane_id: 'w1:p3', tab_id: 'w1:t2', workspace_id: 'w1', revision: 1, agent_status: 'idle' },
+    ],
   },
 };
 
@@ -60,6 +67,21 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.re
     const mux = new HerdrMux('test', socketPath);
     await mux.read('w1:p1', 'visible');
     expect(seen.at(-1)).toEqual({ pane_id: 'w1:p1', source: 'visible', format: 'ansi', strip_ansi: false });
+    mux.close();
+  });
+});
+
+describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tree geometry', () => {
+  test('copies rect x/y and omits both for every Pane of a zoomed layout', async () => {
+    const mux = new HerdrMux('test', socketPath);
+    const panes = (await mux.tree()).panes;
+    expect(panes.find(pane => pane.id === 'w1:p1')).toMatchObject({ x: 0, y: 0, cols: 80, rows: 50 });
+    expect(panes.find(pane => pane.id === 'w1:p2')).toMatchObject({ x: 80, y: 0, cols: 40, rows: 50 });
+    // ADR 0006: a zoomed layout's rects are bookkeeping, so both x and y stay absent.
+    const zoomed = panes.find(pane => pane.id === 'w1:p3')!;
+    expect(zoomed).toMatchObject({ cols: 120, rows: 50 });
+    expect(zoomed.x).toBeUndefined();
+    expect(zoomed.y).toBeUndefined();
     mux.close();
   });
 });

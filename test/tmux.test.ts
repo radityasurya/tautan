@@ -5,24 +5,34 @@ import { parseTree, TmuxMux, tmuxKey, type TmuxExec } from '../server/tmux.ts';
 import { Hub } from '../server/mux.ts';
 import { AGENT_KEYS, MODIFIERS, SHELL_KEYS, trayGroups } from '../web/keys.ts';
 
-const row = (o: { workspace?: string; workspaceLabel?: string; tab?: string; tabLabel?: string; pane?: string; command?: string; cwd?: string; title?: string; cols?: number; rows?: number } = {}) => [
+const row = (o: { workspace?: string; workspaceLabel?: string; tab?: string; tabLabel?: string; pane?: string; command?: string; cwd?: string; title?: string; cols?: number; rows?: number; left?: number; top?: number; zoomed?: string } = {}) => [
   o.workspace ?? '$0', o.workspaceLabel ?? 'work', o.tab ?? '@1', o.tabLabel ?? 'code', o.pane ?? '%0',
   o.command ?? 'sh', o.cwd ?? '/repo', o.title ?? '', String(o.cols ?? 80), String(o.rows ?? 24),
+  String(o.left ?? 0), String(o.top ?? 0), o.zoomed ?? '0',
 ].join('\t');
 
 describe('parseTree', () => {
   test('parses grouping, titles, agents, dimensions, and first-pane cwd', () => {
     const tree = parseTree([
-      row({ pane: '%2', command: 'claude', cwd: '/first', title: 'Agent\tTitle', cols: 101, rows: 33 }),
+      row({ pane: '%2', command: 'claude', cwd: '/first', title: 'Agent\tTitle', cols: 101, rows: 33, left: 40, top: 12 }),
       row({ pane: '%3', command: 'sh', cwd: '/second', title: '' }),
       row({ workspace: '$2', workspaceLabel: 'other', tab: '@4', tabLabel: 'shell', pane: '%5', command: 'zsh', title: hostname() }),
     ].join('\n'));
     expect(tree.workspaces[0]).toEqual({ id: '$0', label: 'work', cwd: '/first' });
     expect(tree.tabs[0]).toEqual({ id: '@1', workspaceId: '$0', label: 'code' });
-    expect(tree.panes[0]).toMatchObject({ id: '%2', title: 'Agent\tTitle', agent: 'claude', cols: 101, rows: 33, status: 'unknown', revision: 1 });
-    expect(tree.panes[1]).toMatchObject({ id: '%3', title: 'sh' });
+    expect(tree.panes[0]).toMatchObject({ id: '%2', title: 'Agent\tTitle', agent: 'claude', cols: 101, rows: 33, x: 40, y: 12, status: 'unknown', revision: 1 });
+    expect(tree.panes[1]).toMatchObject({ id: '%3', title: 'sh', x: 0, y: 0 });
     expect(tree.panes[1]!.agent).toBeUndefined();
     expect(tree.panes[2]).toMatchObject({ title: 'zsh' });
+  });
+
+  test('omits x and y for every pane of a zoomed window', () => {
+    const tree = parseTree([
+      row({ pane: '%7', tab: '@7', left: 0, top: 0, zoomed: '1' }),
+      row({ pane: '%8', tab: '@7', left: 80, top: 0, zoomed: '1' }),
+    ].join('\n'));
+    // ADR 0006: a zoomed window's rects are hidden bookkeeping, so no cell placement.
+    for (const pane of tree.panes) { expect(pane.x).toBeUndefined(); expect(pane.y).toBeUndefined(); }
   });
 });
 

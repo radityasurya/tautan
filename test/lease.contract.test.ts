@@ -33,8 +33,11 @@ test.skipIf(!herdrAvailable)('phone-width lease: resize, swap, restore, reap', a
       fetch(`${base}/api/panes/${encodeURIComponent(key)}/lease`, { method: 'DELETE', headers: { origin: base } });
     const stty = async () => {
       await mux.sendText(paneId, 'stty size'); await mux.sendKeys(paneId, ['enter']);
-      await Bun.sleep(500);
-      return String((await mux.read(paneId, 'visible')).text).trim().split(/\r|\n/).filter((line) => /^\d+ \d+$/.test(line.trim())).at(-1);
+      const read = async () => String((await mux.read(paneId, 'visible')).text).trim().split(/\r|\n/).filter((line) => /^\d+ \d+$/.test(line.trim())).at(-1);
+      // zsh can take seconds to start on a loaded machine, so re-read the same output
+      // until it appears — never re-type, which would stack commands on the pane.
+      for (let attempt = 0; attempt < 8 && !(await read()); attempt++) await Bun.sleep(500);
+      return read();
     };
 
     expect(await stty()).toContain('119');            // the operator's wide grid

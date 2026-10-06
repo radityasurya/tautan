@@ -301,9 +301,18 @@ export function startHttp(hub: Hub, opts: {
           finally { probes--; }
         }
         if (req.method === 'GET' && url.pathname === '/api/events') {
-          const paneKey = url.searchParams.get('pane') ?? undefined;
+          // ADR 0006: `pane` repeats, up to 4 watched Panes on one stream (a desktop split),
+          // de-duplicated. Unresolved keys drop; all of them unresolved keeps the old 404.
+          const asked = [...new Set(url.searchParams.getAll('pane'))];
+          if (asked.length > 4) return json({ error: 'too-many-panes' }, 400);
+          const paneKeys: string[] = [];
+          for (const paneKey of asked) if (await hub.hasPane(paneKey)) paneKeys.push(paneKey);
+          if (asked.length && !paneKeys.length) return json({ error: 'pane not found' }, 404);
           const mode: ScreenMode = url.searchParams.get('mode') === 'recent' ? 'recent' : 'visible';
-          if (paneKey && !await hub.hasPane(paneKey)) return json({ error: 'pane not found' }, 404);
+          // The stream announces its own id in the first event (`hello`, `{stream: id}`); a
+          // client sends that id back as the lease POST's `stream` field, so the lease dies
+          // with this stream (ADR 0006).
+          const streamId = crypto.randomUUID();
           const encoder = new TextEncoder(); let cleanup = () => {};
           const stream = new ReadableStream<Uint8Array>({
             async start(controller) {
@@ -317,8 +326,9 @@ export function startHttp(hub: Hub, opts: {
                 try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`)); }
                 catch { cleanup(); }
               };
+              send('hello', { stream: streamId });
               send('state', await hub.state());
-              const unsubscribe = hub.subscribe({ paneKey, mode, onState: state => send('state', state), onScreen: screen => send('screen', screen) });
+              const unsubscribe = hub.subscribe({ paneKeys: paneKeys.length ? paneKeys : undefined, mode, stream: streamId, onState: state => send('state', state), onScreen: screen => send('screen', screen) });
               const ping = setInterval(() => { if (!closed) { try { controller.enqueue(encoder.encode(': ping\n\n')); } catch { cleanup(); } }  }, 25_000);
               cleanup = () => { if (closed) return; closed = true; unsubscribe(); clearInterval(ping); try { controller.close(); } catch {} };
             },
@@ -338,8 +348,12 @@ export function startHttp(hub: Hub, opts: {
             const list = await chats.subagentList(key);
             if (list && !list.some(item => item.id === agent)) return json({ error: 'no-agent' }, 404);
           }
-          const chat = await chats.query(key, agent);
-          return chat ? json(chat) : json({ error: 'no-session' }, 404);
+          const found = await chats.tagged(key, agent);
+          if (!found) return json({ error: 'no-session' }, 404);
+          // The Chat view polls with If-None-Match; an unchanged transcript costs a stat and a 304.
+          const headers = { etag: found.etag, 'cache-control': 'no-cache' };
+          const fresh = req.headers.get('if-none-match')?.split(',').some(tag => tag.trim().replace(/^W\//, '') === found.etag);
+          return fresh ? new Response(null, { status: 304, headers }) : Response.json(found.chat, { headers });
         }
         const chatImageMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat\/image\/([^/]+)$/);
         if (req.method === 'GET' && chatImageMatch) {
@@ -386,13 +400,16 @@ export function startHttp(hub: Hub, opts: {
           let key: string;
           try { key = decodeURIComponent(leaseMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
-          let body: { cols?: unknown; rows?: unknown; takeover?: unknown };
+          let body: { cols?: unknown; rows?: unknown; takeover?: unknown; stream?: unknown };
           try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
           const cols = Number(body.cols); const rows = Number(body.rows);
           if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 500 || rows < 4 || rows > 200)
             return json({ error: 'geometry' }, 400);
+          // `stream` names the owning SSE stream — the id its first `hello` event announced
+          // (ADR 0006): the lease releases when that stream ends. Absent → the old rule.
+          if (body.stream !== undefined && (typeof body.stream !== 'string' || !body.stream)) return json({ error: 'body' }, 400);
           try {
-            await leases.acquire(key, { cols, rows, takeover: body.takeover === true });
+            await leases.acquire(key, { cols, rows, takeover: body.takeover === true, owner: typeof body.stream === 'string' ? body.stream : undefined });
             return new Response(null, { status: 204 });
           } catch (error) {
             if (error instanceof LeaseError) {

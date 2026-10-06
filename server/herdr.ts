@@ -57,9 +57,12 @@ export class HerdrMux implements Mux {
     const result = await this.rpc('session.snapshot', {});
     const snap = result.snapshot;
     if (typeof snap.version === 'string') this.serverVersion = { value: snap.version, at: Date.now() };
-    const sizes = new Map<string, { cols?: number; rows?: number }>();
+    const sizes = new Map<string, { cols?: number; rows?: number; x?: number; y?: number }>();
     for (const layout of snap.layouts ?? []) for (const item of layout.panes ?? []) {
-      sizes.set(item.pane_id, { cols: item.rect?.width, rows: item.rect?.height });
+      // A zoomed layout shows one Pane at the Tab's size and its rects are bookkeeping, so
+      // a split must not place cells from it (ADR 0006): x/y are omitted for every Pane.
+      sizes.set(item.pane_id, { cols: item.rect?.width, rows: item.rect?.height,
+        ...(layout.zoomed ? {} : { x: item.rect?.x, y: item.rect?.y }) });
     }
     const rawPanes: Json[] = snap.panes ?? [];
     const sessions = new Map(await Promise.all(rawPanes.map(async pane => {

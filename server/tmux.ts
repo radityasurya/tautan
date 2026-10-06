@@ -4,7 +4,7 @@ import type { Explain, Mux, Pane, Screen, ScreenMode, Tree, Workspace } from '..
 
 export type TmuxExec = (args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
 
-const FORMAT = '#{session_id}\t#{session_name}\t#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}\t#{pane_width}\t#{pane_height}';
+const FORMAT = '#{session_id}\t#{session_name}\t#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{window_zoomed_flag}';
 const agents = new Set(['claude', 'pi', 'codex', 'gemini', 'opencode', 'cursor', 'amp', 'grok', 'kimi', 'copilot', 'droid']);
 
 export function parseTree(stdout: string): Tree {
@@ -14,11 +14,10 @@ export function parseTree(stdout: string): Tree {
   for (const line of stdout.split(/\r?\n/)) {
     if (!line) continue;
     const fields = line.split('\t');
-    if (fields.length < 10) continue;
+    if (fields.length < 13) continue;
     const [workspaceId, workspaceLabel, tabId, tabLabel, paneId, command, cwd] = fields;
-    const width = fields.at(-2)!;
-    const height = fields.at(-1)!;
-    const rawTitle = fields.slice(7, -2).join('\t');
+    const [width, height, left, top, zoomed] = fields.slice(-5);
+    const rawTitle = fields.slice(7, -5).join('\t');
     const title = !rawTitle || rawTitle === hostname() ? command! : rawTitle;
     if (!workspaces.has(workspaceId!)) workspaces.set(workspaceId!, { id: workspaceId!, label: workspaceLabel!, cwd });
     if (!tabs.has(tabId!)) tabs.set(tabId!, { id: tabId!, workspaceId: workspaceId!, label: tabLabel! });
@@ -26,6 +25,9 @@ export function parseTree(stdout: string): Tree {
       id: paneId!, tabId: tabId!, workspaceId: workspaceId!, title, cwd,
       command, ...(agents.has(command!) ? { agent: command } : {}), status: 'unknown', revision: 1,
       cols: Number(width), rows: Number(height),
+      // A zoomed window shows one Pane full-size and hides the others, so its rects must not
+      // place cells (ADR 0006): x/y are omitted for every Pane of a zoomed window.
+      ...(zoomed === '1' ? {} : { x: Number(left), y: Number(top) }),
     });
   }
   return { workspaces: [...workspaces.values()], tabs: [...tabs.values()], panes };
