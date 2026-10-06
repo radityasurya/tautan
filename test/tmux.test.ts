@@ -42,8 +42,8 @@ function fakeMux() {
 
 describe('TmuxMux', () => {
   test('translates every key preset and extra named keys', () => {
-    const expected: Record<string, string> = { esc: 'Escape', up: 'Up', down: 'Down', tab: 'Tab', 'shift+tab': 'BTab', enter: 'Enter', 'ctrl+c': 'C-c', left: 'Left', right: 'Right', 'ctrl+d': 'C-d', 'ctrl+l': 'C-l', 'ctrl+r': 'C-r', backspace: 'BSpace', space: 'Space' };
-    for (const name of [...new Set([...AGENT_KEYS, ...SHELL_KEYS].map(([key]) => key)), 'backspace', 'space', 'shift+tab']) expect(tmuxKey(name)).toBe(expected[name]);
+    const expected: Record<string, string> = { esc: 'Escape', up: 'Up', down: 'Down', tab: 'Tab', 'shift+tab': 'BTab', enter: 'Enter', 'ctrl+c': 'C-c', left: 'Left', right: 'Right', c: 'c', d: 'd', l: 'l', r: 'r', backspace: 'BSpace', space: 'Space' };
+    for (const name of [...new Set([...AGENT_KEYS, ...SHELL_KEYS].map(([key]) => key)), 'backspace', 'space', 'shift+tab'].filter(name => name !== 'ctrl')) expect(tmuxKey(name)).toBe(expected[name]);
     expect(tmuxKey('A')).toBe('A');
     expect(tmuxKey('ALT+X')).toBe('M-x');
   });

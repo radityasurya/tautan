@@ -41,7 +41,8 @@
     "prepublishOnly": "pnpm build",
     "start": "bun server/main.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "e2e": "pnpm build && bun scripts/e2e.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",

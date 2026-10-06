@@ -93,7 +93,7 @@ The grid is what the multiplexer rendered at the server's size. Four answers, in
 | Accent | primary button, current chip or tab, `working`, focus ring. Nothing else |
 | Radius | 8 px chips, buttons and key caps; 10 px composer; 12 px cards and the blocked card; 14 px tab bar; 16 px drawer top. Dots stay circles. No pills. The Pane column itself is never rounded and carries no border, at any width |
 | Type | caption 12/1.35 · body 15/1.45 · title 17/1.25 600 · mono 12/1.35 |
-| Grid | scrolled by default, right-edge fade while it overflows. The three reading options live in ⋯: Wrap reflows, Fit scales the `<pre>`, Theme colors snaps every 256-colour and truecolour span to the nearest of the theme's own 16 |
+| Grid | Wrap for agent Panes by default, scrolled for shell Panes (an 80-column grid at a readable size does not fit a phone); right-edge fade while it overflows. The three reading options live in ⋯: Wrap reflows, Fit scales the `<pre>`, Theme colors snaps every 256-colour and truecolour span to the nearest of the theme's own 16 |
 | Key bar | agent: `esc ▲ ▼ tab shift+tab enter ctrl+c`, inline `esc ▲ ▼ enter` · shell: `esc tab ▲ ▼ ◀ ▶ enter ctrl+c ctrl+d ctrl+l ctrl+r`, inline `esc tab enter`. One glyph map (`web/keys.ts`) spells a key for the caps and the pills alike: `▲ ▼ ◀ ▶`, `↵`, `⇥`, `⇧⇥`, `^d` |
 | Composer | the agent's glyph inside the field, placeholder in the agent's voice, mic replaces send while empty |
 | Blocked card | sticky above the key bar, `--elevated`, title + rule id, one-line detection excerpt, Yes/No preset then hint keys |

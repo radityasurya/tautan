@@ -24,6 +24,43 @@ const SWATCH: Record<Theme, string | null> = {
 
 const android = /Android/.test(navigator.userAgent);
 
+type QuotaProvider = {
+  provider: string;
+  quotaSemantics?: {
+    effectiveAvailability?: {
+      scope: string;
+      effectivePercentRemaining?: number;
+      runway?: { status: string; usableRunwaySeconds?: number };
+    }[];
+  };
+};
+type QuotaReport = { providers: QuotaProvider[] };
+
+const PROVIDER_LABELS: Record<string, string> = {
+  claude: 'Claude', codex: 'Codex', cursor: 'Cursor', copilot: 'GitHub Copilot', grok: 'Grok', kimi: 'Kimi',
+  zai: 'Z.AI', agy: 'Antigravity', alibaba: 'Alibaba', 'opencode-go': 'OpenCode Go', commandcode: 'Command Code',
+  minimax: 'MiniMax', mimo: 'MiMo', deepseek: 'DeepSeek', openrouter: 'OpenRouter', elevenlabs: 'ElevenLabs',
+};
+
+function runway(seconds: number): string {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function quotaSummary(provider: QuotaProvider): string {
+  const scopes = provider.quotaSemantics?.effectiveAvailability ?? [];
+  const quota = scopes.find(item => item.scope === 'all_models') ?? scopes[0];
+  if (!quota || typeof quota.effectivePercentRemaining !== 'number') return 'not available';
+  const percent = `${Math.round(quota.effectivePercentRemaining)}% left`;
+  if (quota.runway?.status === 'projected_exhaustion' && typeof quota.runway.usableRunwaySeconds === 'number')
+    return `${percent} · ${runway(quota.runway.usableRunwaySeconds)} runway`;
+  if (quota.runway?.status === 'through_reset') return `${percent} · through reset`;
+  return `${percent} · runway unknown`;
+}
+
 /**
  * The theme picker: the kit Select, applied on pick. Settings owns the screen version and
  * the Pane's ⋯ sheet reuses it. The kit palette is light/dark; the grid's ANSI colours
@@ -49,6 +86,7 @@ export function ThemePicker() {
 export function Settings() {
   const [prefs, setPrefs] = useState<HubSettings>({ hosts: [], suggest: { enabled: false } });
   const [access, setAccess] = useState('');
+  const [quota, setQuota] = useState<QuotaReport | null>();
   const [haptics, setHaptics] = useState(() => localStorage.getItem('tautan.haptics') !== 'off');
   // Push state is the browser's, not the Hub's: the intent in localStorage plus a live
   // permission. `/api/settings` has no push field to read.
@@ -59,7 +97,10 @@ export function Settings() {
   const [smart, setSmart] = useState(() => localStorage.getItem('tautan.smart') === 'on');
 
   const read = () => api<HubSettings>('/api/settings', undefined, 'GET').then(setPrefs).catch(() => {});
-  useEffect(() => void read(), []);
+  useEffect(() => {
+    void read();
+    void api<QuotaReport>('/api/settings/quota', undefined, 'GET').then(setQuota, () => setQuota(null));
+  }, []);
 
   // Locking and unlocking are the same write. The row is repainted from a fresh read, not
   // from what was sent: only the Hub knows whether the header it saw matched.
@@ -81,7 +122,7 @@ export function Settings() {
     <div className="mx-auto max-w-2xl pb-28">
       <TopBar title="Settings" />
 
-      <h2 className="label-caps px-4 pt-3.5 pb-2">Theme</h2>
+      <h2 className="label-caps px-4 pt-3.5 pb-2">Appearance</h2>
       <div className="pb-1">
         <ThemePicker />
       </div>
@@ -177,6 +218,32 @@ export function Settings() {
       )}
       <div className="ml-4 border-t border-border/60" />
       <Row label="Served by" value={prefs.servedBy || location.host} />
+
+      <h2 className="label-caps px-4 pt-6 pb-1">About</h2>
+      <Row label={`tautan ${prefs.version?.tautan ?? 'unknown'}`} />
+      {prefs.version?.herdr.map(item => (
+        <div key={item.muxKey}>
+          <div className="ml-4 border-t border-border/60" />
+          <Row label={`herdr ${item.version} · ${item.label}`} />
+        </div>
+      ))}
+      <div className="ml-4 border-t border-border/60" />
+      <div aria-live="polite">
+        {quota === undefined ? (
+          <Row label="Quota" value="checking…" />
+        ) : quota === null ? (
+          <Row label="Quota" value="not available" />
+        ) : quota.providers.some(item => item.quotaSemantics?.effectiveAvailability?.length) ? (
+          quota.providers.filter(item => item.quotaSemantics?.effectiveAvailability?.length).map((item, index) => (
+            <div key={item.provider}>
+              {index > 0 && <div className="ml-4 border-t border-border/60" />}
+              <Row label={PROVIDER_LABELS[item.provider] ?? item.provider} value={quotaSummary(item)} />
+            </div>
+          ))
+        ) : (
+          <Row label="Quota" value="not available" />
+        )}
+      </div>
     </div>
   );
 }
@@ -204,9 +271,11 @@ function Row({
     <div className="flex min-h-12 items-center gap-3 px-4 py-2">
       <span className="min-w-0 flex-1">
         <span className="block text-body">{label}</span>
-        <span className={`mt-px block truncate text-caption text-muted ${value ? 'font-mono' : ''}`}>
-          {value || empty}
-        </span>
+        {(value !== undefined || empty !== undefined) && (
+          <span className={`mt-px block truncate text-caption text-muted ${value ? 'font-mono' : ''}`}>
+            {value || empty}
+          </span>
+        )}
       </span>
       {action}
     </div>

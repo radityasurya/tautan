@@ -60,4 +60,36 @@ describe.skipIf(!herdrAvailable)('blocked flow contract', () => {
     // preset wins and the duplicates drop: the card shows Yes and No, nothing else.
     expect(explain.hintKeys).toEqual([{ key: 'enter', label: 'Yes' }, { key: 'esc', label: 'No' }]);
   });
+
+  test('a stale prompt id is refused, a fresh one goes through', async () => {
+    const key = `contract/throwaway/${paneId}`;
+    const base = `http://127.0.0.1:${server.port}`;
+    const send = (promptId?: string) =>
+      fetch(`${base}/api/panes/${encodeURIComponent(key)}/input`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: base },
+        body: JSON.stringify(promptId === undefined ? { keys: ['enter'] } : { keys: ['enter'], promptId }),
+      });
+    const readExplain = async () =>
+      (await (await fetch(`${base}/api/panes/${encodeURIComponent(key)}/explain`)).json()) as { promptId?: string } | null;
+
+    // The card was drawn from this id.
+    const drawn = await eventually(readExplain, (value) => typeof value?.promptId === 'string', 5_000);
+    expect(drawn!.promptId).toMatch(/^[0-9a-f]{12}$/);
+
+    // The box moves on underneath the card the phone still shows.
+    await mux.sendText(paneId, `clear; printf '%s\\n' ${quoted(prompt.replaceAll('❯ 1. Yes', '❯ 1. Yes (edited)'))}`);
+    await mux.sendKeys(paneId, ['enter']);
+    await eventually(() => mux.read(paneId, 'visible'), (screen) => screen.text.includes('(edited)'), 5_000);
+
+    // The stale id must not land: the answer would approve a different prompt.
+    const stale = await send(drawn!.promptId);
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: 'prompt_changed' });
+
+    // The fresh id of the edited box goes through, and no id keeps the old behaviour.
+    const fresh = await eventually(readExplain, (value) => typeof value?.promptId === 'string' && value.promptId !== drawn!.promptId, 5_000);
+    expect((await send(fresh!.promptId)).status).toBe(204);
+    expect((await send()).status).toBe(204);
+  });
 });

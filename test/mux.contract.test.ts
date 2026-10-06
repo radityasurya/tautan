@@ -135,7 +135,7 @@ describe.skipIf(!herdrAvailable)('HerdrMux contract', () => {
 
   test('all Pane key-bar names are accepted', async () => {
     const pane = await mux.newTab(workspaceId, { cwd: fixture.dir, label: 'key-test' });
-    const names = [...new Set([...AGENT_KEYS, ...SHELL_KEYS].map(([name]) => name))];
+    const names = [...new Set([...AGENT_KEYS, ...SHELL_KEYS].map(([name]) => name))].filter(name => name !== 'ctrl');
     names.sort(name => name === 'ctrl+d' ? 1 : -1);
     await mux.sendKeys(pane.id, names);
     try { await mux.closePane(pane.id); } catch {}

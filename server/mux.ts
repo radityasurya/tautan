@@ -187,6 +187,7 @@ export class Hub {
       for (const tab of entry.tree.tabs) state.tabs.push({ key: `${muxKey}/${tab.id}`, muxKey, ...tab });
       for (const pane of entry.tree.panes) {
         const key = `${muxKey}/${pane.id}`;
+        const { agentSession: _agentSession, ...publicPane } = pane;
         const previous = this.statuses.get(key);
         const requestKey = `${key}:${pane.revision}`;
         if (previous?.status !== pane.status && this.suggestEnabled && this.suggestAdapter && pane.agent && (pane.status === 'blocked' || pane.status === 'done'))
@@ -209,7 +210,7 @@ export class Hub {
         this.statuses.set(key, status);
         if (pane.status === 'working' || pane.status === 'idle') this.suggestions.delete(key);
         const cachedSuggestion = this.suggestions.get(key);
-        state.panes.push({ key, muxKey, ...pane, command: pane.command ?? this.lastLines.get(key)?.command, seenRevision: this.seen[key] ?? 0, lastLine: pane.agent ? this.lastLines.get(key)?.line : undefined, statusChangedAt: status.at,
+        state.panes.push({ key, muxKey, ...publicPane, command: pane.command ?? this.lastLines.get(key)?.command, seenRevision: this.seen[key] ?? 0, lastLine: pane.agent ? this.lastLines.get(key)?.line : undefined, statusChangedAt: status.at,
           suggestions: cachedSuggestion?.revision === pane.revision ? cachedSuggestion.values : undefined });
         const screen = this.lastLines.get(key);
         if (this.suggestEnabled && this.suggestAdapter && pane.agent && (pane.status === 'blocked' || pane.status === 'done') &&
@@ -283,6 +284,16 @@ export class Hub {
     try { await this.refresh(muxKey); } catch (error) { console.warn(`tautan: refresh after write failed for ${muxKey}`, error); }
   }
 
+  /** The pane a paneKey names, for the Hub's own machinery (the geometry lease). */
+  resolvePane(paneKey: string): { muxKey: string; paneId: string; entry: Entry } | undefined { return this.resolve(paneKey); }
+
+  /** The pane keys some SSE client currently watches — a lease reaper's keep-alive set. */
+  watchedPaneKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const listener of this.listeners) if (listener.paneKey) keys.add(listener.paneKey);
+    return keys;
+  }
+
   private resolve(paneKey: string): { muxKey: string; paneId: string; entry: Entry } | undefined {
     const first = paneKey.indexOf('/'); const second = paneKey.indexOf('/', first + 1);
     if (first < 0 || second < 0) return;
@@ -318,6 +329,13 @@ export class Hub {
   markSeen(paneKey: string, revision: number): void {
     this.seen[paneKey] = revision; this.recompute(); this.emitState(); clearTimeout(this.seenTimer);
     this.seenTimer = setTimeout(() => this.save(), 100);
+  }
+  async herdrVersions(): Promise<{ muxKey: string; label: string; version: string }[]> {
+    return Promise.all([...this.entries].filter(([, entry]) => entry.mux.kind === 'herdr').map(async ([muxKey, entry]) => {
+      const readVersion = (entry.mux as Mux & { version?: () => Promise<string> }).version;
+      const version = readVersion ? await readVersion.call(entry.mux).catch(() => 'unknown') : 'unknown';
+      return { muxKey, label: entry.mux.id, version };
+    }));
   }
   settings(): Settings {
     let hosts: HostConfig[] = [];
@@ -404,7 +422,11 @@ export class Hub {
     clearTimeout(this.stateTimer);
     this.stateTimer = setTimeout(() => {
       this.lastStateAt = Date.now(); const state = this.cached ?? this.recompute();
-      for (const listener of this.listeners) listener.onState(state);
+      // One dead subscriber must not starve the rest: a send to a closed connection
+      // throws inside this loop and, unguarded, silenced every listener after it.
+      for (const listener of this.listeners) {
+        try { listener.onState(state); } catch { /* the stream's own catch unsubscribed it */ }
+      }
     }, wait);
   }
   close(): void {

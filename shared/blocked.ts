@@ -1,4 +1,4 @@
-import type { Explain } from './types.ts';
+import type { Explain, Screen } from './types.ts';
 
 /** A yes/no prompt always answers to enter/esc, even when the Mux names no hint keys. */
 const PRESET = [
@@ -30,4 +30,37 @@ export const asksYesNo = (explain: Explain): boolean =>
 export function offeredKeys(explain: Explain): Explain['hintKeys'] {
   const keys = asksYesNo(explain) ? [...PRESET, ...explain.hintKeys] : explain.hintKeys;
   return keys.filter((key, i) => keys.findIndex(other => other.key === key.key) === i);
+}
+
+// ---- prompt id ----
+
+/** Random per Hub process, so an id cannot survive a restart. Tests rotate it. */
+let salt: Uint8Array | null = null;
+export function rotatePromptSalt(): void { salt = null; }
+
+/**
+ * Claude Code's working line ticks while it runs — `✢ Tempering… (1m 55s · ↓ 10.0k tokens ·
+ * esc to interrupt)` — so the time and token count must not count toward the id. The whole
+ * line is replaced by `* <doing> (<time> · <tokens>)` with literal placeholders; the digits
+ * do not survive. Matched whole — spinner, arrow and token count included — and only when
+ * no other line of the Screen has the same shape: a second match is not certainly the
+ * spinner, so then neither line is normalised.
+ */
+const WORKING = /^[^\S\n]*[✢✳✶✻✽]\s+(.+?)\s+\(\d+[smh](?: \d+[smh])*\s+·\s+[↓↑→]\s+[\d.]+[km]?\s+tokens\s+·\s+esc to interrupt\)[^\S\n]*$/;
+
+/** The id of the prompt on screen: 12 hex chars of salted SHA-256 over the detection and
+ *  the whole visible Screen, the working line normalised. Same box, same id; anything the
+ *  Screen prints moves it. */
+export async function promptId(explain: Explain, screen: Screen): Promise<string> {
+  const lines = screen.text.split(/\r?\n/);
+  const hits = lines.map((line) => WORKING.exec(line));
+  const text = hits.filter(Boolean).length === 1
+    ? lines.map((line, i) => (hits[i] ? `* ${hits[i]![1]!} (<time> · <tokens>)` : line)).join('\n')
+    : screen.text;
+  const payload = new TextEncoder().encode(`${explain.ruleId}\0${explain.detection}\0${text}`);
+  const s = (salt ??= crypto.getRandomValues(new Uint8Array(16)));
+  const bytes = new Uint8Array(s.length + payload.length);
+  bytes.set(s, 0); bytes.set(payload, s.length);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return [...digest.slice(0, 6)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }

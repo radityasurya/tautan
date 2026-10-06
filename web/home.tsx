@@ -6,7 +6,7 @@ import type {
 } from '../shared/types.ts';
 import { api, haptic, Link, navigate, opensWith, reducedMotion } from './app.tsx';
 import { ChevronDown, ChevronRight, CollapseAll, ExpandAll, More, Plus } from './icons.tsx';
-import { Chip, EmptyState, IconButton, SearchInput, Skeleton, usePal } from './halaska-kit';
+import { Chip, EmptyState, IconButton, SearchInput, SegmentedControl, Skeleton, usePal } from './halaska-kit';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
 
@@ -79,6 +79,8 @@ export function timeAgo(at?: number): string {
 }
 
 const RANK: Record<Status, number> = { blocked: 0, working: 1, done: 2, idle: 3, unknown: 4 };
+const comparePanes = (a: StatePane, b: StatePane) =>
+  RANK[a.status] - RANK[b.status] || (b.statusChangedAt ?? 0) - (a.statusChangedAt ?? 0);
 const basename = (cwd?: string) => cwd?.replace(/\/+$/, '').split('/').pop();
 /** `~/projects/tautan` → `~/projects`: where a sibling Workspace would go. */
 export const parentDir = (cwd?: string) => cwd?.replace(/\/+$/, '').replace(/\/[^/]+$/, '') || undefined;
@@ -131,7 +133,7 @@ export interface RowActions {
  */
 function Row({ pane, first, actions, context }: { pane: StatePane; first?: boolean; actions?: RowActions; context?: string }) {
   const fresh = unseen(pane);
-  const word = pane.status === 'blocked' ? 'Blocked' : pane.status === 'done' ? 'Done' : '';
+  const word = pane.status[0]!.toUpperCase() + pane.status.slice(1); // UX §7: the dot never carries Status alone
   const when = timeAgo(pane.statusChangedAt);
   const press = useLongPress(() => actions?.onMenu(pane));
   const [x, setX] = useState(0);
@@ -250,9 +252,10 @@ function useLongPress(fn: () => void) {
   };
 }
 
-/** The Workspace group header: tap collapses, long-press or ⋯ opens the group menu. */
+/** A list group header. Workspace groups also open their menu on long-press or ⋯. */
 function GroupHeader({
   label,
+  secondary,
   host,
   summary,
   open,
@@ -260,35 +263,51 @@ function GroupHeader({
   onMenu,
 }: {
   label: string;
+  secondary?: string;
   host?: string;
   summary: string;
   open: boolean;
   onToggle: () => void;
-  onMenu: () => void;
+  onMenu?: () => void;
 }) {
-  const press = useLongPress(onMenu);
+  const press = useLongPress(() => onMenu?.());
   return (
     <h2 className="flex items-end">
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        {...press}
-        className="label-caps flex min-w-0 flex-1 items-center px-4 pt-6 pb-1.5 text-left [-webkit-touch-callout:none]"
+        {...(onMenu ? press : {})}
+        className={`label-caps flex min-w-0 flex-1 px-4 pt-6 pb-1.5 text-left [-webkit-touch-callout:none] ${secondary ? 'items-start' : 'items-center'}`}
       >
-        {open ? <ChevronDown className="mr-1.5 shrink-0" /> : <ChevronRight className="mr-1.5 shrink-0" />}
-        <span className="truncate">{label}</span>
-        {host && <span className="ml-1.5 shrink-0 font-medium tracking-normal normal-case text-muted">· {host}</span>}
-        <span className="ml-auto shrink-0 pl-2 font-medium tracking-normal normal-case text-muted">{summary}</span>
+        {open ? (
+          <ChevronDown className={`mr-1.5 shrink-0 ${secondary ? 'mt-0.5' : ''}`} />
+        ) : (
+          <ChevronRight className={`mr-1.5 shrink-0 ${secondary ? 'mt-0.5' : ''}`} />
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center">
+            <span className="truncate">{label}</span>
+            {host && <span className="ml-1.5 shrink-0 font-medium tracking-normal normal-case text-muted">· {host}</span>}
+          </span>
+          {secondary && (
+            <span title={secondary} className="mt-0.5 block truncate font-mono text-caption font-normal tracking-normal normal-case text-muted">
+              {secondary}
+            </span>
+          )}
+        </span>
+        <span className="shrink-0 pl-2 font-medium tracking-normal normal-case text-muted">{summary}</span>
       </button>
-      <button
-        type="button"
-        aria-label={`${label} actions`}
-        onClick={onMenu}
-        className="press -mr-1 mb-0.5 flex size-11 shrink-0 items-center justify-center text-muted"
-      >
-        <More size={18} />
-      </button>
+      {onMenu && (
+        <button
+          type="button"
+          aria-label={`${label} actions`}
+          onClick={onMenu}
+          className="press -mr-1 mb-0.5 flex size-11 shrink-0 items-center justify-center text-muted"
+        >
+          <More size={18} />
+        </button>
+      )}
     </h2>
   );
 }
@@ -314,15 +333,19 @@ function PinnedHeader({ label, count, open, onToggle }: { label: string; count: 
 // ---- screen ----
 
 const COLLAPSED = 'tautan.collapsed';
+const GROUPING = 'tautan.grouping';
+type Grouping = 'workspace' | 'folder';
 const readCollapsed = (): string[] => JSON.parse(localStorage.getItem(COLLAPSED) ?? '[]') as string[];
-/** Fold keys for the two pinned sections. A Workspace key always carries a `/`, so these
- *  never collide with one. */
+const readGrouping = (): Grouping => (localStorage.getItem(GROUPING) === 'folder' ? 'folder' : 'workspace');
+const folderFoldKey = (host: string, path: string) => `@folder/${encodeURIComponent(host)}/${encodeURIComponent(path)}`;
+/** Fold keys for the two pinned sections. */
 const NEEDS = '@needs';
 const RUNNING = '@running';
 
 export function Home({ state }: { state: State | null }) {
   const [host, setHost] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [grouping, setGrouping] = useState(readGrouping);
   const [newWorkspace, setNewWorkspace] = useState(() => opensWith('newworkspace'));
   const [newTab, setNewTab] = useState<StateWorkspace | null>(null);
   const [menu, setMenu] = useState<StateWorkspace | null>(null);
@@ -344,6 +367,10 @@ export function Home({ state }: { state: State | null }) {
   };
   const toggle = (key: string) =>
     write(collapsed.includes(key) ? collapsed.filter((k) => k !== key) : [...collapsed, key]);
+  const groupBy = (next: Grouping) => {
+    setGrouping(next);
+    localStorage.setItem(GROUPING, next);
+  };
 
   useEffect(() => {
     const el = created && sections.current.get(created);
@@ -355,7 +382,7 @@ export function Home({ state }: { state: State | null }) {
   const hostOf = (muxKey: string) => state?.muxes.find((m) => m.key === muxKey)?.hostId;
   const hostLabel = (muxKey: string) => state?.hosts.find((h) => h.id === hostOf(muxKey))?.label;
   const panesOf = (w: StateWorkspace) =>
-    (state?.panes ?? []).filter((p) => p.muxKey === w.muxKey && p.workspaceId === w.id).sort((a, b) => RANK[a.status] - RANK[b.status]);
+    (state?.panes ?? []).filter((p) => p.muxKey === w.muxKey && p.workspaceId === w.id).sort(comparePanes);
 
   const visible = (muxKey: string) => !host || hostOf(muxKey) === host;
   /** Only herdr writes. tmux answers 501, so tautan never offers the action. */
@@ -384,6 +411,31 @@ export function Home({ state }: { state: State | null }) {
     // still says what it holds, and the group menu stays reachable. While searching, an
     // empty section is noise instead, so it goes.
     .filter((g) => g.panes.length > 0 || (!needle && g.all.length > 0) || g.host?.online === false || g.w.key === created);
+  const folderGroups = (() => {
+    const byFolder = new Map<
+      string,
+      { key: string; path: string; host?: State['hosts'][number]; all: StatePane[]; panes: StatePane[] }
+    >();
+    for (const pane of state?.panes ?? []) {
+      if (!visible(pane.muxKey)) continue;
+      const hostId = hostOf(pane.muxKey) ?? '';
+      const path = pane.cwd ?? '';
+      const key = folderFoldKey(hostId, path);
+      const group = byFolder.get(key) ?? {
+        key,
+        path,
+        host: state?.hosts.find((h) => h.id === hostId),
+        all: [],
+        panes: [],
+      };
+      group.all.push(pane);
+      if (!pinned.has(pane.key) && hit(pane)) group.panes.push(pane);
+      byFolder.set(key, group);
+    }
+    return [...byFolder.values()]
+      .map((group) => ({ ...group, all: group.all.sort(comparePanes), panes: group.panes.sort(comparePanes) }))
+      .filter((group) => group.panes.length > 0 || (!needle && group.all.length > 0));
+  })();
   /** A search must show what it found, so a folded section opens while the needle is set. */
   const openSection = (key: string) => !!needle || !collapsed.includes(key);
 
@@ -410,9 +462,10 @@ export function Home({ state }: { state: State | null }) {
     setCreated(workspaceKey);
   };
   const counts = state && `${state.hosts.length} host${state.hosts.length === 1 ? '' : 's'} · ${state.panes.length} panes`;
-  // Collapse all folds the pinned sections with the groups; the two only exist when they
-  // hold rows, which is exactly when folding them means something.
-  const keys = [...groups.map((g) => g.w.key), ...(needsYou.length ? [NEEDS] : []), ...(running.length ? [RUNNING] : [])];
+  // Collapse all folds the pinned sections with the active grouping; the two only exist
+  // when they hold rows, which is exactly when folding them means something.
+  const groupKeys = grouping === 'workspace' ? groups.map((g) => g.w.key) : folderGroups.map((g) => g.key);
+  const keys = [...groupKeys, ...(needsYou.length ? [NEEDS] : []), ...(running.length ? [RUNNING] : [])];
   const allShut = keys.length > 0 && keys.every((k) => collapsed.includes(k));
   const rowActions = (p: StatePane): RowActions | undefined =>
     writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
@@ -524,51 +577,84 @@ export function Home({ state }: { state: State | null }) {
             </section>
           )}
 
-          {groups.map(({ w, host: h, panes, all }) => {
-            const shut = collapsed.includes(w.key);
-            return (
-              <section
-                key={w.key}
-                ref={(el) => {
-                  if (el) sections.current.set(w.key, el);
-                  else sections.current.delete(w.key);
-                }}
-              >
-                <GroupHeader
-                  label={w.label}
-                  host={h?.label}
-                  summary={summary(all)}
-                  open={!shut}
-                  onToggle={() => toggle(w.key)}
-                  onMenu={() => setMenu(w)}
-                />
-                {!shut && (
-                  <ul>
-                    {panes.map((p, i) => (
-                      <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} />
-                    ))}
-                    {h?.online === false && (
-                      <li>
-                        <Link
-                          to="#/hosts"
-                          className="flex min-h-11 items-center gap-3 px-4 py-2.5 active:bg-surface"
-                          aria-label={`${h.label} unreachable, ${h.error ?? 'offline'}. Open Hosts`}
-                        >
-                          <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
-                          <span aria-hidden className="min-w-0 flex-1 truncate text-[13px] text-muted">
-                            <span className="text-danger">{h.label} unreachable</span> · {h.error}
-                          </span>
-                          <span aria-hidden className="shrink-0 text-caption text-accent">
-                            Hosts ›
-                          </span>
-                        </Link>
-                      </li>
+          <div role="group" aria-label="Group panes by" className="flex justify-end px-4 pt-3">
+            <div className="w-52">
+              <SegmentedControl
+                options={['Workspace', 'Folder']}
+                value={grouping === 'workspace' ? 'Workspace' : 'Folder'}
+                onChange={(value: string) => groupBy(value === 'Folder' ? 'folder' : 'workspace')}
+              />
+            </div>
+          </div>
+
+          {grouping === 'workspace'
+            ? groups.map(({ w, host: h, panes, all }) => {
+                const shut = collapsed.includes(w.key);
+                return (
+                  <section
+                    key={w.key}
+                    ref={(el) => {
+                      if (el) sections.current.set(w.key, el);
+                      else sections.current.delete(w.key);
+                    }}
+                  >
+                    <GroupHeader
+                      label={w.label}
+                      host={h?.label}
+                      summary={summary(all)}
+                      open={!shut}
+                      onToggle={() => toggle(w.key)}
+                      onMenu={() => setMenu(w)}
+                    />
+                    {!shut && (
+                      <ul>
+                        {panes.map((p, i) => (
+                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} />
+                        ))}
+                        {h?.online === false && (
+                          <li>
+                            <Link
+                              to="#/hosts"
+                              className="flex min-h-11 items-center gap-3 px-4 py-2.5 active:bg-surface"
+                              aria-label={`${h.label} unreachable, ${h.error ?? 'offline'}. Open Hosts`}
+                            >
+                              <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
+                              <span aria-hidden className="min-w-0 flex-1 truncate text-[13px] text-muted">
+                                <span className="text-danger">{h.label} unreachable</span> · {h.error}
+                              </span>
+                              <span aria-hidden className="shrink-0 text-caption text-accent">
+                                Hosts ›
+                              </span>
+                            </Link>
+                          </li>
+                        )}
+                      </ul>
                     )}
-                  </ul>
-                )}
-              </section>
-            );
-          })}
+                  </section>
+                );
+              })
+            : folderGroups.map(({ key, path, host: h, panes, all }) => {
+                const shut = collapsed.includes(key);
+                return (
+                  <section key={key}>
+                    <GroupHeader
+                      label={basename(path) || path || 'Unknown folder'}
+                      secondary={path || 'No directory reported'}
+                      host={h?.label}
+                      summary={summary(all)}
+                      open={!shut}
+                      onToggle={() => toggle(key)}
+                    />
+                    {!shut && (
+                      <ul>
+                        {panes.map((p, i) => (
+                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={wsLabel(p)} />
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                );
+              })}
         </>
       )}
 

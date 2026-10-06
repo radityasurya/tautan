@@ -93,7 +93,7 @@ function FileSection({
 
   return (
     <section className="border-t border-border/60">
-      <h2>
+      <h2 className="sticky top-0 z-20 border-b border-border/60 bg-bg">
         <button
           type="button"
           aria-expanded={open}

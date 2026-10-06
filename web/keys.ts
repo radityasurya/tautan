@@ -23,9 +23,11 @@ export const AGENT_KEYS: [name: string, label: string][] = [
 ];
 
 export const SHELL_KEYS: [name: string, label: string][] = [
-  ['esc', 'esc'], ['tab', 'tab'], ['up', GLYPH.up!], ['down', GLYPH.down!],
-  ['left', GLYPH.left!], ['right', GLYPH.right!], ['enter', 'enter'], ['ctrl+c', 'ctrl+c'],
-  ['ctrl+d', 'ctrl+d'], ['ctrl+l', 'ctrl+l'], ['ctrl+r', 'ctrl+r'],
+  ['ctrl', 'ctrl'], ['esc', 'esc'], ['tab', 'tab'], ['up', GLYPH.up!], ['down', GLYPH.down!],
+  ['left', GLYPH.left!], ['right', GLYPH.right!], ['enter', 'enter'],
+  ['c', 'c'], ['d', 'd'], ['l', 'l'], ['r', 'r'],
+  // Keep the direct interrupt: a missed ctrl+c is worse than the extra cap.
+  ['ctrl+c', 'ctrl+c'],
 ];
 
 /**

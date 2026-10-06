@@ -83,7 +83,7 @@ describe.skipIf(!tmuxAvailable)('TmuxMux contract', () => {
     const keyPane = (await mux.tree()).panes.find(pane => pane.tabId !== originalTabId)?.id;
     expect(keyPane).toBeTruthy();
     const names = [...new Set([...AGENT_KEYS, ...SHELL_KEYS].map(([name]) => name)), 'backspace', 'space', 'shift+tab'];
-    const safe = names.filter(name => name !== 'ctrl+c' && name !== 'ctrl+d');
+    const safe = names.filter(name => name !== 'ctrl' && name !== 'ctrl+c' && name !== 'ctrl+d');
     for (const name of safe) await mux.sendKeys(keyPane!, [name]);
     for (const name of ['ctrl+c', 'ctrl+d']) await mux.sendKeys(keyPane!, [name]);
   });

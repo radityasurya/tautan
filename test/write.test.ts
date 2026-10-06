@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHttp } from '../server/http.ts';
@@ -8,23 +8,26 @@ import type { Explain, Mux, Pane, Screen, Tree, Workspace } from '../shared/type
 
 describe('write routes', () => {
   let dir: string;
+  let cwd: string;
   let hub: Hub;
   let handle: (request: Request) => Response | Promise<Response>;
   let tree: Tree;
   let failure: string | undefined;
+  let explainResponse: Explain | null = null;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'tautan-write-'));
+    cwd = join(dir, 'cwd'); mkdirSync(cwd);
     tree = {
-      workspaces: [{ id: 'w1', label: 'Workspace', cwd: dir }],
+      workspaces: [{ id: 'w1', label: 'Workspace', cwd }],
       tabs: [{ id: 't1', workspaceId: 'w1', label: 'Tab' }],
-      panes: [{ id: 'p1', tabId: 't1', workspaceId: 'w1', title: 'Pane', status: 'unknown', revision: 0 }],
+      panes: [{ id: 'p1', tabId: 't1', workspaceId: 'w1', title: 'Pane', cwd, status: 'unknown', revision: 0 }],
     };
     const fail = () => { if (failure) throw new Error(failure); };
-    const mux: Mux = {
-      kind: 'herdr', id: 'fake', tree: async () => structuredClone(tree),
+    const mux: Mux & { version(): Promise<string> } = {
+      kind: 'herdr', id: 'fake', version: async () => '9.9.9', tree: async () => structuredClone(tree),
       read: async (_id, mode): Promise<Screen> => ({ text: '', ansi: false, revision: 0, mode }),
-      sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {}, explain: async (): Promise<Explain | null> => null,
+      sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {}, explain: async (): Promise<Explain | null> => explainResponse,
       newTab: async (workspaceId, body): Promise<Pane> => { fail(); const pane = { id: 'p2', tabId: 't2', workspaceId, title: body.label!, cwd: body.cwd, status: 'unknown' as const, revision: 0 }; tree.tabs.push({ id: 't2', workspaceId, label: body.label! }); tree.panes.push(pane); return pane; },
       newWorkspace: async (body): Promise<Workspace> => { fail(); const workspace = { id: 'w2', label: body.label!, cwd: body.cwd }; tree.workspaces.push(workspace); return workspace; },
       rename: async (target, label) => { fail(); if ('workspaceId' in target) tree.workspaces.find(x => x.id === target.workspaceId)!.label = label; else if ('tabId' in target) tree.tabs.find(x => x.id === target.tabId)!.label = label; else tree.panes.find(x => x.id === target.paneId)!.title = label; },
@@ -44,6 +47,59 @@ describe('write routes', () => {
     const base = 'http://tautan.test';
     return handle(new Request(`${base}${path}`, { method: 'POST', headers: { host: 'tautan.test', ...(origin ? { origin: base } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body) }));
   };
+
+  test('serves Pane files only from the resolved cwd', async () => {
+    const outside = join(dir, 'outside.txt');
+    writeFileSync(outside, 'outside');
+    writeFileSync(join(cwd, 'image.png'), 'png');
+    writeFileSync(join(cwd, 'image.svg'), '<svg/>');
+    mkdirSync(join(cwd, 'folder'));
+    writeFileSync(join(cwd, 'large.txt'), Buffer.alloc(5 * 1024 * 1024 + 1));
+    symlinkSync(outside, join(cwd, 'outside-link'));
+    const path = `/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=`;
+    const file = (value: string) => handle(new Request(`http://tautan.test${path}${encodeURIComponent(value)}`, { headers: { host: 'tautan.test' } }));
+
+    for (const value of ['../outside.txt', outside, 'outside-link']) {
+      const response = await file(value);
+      expect(response.status).toBe(403); expect(await response.json()).toEqual({ error: 'escape' });
+    }
+    const legal = await file('image.png');
+    expect(legal.status).toBe(200); expect(legal.headers.get('content-type')).toBe('image/png'); expect(legal.headers.get('x-content-type-options')).toBe('nosniff'); expect(legal.headers.get('cache-control')).toBe('no-store'); expect(await legal.text()).toBe('png');
+    const svg = await file('image.svg');
+    expect(svg.status).toBe(200); expect(svg.headers.get('content-type')).toBe('text/plain; charset=utf-8'); expect(svg.headers.get('x-content-type-options')).toBe('nosniff'); expect(svg.headers.get('cache-control')).toBe('no-store'); expect(await svg.text()).toBe('<svg/>');
+    const directory = await file('folder');
+    expect(directory.status).toBe(415); expect(await directory.json()).toEqual({ error: 'not a file' });
+    const large = await file('large.txt');
+    expect(large.status).toBe(413); expect(await large.json()).toEqual({ error: 'too large' });
+    const missing = await file('missing.txt');
+    expect(missing.status).toBe(404); expect(await missing.json()).toEqual({ error: 'not found' });
+  });
+
+  test('caps file reads using the request-time limit', async () => {
+    const previous = process.env.TAUTAN_MAX_FILE_MB;
+    try {
+      process.env.TAUTAN_MAX_FILE_MB = '0.000001';
+      writeFileSync(join(cwd, 'tiny-limit.txt'), 'xx');
+      const response = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=tiny-limit.txt`, { headers: { host: 'tautan.test' } }));
+      expect(response.status).toBe(413); expect(await response.json()).toEqual({ error: 'too large' });
+    } finally {
+      if (previous === undefined) delete process.env.TAUTAN_MAX_FILE_MB;
+      else process.env.TAUTAN_MAX_FILE_MB = previous;
+    }
+  });
+
+  test('serves files from a root cwd', async () => {
+    tree.panes[0]!.cwd = '/'; await hub.refreshHost('local');
+    const response = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=etc%2Fhostname`, { headers: { host: 'tautan.test' } }));
+    expect(response.status).toBe(200);
+  });
+
+  test('reports tautan and herdr versions in Settings', async () => {
+    const response = await handle(new Request('http://tautan.test/api/settings', { headers: { host: 'tautan.test' } }));
+    const settings = await response.json() as { version: { tautan: string; herdr: { muxKey: string; label: string; version: string }[] } };
+    expect(settings.version.tautan).toMatch(/^\d+\.\d+\.\d+/);
+    expect(settings.version.herdr).toEqual([{ muxKey: 'local/fake', label: 'fake', version: '9.9.9' }]);
+  });
 
   test('creates tabs and workspaces and refreshes state', async () => {
     const tab = await request('/api/muxes/local%2Ffake/tabs', { workspaceId: 'w1', cwd: dir, label: 'New tab' });
@@ -75,6 +131,32 @@ describe('write routes', () => {
     expect(tab.status).toBe(201);
     const state = await (await handle(new Request('http://tautan.test/api/state'))).json() as { panes: Pane[] };
     expect(state.panes.find(pane => pane.id === 'p2')?.title).toBe('x'.repeat(80));
+  });
+
+  test('refuses a Tailscale Funnel request before the Origin check', async () => {
+    const res = await handle(new Request('http://tautan.test/api/state', { headers: { host: 'tautan.test', 'Tailscale-Funnel-Request': '1' } }));
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'funnel' });
+  });
+
+  test('input refuses a stale prompt id and passes a fresh one', async () => {
+    const path = `/api/panes/${encodeURIComponent('local/fake/p1')}/input`;
+    explainResponse = { ruleId: 'live_blocked_form', state: 'blocked', detection: 'Do you want to proceed?\n❯ 1. Yes', hintKeys: [] };
+    const explain = await (await handle(new Request('http://tautan.test/api/panes/local%2Ffake%2Fp1/explain', { headers: { host: 'tautan.test' } })))
+      .json() as { promptId?: string };
+    expect(explain.promptId).toMatch(/^[0-9a-f]{12}$/);
+    // Fresh id: the answer goes through.
+    expect((await request(path, { keys: ['enter'], promptId: explain.promptId })).status).toBe(204);
+    // No id: the key bar and quick replies, unchanged behaviour.
+    expect((await request(path, { keys: ['enter'] })).status).toBe(204);
+    // Stale id: the prompt moved on, so the answer must not land.
+    const stale = await request(path, { keys: ['enter'], promptId: '000000000000' });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: 'prompt_changed' });
+    // Box gone: every id is stale.
+    explainResponse = null;
+    expect((await request(path, { keys: ['enter'], promptId: explain.promptId })).status).toBe(409);
+    explainResponse = null;
   });
 
   test('validates body, label, cwd, and origin', async () => {

@@ -117,7 +117,10 @@ Verify: a photo from the phone lands in `~/.cache/tautan/` on the Host and the a
 `[~]` = built and driven in emulated Chromium against `?mock`, awaiting a real phone.
 
 - [x] Grid: desktop/tablet column grows to the grid's natural width (no scaling below the
-      window width); Fit off by default; Wrap off by default (a wrapped prompt box read worse than a scrolled one); both remembered
+      window width); Fit off by default; Wrap on by default for agent Panes since the
+      blocked card lifts the prompt box out (4b rejected Wrap because a wrapped box read
+      worse than a scrolled one — the card removed that box); shell Panes stay scrolled;
+      both remembered
       — at 1600 px the 120-column mock Pane renders at 12 px, `<pre>` 867 px wide and
       centred, `scrollingElement.scrollWidth` 1600 = `innerWidth`, no transform
 - [x] Research "Resize to phone": can a herdr 0.9 client view size a Pane independently of

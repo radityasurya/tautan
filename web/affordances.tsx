@@ -5,7 +5,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, RefObject } from 'react';
 import type { Action, Affordance, InputBody, MouseBody } from '../shared/types.ts';
-import { haptic, post } from './app.tsx';
+import { haptic, navigate, post } from './app.tsx';
 import { keyGlyph } from './keys.ts';
 import { pillLabel } from './replies.ts';
 import type { Pill } from './replies.ts';
@@ -193,6 +193,9 @@ export function AffordanceLayer({
       {list.map((a, i) => {
         if (a.row < from || a.row > to) return null;
         const option = 'keys' in a.action && isOption(a.action) ? a.action.keys : null;
+        const path = 'copy' in a.action && (a.label.startsWith('/') || a.label.startsWith('~') || a.action.copy.startsWith('/') || a.action.copy.startsWith('~'))
+          ? a.action.copy
+          : null;
         return (
           <Box
             key={`${a.row}:${a.colStart}:${a.label}`}
@@ -209,7 +212,9 @@ export function AffordanceLayer({
               setTimeout(() => setCopied((c) => (c === i ? -1 : c)), 1500);
             }}
             // Move and confirm in one send: the Hub plays the keys in order.
-            onHold={option ? () => sendAction(paneKey, { keys: [...option, 'enter'] }) : undefined}
+            onHold={path
+              ? () => navigate(`#/file/${encodeURIComponent(paneKey)}?path=${encodeURIComponent(path)}`)
+              : option ? () => sendAction(paneKey, { keys: [...option, 'enter'] }) : undefined}
           />
         );
       })}

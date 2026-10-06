@@ -4,7 +4,14 @@ import { offeredKeys } from '../shared/blocked.ts';
 import type { Explain, Mux, Pane, Screen, ScreenMode, Status, Tree, Workspace } from '../shared/types.ts';
 
 type Json = Record<string, any>;
+export interface HerdrProcessInfo {
+  foregroundProcessGroupId?: number;
+  foregroundProcesses: { pid?: number; name?: string; argv?: string[] }[];
+}
+const sessionValue = (value: unknown): string | undefined => typeof value === 'string'
+  ? value : value && typeof value === 'object' && typeof (value as Json).value === 'string' ? (value as Json).value : undefined;
 const statuses = new Set<Status>(['idle', 'working', 'blocked', 'done', 'unknown']);
+const VERSION_TTL = 24 * 60 * 60 * 1_000;
 
 export class HerdrMux implements Mux {
   readonly kind = 'herdr' as const;
@@ -15,6 +22,8 @@ export class HerdrMux implements Mux {
   private stopped = false;
   private retry?: ReturnType<typeof setTimeout>;
   private paneTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private serverVersion?: { value: string; at: number };
+  private versionRequest?: Promise<string>;
 
   constructor(readonly id: string, readonly socketPath: string) {}
 
@@ -47,19 +56,29 @@ export class HerdrMux implements Mux {
   async tree(): Promise<Tree> {
     const result = await this.rpc('session.snapshot', {});
     const snap = result.snapshot;
+    if (typeof snap.version === 'string') this.serverVersion = { value: snap.version, at: Date.now() };
     const sizes = new Map<string, { cols?: number; rows?: number }>();
     for (const layout of snap.layouts ?? []) for (const item of layout.panes ?? []) {
       sizes.set(item.pane_id, { cols: item.rect?.width, rows: item.rect?.height });
     }
-    const panes: Pane[] = (snap.panes ?? []).map((pane: Json) => {
+    const rawPanes: Json[] = snap.panes ?? [];
+    const sessions = new Map(await Promise.all(rawPanes.map(async pane => {
+      if (Object.hasOwn(pane, 'agent_session')) return [pane.pane_id, sessionValue(pane.agent_session)] as const;
+      try {
+        const result = await this.rpc('pane.get', { pane_id: pane.pane_id });
+        return [pane.pane_id, sessionValue(result.pane?.agent_session ?? result.agent_session)] as const;
+      } catch { return [pane.pane_id, undefined] as const; }
+    })));
+    const panes: Pane[] = rawPanes.map((pane: Json) => {
       this.revisions.set(pane.pane_id, pane.revision ?? 0);
       const rows = sizes.get(pane.pane_id)?.rows;
       if (rows) this.rows.set(pane.pane_id, rows);
       const agent = pane.display_agent ?? pane.agent;
+      const agentSession = sessions.get(pane.pane_id);
       return {
         id: pane.pane_id, tabId: pane.tab_id, workspaceId: pane.workspace_id,
         title: pane.terminal_title_stripped || pane.label || pane.terminal_title || (pane.cwd && basename(pane.cwd)) || pane.pane_id,
-        ...(pane.cwd ? { cwd: pane.cwd } : {}), ...(agent ? { agent } : {}),
+        ...(pane.cwd ? { cwd: pane.cwd } : {}), ...(agent ? { agent } : {}), ...(agentSession ? { agentSession } : {}),
         status: statuses.has(pane.agent_status) ? pane.agent_status : 'unknown',
         revision: pane.revision ?? 0, ...sizes.get(pane.pane_id),
       };
@@ -88,17 +107,55 @@ export class HerdrMux implements Mux {
     return { text: result.text, ansi: mode === 'visible', revision: this.revisions.get(paneId) ?? result.revision, mode };
   }
 
+  async version(): Promise<string> {
+    if (this.serverVersion && Date.now() - this.serverVersion.at < VERSION_TTL) return this.serverVersion.value;
+    if (!this.versionRequest) this.versionRequest = this.rpc('session.snapshot', {})
+      .then(result => typeof result.snapshot?.version === 'string' ? result.snapshot.version : 'unknown')
+      .catch(() => 'unknown')
+      .then(value => (this.serverVersion = { value, at: Date.now() }).value)
+      .finally(() => { this.versionRequest = undefined; });
+    return this.versionRequest;
+  }
+
   async sendText(paneId: string, text: string): Promise<void> { await this.rpc('pane.send_text', { pane_id: paneId, text }); }
+
+  /** The geometry lease's target (ADR 0004): the pane's terminal id and its operator rect. */
+  async leaseInfo(paneId: string): Promise<{ terminalId: string; rect: { cols: number; rows: number } | null }> {
+    const result = await this.rpc('session.snapshot', {});
+    const snap = result.snapshot;
+    const pane = (snap.panes ?? []).find((item: Json) => item.pane_id === paneId);
+    if (!pane?.terminal_id) throw new Error('no terminal');
+    const entry = (snap.layouts ?? [])
+      .flatMap((layout: Json) => layout.panes ?? [])
+      .find((item: Json) => item.pane_id === paneId);
+    const rect = entry?.rect;
+    return {
+      terminalId: String(pane.terminal_id),
+      rect: rect?.width ? { cols: Number(rect.width), rows: Number(rect.height) } : null,
+    };
+  }
   async sendKeys(paneId: string, keys: string[]): Promise<void> { await this.rpc('pane.send_keys', { pane_id: paneId, keys }); }
   async sendRaw(paneId: string, raw: string): Promise<void> { if (raw) await this.rpc('pane.send_input', { pane_id: paneId, text: raw }); }
 
-  async foregroundCommand(paneId: string): Promise<string | undefined> {
+  async processInfo(paneId: string): Promise<HerdrProcessInfo> {
     const result = await this.rpc('pane.process_info', { pane_id: paneId });
     const info = result.process_info ?? result;
     const processes: Json[] = info.foreground_processes ?? [];
+    return {
+      ...(typeof info.foreground_process_group_id === 'number' ? { foregroundProcessGroupId: info.foreground_process_group_id } : {}),
+      foregroundProcesses: processes.map(process => ({
+        ...(typeof process.pid === 'number' ? { pid: process.pid } : {}),
+        ...(typeof process.name === 'string' ? { name: process.name } : {}),
+        ...(Array.isArray(process.argv) ? { argv: process.argv.filter((arg: unknown): arg is string => typeof arg === 'string') } : {}),
+      })),
+    };
+  }
+
+  async foregroundCommand(paneId: string): Promise<string | undefined> {
+    const info = await this.processInfo(paneId);
     const known = new Set(['claude', 'pi', 'codex', 'k9s', 'htop', 'btop', 'lazygit', 'nvim', 'vim', 'less']);
-    const process = processes.find(item => item.pid === info.foreground_process_group_id)
-      ?? processes.find(item => known.has(String(item.name).toLowerCase())) ?? processes[0];
+    const process = info.foregroundProcesses.find(item => item.pid === info.foregroundProcessGroupId)
+      ?? info.foregroundProcesses.find(item => known.has(String(item.name).toLowerCase())) ?? info.foregroundProcesses[0];
     return process?.name;
   }
 
@@ -162,7 +219,7 @@ export class HerdrMux implements Mux {
     const agent = pane.display_agent ?? pane.agent;
     return { id: pane.pane_id, tabId: pane.tab_id, workspaceId: pane.workspace_id,
       title: pane.terminal_title_stripped || pane.label || pane.terminal_title || (pane.cwd && basename(pane.cwd)) || pane.pane_id,
-      ...(pane.cwd ? { cwd: pane.cwd } : {}), ...(agent ? { agent } : {}),
+      ...(pane.cwd ? { cwd: pane.cwd } : {}), ...(agent ? { agent } : {}), ...(sessionValue(pane.agent_session) ? { agentSession: sessionValue(pane.agent_session) } : {}),
       status: statuses.has(pane.agent_status) ? pane.agent_status : 'unknown', revision: pane.revision ?? 0 };
   }
 

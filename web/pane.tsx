@@ -1,14 +1,16 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
+import { classify } from '../shared/layout.ts';
 import type {
-  Explain, InputBody, NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
+  InputBody, NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
 import { AffordanceLayer, hintPills, useCell, useMouseForward } from './affordances.tsx';
 
-import { api, haptic, Link, navigate, opensWith, post } from './app.tsx';
-import { Blocked } from './blocked.tsx';
+import { api, haptic, Link, navigate, opensWith, post, reducedMotion } from './app.tsx';
+import { Blocked, type ExplainResponse } from './blocked.tsx';
+import { Chat, LensSwitch, readLens, writeLens, type LensMode } from './chat.tsx';
 import { TopBar } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, statusText } from './home.tsx';
@@ -128,6 +130,86 @@ const rollUp = (panes: StatePane[]): Status => ROLL.find((s) => panes.some((p) =
 /** The Pane a Tab reopens to, so switching back lands where you left. */
 const lastPane = new Map<string, string>();
 
+interface HeldMessage { id: number; text: string }
+let heldMessageId = 0;
+
+/** The same 500 ms hold and 10 px movement threshold as Home's row menus. */
+function useLongPress(fn: () => void) {
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const from = useRef({ x: 0, y: 0 });
+  const fired = useRef(false);
+  const stop = () => clearTimeout(timer.current);
+  useEffect(() => stop, []);
+  return {
+    press: {
+      onPointerDown: (e: ReactPointerEvent) => {
+        fired.current = false;
+        from.current = { x: e.clientX, y: e.clientY };
+        timer.current = setTimeout(() => {
+          fired.current = true;
+          fn();
+        }, 500);
+      },
+      onPointerMove: (e: ReactPointerEvent) => {
+        if (Math.hypot(e.clientX - from.current.x, e.clientY - from.current.y) > 10) stop();
+      },
+      onPointerUp: stop,
+      onPointerCancel: stop,
+    },
+    consume: () => {
+      const held = fired.current;
+      fired.current = false;
+      return held;
+    },
+  };
+}
+
+function TabStripButton({
+  label,
+  status,
+  paneCount,
+  selected,
+  onOpen,
+  onMenu,
+}: {
+  label: string;
+  status: Status;
+  paneCount: number;
+  selected: boolean;
+  onOpen: () => void;
+  onMenu?: () => void;
+}) {
+  const hold = useLongPress(() => onMenu?.());
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      onClick={(e) => {
+        if (hold.consume()) return e.preventDefault();
+        onOpen();
+      }}
+      onContextMenu={onMenu ? (e) => e.preventDefault() : undefined}
+      className={`press flex shrink-0 items-center gap-1.5 px-2.5 pt-2 pb-3 text-[13px] whitespace-nowrap ${
+        onMenu ? '[-webkit-touch-callout:none]' : ''
+      } ${selected ? 'font-semibold text-fg' : 'font-medium text-muted'}`}
+      {...(onMenu ? hold.press : {})}
+    >
+      <Dot status={status} seen={status === 'idle' || status === 'unknown'} size={6} />
+      {label}
+      {paneCount > 1 && <span className="ml-0.5 font-mono text-[10px] text-muted">{paneCount}</span>}
+    </button>
+  );
+}
+
+function closeTabCost(panes: StatePane[], lastTab: boolean): string {
+  const active = panes
+    .filter((p) => p.agent && (p.status === 'working' || p.status === 'blocked'))
+    .map((p) => `“${p.title}” is ${p.status === 'blocked' ? 'waiting for you' : 'still working'} and will stop.`);
+  if (lastTab) active.push('The Workspace will have no Tabs left.');
+  return active.join(' ');
+}
+
 /**
  * The widest grid measured in each Workspace, by Workspace key. Every Pane of a Workspace
  * reads the same entry, so switching Tab or Pane inside it keeps the column still from the
@@ -206,6 +288,70 @@ interface Recognition {
   stop(): void;
 }
 
+function RecordingPill({
+  analyser,
+  onCancel,
+  onDone,
+}: {
+  analyser: AnalyserNode | null;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const [calm] = useState(reducedMotion);
+  const [seconds, setSeconds] = useState(0);
+  const [levels, setLevels] = useState(() => Array(calm ? 1 : 5).fill(0) as number[]);
+
+  useEffect(() => {
+    const started = Date.now();
+    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 250);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!analyser) return;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const sample = () => {
+      analyser.getByteFrequencyData(data);
+      const count = calm ? 1 : 5;
+      setLevels(Array.from({ length: count }, (_, i) => {
+        const from = Math.floor(i * data.length / count);
+        const to = Math.floor((i + 1) * data.length / count);
+        let total = 0;
+        for (let j = from; j < to; j += 1) total += data[j]!;
+        return total / Math.max(1, to - from) / 255;
+      }));
+    };
+    sample();
+    const timer = setInterval(sample, calm ? 250 : 80);
+    return () => clearInterval(timer);
+  }, [analyser, calm]);
+
+  const time = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  return (
+    <div className="rise flex min-h-10 items-center gap-2 rounded-composer border border-border bg-surface px-1.5">
+      <button type="button" onClick={onCancel} className="press min-h-9 px-2 text-caption font-medium text-muted">
+        Cancel
+      </button>
+      <span aria-live="polite" className="text-caption font-semibold text-fg">Recording</span>
+      {analyser && (
+        <span aria-hidden className="flex h-5 flex-1 items-center justify-center gap-0.5">
+          {levels.map((level, i) => (
+            <span
+              key={i}
+              className="w-1 rounded-full bg-accent transition-[height] duration-75 ease-out motion-reduce:transition-none"
+              style={{ height: `${Math.max(4, Math.round(level * 20))}px` }}
+            />
+          ))}
+        </span>
+      )}
+      <time className={`font-mono text-caption tabular-nums text-muted ${analyser ? '' : 'ml-auto'}`}>{time}</time>
+      <button type="button" onClick={onDone} className="press min-h-9 px-2 text-caption font-semibold text-accent">
+        Done
+      </button>
+    </div>
+  );
+}
+
 export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state: State | null; screen: ScreenEvent | null }) {
   const pane = state?.panes.find((p) => p.key === paneKey);
   const ws = state?.workspaces.find((w) => w.muxKey === pane?.muxKey && w.id === pane?.workspaceId);
@@ -231,7 +377,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // are the layout (htop, logs). Remembered per kind, not per Pane.
   const kind = pane?.agent ? 'agent' : 'shell';
   const [wraps, setWraps] = useState(() => ({
-    agent: localStorage.getItem('tautan.wrap.agent') === 'on',
+    agent: localStorage.getItem('tautan.wrap.agent') !== 'off',
     shell: localStorage.getItem('tautan.wrap.shell') === 'on',
   }));
   const wrap = wraps[kind];
@@ -258,10 +404,10 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const [scale, setScale] = useState(1);
   /** The Workspace's widest grid, measured from the `<pre>`. It sizes the whole column. */
   const wsKey = ws?.key ?? '';
-  const [, setMeasured] = useState(0);
+  const [measured, setMeasured] = useState(0);
   const [fade, setFade] = useState(false);
   const [fresh, setFresh] = useState(false);
-  const [explain, setExplain] = useState<Explain | null>(null);
+  const [explain, setExplain] = useState<ExplainResponse | null>(null);
   const [showSwitch, setShowSwitch] = useState(() => opensWith('switch'));
   const [showMore, setShowMore] = useState(() => opensWith('more'));
   const [showNewTab, setShowNewTab] = useState(() => opensWith('newtab'));
@@ -269,11 +415,25 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const [themedOn, setThemedOn] = useState(themedColors);
   const [rename, setRename] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
+  const [tabMenu, setTabMenu] = useState<string | null>(null);
+  const [tabRename, setTabRename] = useState<string | null>(null);
+  const [tabClose, setTabClose] = useState<string | null>(null);
+  const [lensChoice, setLensChoice] = useState<{ paneKey: string; mode: LensMode }>(() => ({
+    paneKey,
+    mode: readLens(paneKey),
+  }));
+  const lens = lensChoice.paneKey === paneKey ? lensChoice.mode : readLens(paneKey);
+  const setLens = useCallback((mode: LensMode) => {
+    writeLens(paneKey, mode);
+    setLensChoice({ paneKey, mode });
+  }, [paneKey]);
+  const showScreen = useCallback(() => setLens('screen'), [setLens]);
 
   // Keep the view pinned to the bottom unless the user scrolled up.
   const box = useRef<HTMLDivElement>(null);
   const pre = useRef<HTMLPreElement>(null);
   const pinned = useRef(true);
+  const [room, setRoom] = useState(0);
 
   const measure = () => {
     const el = box.current;
@@ -311,11 +471,44 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const profile = useMemo(() => profileFor(pane), [pane?.agent, pane?.command]);
   const affordances = useMemo(() => findAffordances(lines, profile), [lines, profile]);
   const cell = useCell(pre, scale, fonts);
+  // ---- phone width (ADR 0004) ----
+  const [phoneWidth, setPhoneWidth] = useState(false);
+  useEffect(() => { setPhoneWidth(false); }, [paneKey]); // the Hub's reaper releases on leave
+  const togglePhoneWidth = async () => {
+    haptic();
+    if (phoneWidth) {
+      setPhoneWidth(false);
+      await fetch(`/api/panes/${encodeURIComponent(paneKey)}/lease`, { method: 'DELETE' }).catch(() => {});
+      return;
+    }
+    // This screen's own readable geometry, the same cells the grid is drawn with.
+    const cols = Math.max(10, Math.min(500, Math.floor((room || 374) / Math.max(4, cell.cw))));
+    const rows = Math.max(4, Math.min(200, Math.floor(window.innerHeight / Math.max(8, cell.rh)) - 8));
+    const response = await fetch(`/api/panes/${encodeURIComponent(paneKey)}/lease`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cols, rows }),
+    }).catch(() => null);
+    if (response?.ok) setPhoneWidth(true);
+  };
+  // `room` excludes the scroller's padding, so add it back for a like-for-like grid check.
+  // A held Screen has no Pane record: unknown columns stay wrapped. The room is the space
+  // the scroller COULD take, not the column wrap has already shrunk it to — otherwise a
+  // grid narrower than the viewport stays reflowed because wrap shrank its own measuring
+  // stick (the column sizes to the longest line while wrapped).
+  const potentialRoom = Math.max(room, (viewportW || 0) - 32);
+  const gridWidth = pane?.cols ? pane.cols * cell.cw + 34 : 0;
+  const fits = !!gridWidth && !!potentialRoom && gridWidth <= potentialRoom + 34;
+  const effectiveWrap = wrap && !fits;
+  const kinds = useMemo(
+    () => effectiveWrap
+      ? classify(lines.map((spans) => spans.map((span) => span.text).join('')).join('\n'), pane?.cols)
+      : null,
+    [effectiveWrap, lines, pane?.cols],
+  );
   /** Bumped by the ⋯ switch, so the per-Pane override is re-read without a second store. */
   const [override, setOverride] = useState(0);
   const mouseOn = useMemo(() => mouseAllowed(paneKey, pane), [paneKey, pane?.agent, pane?.command, override]);
   // Cell coordinates need the grid, so both mechanisms stop at Wrap.
-  const forwarding = mouseOn && !wrap;
+  const forwarding = mouseOn && !effectiveWrap;
   /** The row window the overlay draws, in tens of rows, so scrolling repaints it rarely. */
   const [band, setBand] = useState(0);
   const mouse = useMouseForward({
@@ -335,23 +528,26 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     // narrower than the scroller. Measuring against `clientWidth` alone left Fit on and the
     // last column still cut off.
     const pad = getComputedStyle(el.parentElement);
-    const room = el.parentElement.clientWidth - parseFloat(pad.paddingLeft || '0') - parseFloat(pad.paddingRight || '0');
-    setScale(fit ? Math.min(1, room / el.scrollWidth) : 1);
-    // Wrapped text is sized by the column it sits in, so measuring it would feed the column
-    // its own width back. The fallback column is the right width for reflowed prose anyway.
-    // The widest line in the Workspace wins and keeps winning: a column that resized on every
-    // frame of agent output, or on every Tab switch, would move the header, the Tabs and the
-    // dock with it. A held Screen belongs to the last Pane, so it is never measured.
-    if (!wrap && current && lines.length && wsKey) {
+    const nextRoom = el.parentElement.clientWidth - parseFloat(pad.paddingLeft || '0') - parseFloat(pad.paddingRight || '0');
+    setRoom((prev) => (Math.abs(prev - nextRoom) < 0.01 ? prev : nextRoom));
+    setScale(fit ? Math.min(1, nextRoom / el.scrollWidth) : 1);
+    // A wrapped `<pre>` is as wide as its column, so its scrollWidth feeds the column back.
+    // Its longest parsed line is the grid width instead. The widest line in the Workspace
+    // keeps winning, so the header, Tabs and dock do not resize per screen frame or Tab.
+    // A held Screen belongs to the last Pane, so it is never measured.
+    if (current && lines.length && wsKey && (!effectiveWrap || cell.cw)) {
+      const longest = effectiveWrap
+        ? Math.max(...lines.map((line) => line.reduce((n, span) => n + span.text.length, 0))) * cell.cw
+        : el.scrollWidth;
       const prev = widths.get(wsKey) ?? 0;
-      const next = unsettled.delete(wsKey) ? el.scrollWidth : Math.max(prev, el.scrollWidth);
+      const next = unsettled.delete(wsKey) ? longest : Math.max(prev, longest);
       if (next !== prev) {
         widths.set(wsKey, next);
         setMeasured(next);
       }
     }
     measure();
-  }, [fit, wrap, lines, viewportW, fonts, wsKey]);
+  }, [fit, effectiveWrap, lines, viewportW, fonts, wsKey, cell.cw, measured]);
 
   // Mark Seen once the screen settles: Seen is tautan's own flag, never written to the Mux.
   useEffect(() => {
@@ -380,12 +576,14 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   }, [smart, paneKey, pane?.agent, pane?.status, pane?.revision, pane?.suggestions?.length]);
 
   // The blocked card outlives the status by 150 ms, so it fades instead of vanishing.
+  const loadExplain = () =>
+    fetch(`/api/panes/${encodeURIComponent(paneKey)}/explain`)
+      .then((r) => r.json() as Promise<ExplainResponse | null>)
+      .then(setExplain)
+      .catch(() => {});
   useEffect(() => {
     if (pane?.status === 'blocked') {
-      fetch(`/api/panes/${encodeURIComponent(paneKey)}/explain`)
-        .then((r) => r.json() as Promise<Explain | null>)
-        .then(setExplain)
-        .catch(() => {});
+      loadExplain();
       return;
     }
     if (!explain) return;
@@ -421,7 +619,28 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     navigate(`#/pane/${encodeURIComponent(next)}`);
   };
 
+  const closeTab = async (tab: (typeof tabs)[number]) => {
+    const next = tabs.find((t) => t.id !== tab.id);
+    const nextKey = next && (lastPane.get(`${pane?.muxKey}/${next.id}`) ?? next.panes[0]?.key);
+    for (const p of tab.panes) await api<void>(`/api/panes/${encodeURIComponent(p.key)}/close`);
+    if (tab.id === pane?.tabId) navigate(nextKey ? `#/pane/${encodeURIComponent(nextKey)}` : '#/');
+  };
+
+  const menuTab = tabs.find((t) => t.id === tabMenu);
+  const renameTab = tabs.find((t) => t.id === tabRename);
+  const closingTab = tabs.find((t) => t.id === tabClose);
+
   const [text, setText] = useState('');
+  const [heldMessages, setHeldMessages] = useState<HeldMessage[]>([]);
+  const [sendingHeld, setSendingHeld] = useState(false);
+  const heldGeneration = useRef(0);
+  const flushingHeld = useRef(false);
+  useEffect(() => {
+    heldGeneration.current += 1;
+    flushingHeld.current = false;
+    setHeldMessages([]);
+    setSendingHeld(false);
+  }, [paneKey]);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const el = input.current;
@@ -433,16 +652,74 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const send = () => {
     if (!text.trim()) return;
     haptic();
-    void post(paneKey, 'input', { text, keys: ['enter'] } satisfies InputBody);
+    if (pane?.status === 'working') {
+      const message = { id: (heldMessageId += 1), text };
+      setHeldMessages((list) => [...list, message]);
+    } else {
+      void post(paneKey, 'input', { text, keys: ['enter'] } satisfies InputBody);
+    }
     setText('');
     // The paths went with the text. A chip still uploading keeps its place.
     setUploads((list) => list.filter((u) => u.status === 'uploading'));
     input.current?.focus();
   };
 
+  const flushHeld = async () => {
+    if (flushingHeld.current || pane?.status === 'working') return;
+    const generation = heldGeneration.current;
+    const batch = heldMessages;
+    flushingHeld.current = true;
+    setSendingHeld(true);
+    haptic();
+    for (const message of batch) {
+      try {
+        await api<void>(`/api/panes/${encodeURIComponent(paneKey)}/input`, {
+          text: message.text,
+          keys: ['enter'],
+        } satisfies InputBody);
+      } catch {
+        break;
+      }
+      if (heldGeneration.current === generation) {
+        setHeldMessages((list) => list.filter((item) => item.id !== message.id));
+      }
+    }
+    if (heldGeneration.current === generation) {
+      flushingHeld.current = false;
+      setSendingHeld(false);
+    }
+  };
+
+  const [ctrlArmed, setCtrlArmed] = useState(false);
+  useEffect(() => setCtrlArmed(false), [paneKey, kind]);
   const keys = (names: string[]) => {
     haptic();
+    if (names.length === 1 && names[0] === 'ctrl') {
+      setCtrlArmed((armed) => !armed);
+      return;
+    }
+    if (ctrlArmed) {
+      setCtrlArmed(false);
+      if (names.length === 1 && names[0] === 'esc') return;
+      if (names.length === 1 && !names[0]!.includes('+')) names = [`ctrl+${names[0]}`];
+    }
     void post(paneKey, 'input', { keys: names } satisfies InputBody);
+  };
+
+  /** The blocked card must see the 409, so its send returns the outcome instead of
+   *  swallowing it the way `post` does. */
+  const sendBlocked = async (names: string[], promptId?: string): Promise<'sent' | 'changed'> => {
+    haptic();
+    try {
+      const response = await fetch(`/api/panes/${encodeURIComponent(paneKey)}/input`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ keys: names, ...(promptId !== undefined ? { promptId } : {}) } satisfies InputBody),
+      });
+      return response.status === 409 ? 'changed' : 'sent';
+    } catch {
+      return 'sent'; // offline: the reconnect bar owns the error, and the card stays honest
+    }
   };
 
   /** A text pill is a draft, not an answer: it lands in the composer for review. */
@@ -536,27 +813,96 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // with more Tabs than fit, dragging scrolls the strip and must not also switch Tab.
   const swipe = useRef({ x: 0, scroll: 0 });
   const rec = useRef<Recognition | null>(null);
+  const transcript = useRef('');
+  const keepTranscript = useRef(true);
+  const mic = useRef<{ stream: MediaStream; context: AudioContext } | null>(null);
   const [listening, setListening] = useState(false);
-  const dictate = () => {
-    if (rec.current) {
-      rec.current.stop();
-      return;
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
+
+  const releaseMic = () => {
+    const active = mic.current;
+    mic.current = null;
+    try { active?.stream.getTracks().forEach((track) => track.stop()); } catch {}
+    try { if (active) void active.context.close().catch(() => {}); } catch {}
+    setAnalyser(null);
+  };
+
+  const stopDictation = (keep: boolean) => {
+    keepTranscript.current = keep;
+    const active = rec.current;
+    if (!active) return;
+    try {
+      active.stop();
+    } catch {
+      active.onend?.();
     }
+  };
+
+  const dictate = () => {
+    if (rec.current) return stopDictation(true);
     const Ctor = (window as unknown as { webkitSpeechRecognition?: new () => Recognition }).webkitSpeechRecognition;
     if (!Ctor) return;
     const r = new Ctor();
-    r.continuous = false;
-    r.interimResults = false;
-    // Dictation lands in the field for review; it never sends. See docs/DECISIONS.md.
-    r.onresult = (e) => setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}${e.results[0]?.[0]?.transcript ?? ''}`);
+    transcript.current = '';
+    keepTranscript.current = true;
+    r.continuous = true;
+    r.interimResults = true;
+    r.onresult = (e) => {
+      transcript.current = Array.from(e.results, (result) => result[0]?.transcript ?? '').join(' ').replace(/\s+/g, ' ').trim();
+    };
     r.onend = () => {
+      if (rec.current !== r) return;
       rec.current = null;
+      if (keepTranscript.current && transcript.current) {
+        setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}${transcript.current}`);
+      }
+      transcript.current = '';
       setListening(false);
+      releaseMic();
     };
     rec.current = r;
     setListening(true);
-    r.start();
+    void (async () => {
+      let stream: MediaStream | null = null;
+      let context: AudioContext | null = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (rec.current !== r) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        context = new AudioContext();
+        const next = context.createAnalyser();
+        next.fftSize = 64;
+        context.createMediaStreamSource(stream).connect(next);
+        await context.resume();
+        mic.current = { stream, context };
+        setAnalyser(next);
+      } catch {
+        try { stream?.getTracks().forEach((track) => track.stop()); } catch {}
+        try { if (context) await context.close(); } catch {}
+      }
+    })();
+    try {
+      r.start();
+    } catch {
+      r.onend();
+    }
   };
+
+  useEffect(() => () => {
+    const active = rec.current;
+    rec.current = null;
+    if (active) {
+      active.onresult = null;
+      active.onend = null;
+      try { active.stop(); } catch {}
+    }
+    const audio = mic.current;
+    mic.current = null;
+    try { audio?.stream.getTracks().forEach((track) => track.stop()); } catch {}
+    try { if (audio) void audio.context.close().catch(() => {}); } catch {}
+  }, [paneKey]);
 
   if (state && !pane) {
     return (
@@ -571,14 +917,17 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
 
   const agent = pane?.agent;
   const status = pane?.status ?? 'unknown';
+  // The card's 150 ms exit leaves only the caption visible. An active blocked prompt always
+  // keeps the held messages readable, because that is when the user must choose what to do.
+  const heldFolded = !!explain && status !== 'blocked';
   // No engine, no button: Send stays in place, disabled, rather than a mic that does nothing.
   const canDictate = 'webkitSpeechRecognition' in window;
   const active = tabs.find((t) => t.id === pane?.tabId);
   const grid = pane?.cols && pane.rows ? `${pane.cols}×${pane.rows}` : 'fit';
   // The App profile decides for every Pane running that program; the switch decides for
-  // this one. Wrap wins over both, so the row says so rather than lying about the state.
+  // this one. Effective Wrap wins over both, so the row says so rather than lying about it.
   const mouseSource =
-    mouseOn && wrap
+    mouseOn && effectiveWrap
       ? 'off while Wrap is on'
       : localStorage.getItem(`tautan.mouse.${paneKey}`)
         ? 'overridden'
@@ -626,6 +975,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         title={pane?.title ?? '…'}
         right={
           <>
+            {agent && <LensSwitch value={lens} onChange={setLens} />}
             {/* Status and the ⌄ are one trigger: one drawer, one name, one hit area. It keeps
                 its own width up to 45 % of the row, and past that the agent name truncates. */}
             <button
@@ -692,25 +1042,20 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
             </button>
           )}
           <div ref={strip} role="tablist" aria-label="Tabs" className="hscroll relative flex min-w-0 flex-1 items-end gap-0.5">
-            {tabs.map((t) => {
-              const on = t.id === pane?.tabId;
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={on}
-                  onClick={() => openTab(t.id)}
-                  className={`press flex shrink-0 items-center gap-1.5 px-2.5 pt-2 pb-3 text-[13px] whitespace-nowrap ${
-                    on ? 'font-semibold text-fg' : 'font-medium text-muted'
-                  }`}
-                >
-                  <Dot status={t.status} seen={t.status === 'idle' || t.status === 'unknown'} size={6} />
-                  {t.label}
-                  {t.panes.length > 1 && <span className="ml-0.5 font-mono text-[10px] text-muted">{t.panes.length}</span>}
-                </button>
-              );
-            })}
+            {tabs.map((t) => (
+              <TabStripButton
+                key={t.id}
+                label={t.label}
+                status={t.status}
+                paneCount={t.panes.length}
+                selected={t.id === pane?.tabId}
+                onOpen={() => openTab(t.id)}
+                onMenu={writable ? () => {
+                  haptic();
+                  setTabMenu(t.id);
+                } : undefined}
+              />
+            ))}
             <span
               aria-hidden
               data-testid="tab-underline"
@@ -756,8 +1101,11 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         )}
       </div>
 
-      <div className="relative min-h-0 flex-1">
-        <div
+      {agent && lens === 'chat' ? (
+        <Chat key={paneKey} paneKey={paneKey} revision={pane?.revision ?? 0} onUnavailable={showScreen} />
+      ) : (
+        <div className="relative min-h-0 flex-1">
+          <div
           ref={box}
           {...mouse}
           onScroll={(e) => {
@@ -780,30 +1128,45 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
             className={`relative text-caption lg:mx-auto ${
               // Wrapped text takes the column; unwrapped text keeps the grid's own width.
               // `w-max` would be max-content, which never wraps, so Wrap needs `w-full`.
-              wrap ? 'w-full break-words whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre lg:min-w-0'
+              effectiveWrap ? 'w-full break-words whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre lg:min-w-0'
             }`}
             // The grid keeps tautan-box first: box-drawing and Braille come from the subset,
             // everything else falls through to Geist Mono.
             style={{
               fontFamily: '"tautan-box", "Geist Mono", ui-monospace, monospace',
               // Never reflow wider than the Pane itself: the agent wrote for `cols` columns.
-              maxWidth: wrap && pane?.cols ? `${pane.cols}ch` : undefined,
+              maxWidth: effectiveWrap && pane?.cols ? `${pane.cols}ch` : undefined,
               ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left' } : null),
             }}
           >
-            {lines.map((spans, i) => (
-              <Fragment key={i}>
-                {spans.map((sp, j) => (
-                  <span key={j} style={spanStyle(sp)}>
-                    {sp.text}
-                  </span>
-                ))}
-                {'\n'}
-              </Fragment>
-            ))}
+            {lines.map((spans, i) =>
+              effectiveWrap ? (
+                <span
+                  key={i}
+                  className={`block min-h-[1lh] ${
+                    kinds?.[i] === 'structure' ? 'w-max whitespace-pre' : 'break-words whitespace-pre-wrap'
+                  }`}
+                >
+                  {spans.map((sp, j) => (
+                    <span key={j} style={spanStyle(sp)}>
+                      {sp.text}
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                <Fragment key={i}>
+                  {spans.map((sp, j) => (
+                    <span key={j} style={spanStyle(sp)}>
+                      {sp.text}
+                    </span>
+                  ))}
+                  {'\n'}
+                </Fragment>
+              ),
+            )}
             {/* Inside the `<pre>`, so the Fit transform scales the boxes with the text. A held
                 Screen is the last Pane's, so its Affordances would type into the wrong Pane. */}
-            {!wrap && current && affordances.length > 0 && (
+            {!effectiveWrap && current && affordances.length > 0 && (
               <AffordanceLayer
                 paneKey={paneKey}
                 list={affordances}
@@ -823,30 +1186,41 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
             </div>
           )}
         </div>
-        {fresh && (
-          <button
-            type="button"
-            onClick={() => {
-              const el = box.current;
-              if (el) el.scrollTop = el.scrollHeight;
-              pinned.current = true;
-              setFresh(false);
-            }}
-            className="absolute inset-x-0 bottom-2 mx-auto flex w-max items-center gap-1.5 rounded-chip bg-elevated px-3 py-1.5 text-caption font-medium text-fg shadow-elevated"
-          >
-            <Down />
-            New output
-          </button>
-        )}
-      </div>
-
-      {explain && (
-        <div className={`transition-opacity duration-150 ${status === 'blocked' ? 'opacity-100' : 'opacity-0'}`}>
-          <Blocked explain={explain} agent={agent} onSend={(ks) => keys(ks)} />
+          {fresh && (
+            <button
+              type="button"
+              onClick={() => {
+                const el = box.current;
+                if (el) el.scrollTop = el.scrollHeight;
+                pinned.current = true;
+                setFresh(false);
+              }}
+              className="absolute inset-x-0 bottom-2 mx-auto flex w-max items-center gap-1.5 rounded-chip bg-elevated px-3 py-1.5 text-caption font-medium text-fg shadow-elevated"
+            >
+              <Down />
+              New output
+            </button>
+          )}
         </div>
       )}
 
       <div className="flex shrink-0 flex-col gap-2.5 rounded-t-drawer bg-elevated pt-3 pb-[max(env(safe-area-inset-bottom),12px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]">
+        {/* The blocked card lives here, above the composer, on its width and gutter. The
+            live region must exist before the card does, or a screen reader announces
+            nothing: it stays mounted at zero height while no prompt asks. */}
+        <div aria-live="polite" className={explain ? 'px-4' : 'h-0 overflow-hidden px-4'}>
+          <div className={`transition-opacity duration-150 ${pane?.status === 'blocked' && explain ? 'opacity-100' : 'opacity-0'}`}>
+            {explain && (
+              <Blocked
+                key={explain.promptId ?? 'mock'}
+                explain={explain}
+                agent={agent}
+                onSend={sendBlocked}
+                onReread={() => void loadExplain()}
+              />
+            )}
+          </div>
+        </div>
         {/* One bar: the keys a hand reaches for on the left, the replies you tap on the right. */}
         <div className="flex items-center gap-2 pl-4">
           <div className="flex shrink-0 items-center gap-1">
@@ -929,10 +1303,15 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
               <button
                 key={name}
                 type="button"
-                aria-label={name}
+                aria-label={name === 'ctrl' ? `${ctrlArmed ? 'Disarm' : 'Arm'} Control` : name}
+                aria-pressed={name === 'ctrl' ? ctrlArmed : undefined}
                 onClick={() => keys([name])}
-                className={`press flex h-9 shrink-0 items-center justify-center rounded-chip border border-border bg-bg px-3 font-mono text-caption active:bg-surface ${
-                  name === 'ctrl+c' ? 'text-danger' : 'text-fg'
+                className={`press flex h-9 shrink-0 items-center justify-center rounded-chip border px-3 font-mono text-caption active:bg-surface ${
+                  name === 'ctrl' && ctrlArmed
+                    ? 'border-accent bg-accent text-bg'
+                    : name === 'ctrl+c'
+                      ? 'border-border bg-bg text-danger'
+                      : 'border-border bg-bg text-fg'
                 }`}
               >
                 {label}
@@ -941,8 +1320,55 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
           </div>
         )}
 
+        {agent && heldMessages.length > 0 && (
+          <section aria-label="Held messages" className="mx-4 overflow-hidden rounded-composer border border-border bg-bg">
+            <div className={`flex min-h-9 items-center gap-3 px-3 ${heldFolded ? '' : 'border-b border-border'}`}>
+              <span aria-live="polite" className="flex-1 text-caption font-medium text-muted">
+                {heldMessages.length} held
+              </span>
+              {status !== 'working' && (
+                <button
+                  type="button"
+                  disabled={sendingHeld}
+                  onClick={() => void flushHeld()}
+                  className="press min-h-9 shrink-0 text-caption font-semibold text-accent disabled:text-muted"
+                >
+                  {sendingHeld ? 'Sending…' : 'Send now'}
+                </button>
+              )}
+            </div>
+            {!heldFolded && (
+              <ul className="max-h-28 overflow-y-auto overscroll-contain">
+                {heldMessages.map((message) => (
+                  <li key={message.id} className="flex min-h-10 items-center gap-2 border-t border-border/60 px-3 first:border-t-0">
+                    <span title={message.text} className="min-w-0 flex-1 truncate text-caption text-fg">
+                      {message.text}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={sendingHeld}
+                      aria-label={`Remove held message: ${message.text}`}
+                      onClick={() => setHeldMessages((list) => list.filter((item) => item.id !== message.id))}
+                      className="press flex size-9 shrink-0 items-center justify-center text-muted disabled:opacity-40"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
         {agent && (
           <div className="flex flex-col gap-1.5 px-4">
+            {listening && (
+              <RecordingPill
+                analyser={analyser}
+                onCancel={() => stopDictation(false)}
+                onDone={() => stopDictation(true)}
+              />
+            )}
             <div className="flex items-end gap-2 rounded-composer border border-border bg-bg py-1 pr-1.5 pl-3">
               {/* The agent's glyph labels the field from inside it, where the prompt is. */}
               <span aria-hidden className="self-center text-accent">
@@ -980,7 +1406,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
                 <button
                   type="button"
                   onClick={dictate}
-                  aria-label="Dictate"
+                  aria-label={listening ? 'Done dictating' : 'Dictate'}
                   aria-pressed={listening}
                   className={`press flex size-9 shrink-0 items-center justify-center ${listening ? 'text-accent' : 'text-muted'}`}
                 >
@@ -1069,12 +1495,64 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
 
       <SwitchDrawer open={showSwitch} onClose={() => setShowSwitch(false)} state={state} currentKey={paneKey} onPick={haptic} />
       <MenuSheet
+        open={menuTab !== undefined}
+        title={menuTab?.label ?? 'Tab'}
+        onClose={() => setTabMenu(null)}
+        items={[
+          ...(menuTab && menuTab.panes.length > 1
+            ? menuTab.panes.map((p) => ({
+                label: p.title,
+                sub: `${p.agent ?? 'shell'} · ${p.status}`,
+                onClick: () => {
+                  haptic();
+                  navigate(`#/pane/${encodeURIComponent(p.key)}`);
+                },
+              }))
+            : []),
+          { label: 'Rename tab', onClick: () => menuTab && setTabRename(menuTab.id) },
+          {
+            label: 'Close tab',
+            danger: true,
+            onClick: () => {
+              if (!menuTab) return;
+              if (closeTabCost(menuTab.panes, tabs.length === 1)) setTabClose(menuTab.id);
+              else void closeTab(menuTab);
+            },
+          },
+        ]}
+      />
+      <RenameSheet
+        open={renameTab !== undefined}
+        kind="Tab"
+        current={renameTab?.label ?? ''}
+        onClose={() => setTabRename(null)}
+        onSubmit={(label) =>
+          api<void>('/api/rename', { muxKey: pane!.muxKey, tabId: renameTab!.id, label } satisfies RenameBody)
+        }
+      />
+      <ConfirmCloseSheet
+        open={closingTab !== undefined}
+        kind="Tab"
+        title={closingTab?.label ?? ''}
+        cost={closingTab ? closeTabCost(closingTab.panes, tabs.length === 1) : ''}
+        onClose={() => setTabClose(null)}
+        onConfirm={() => closingTab ? closeTab(closingTab) : undefined}
+      />
+      <MenuSheet
         open={showMore}
         title={pane?.title ?? 'Pane'}
         onClose={() => setShowMore(false)}
         head={<ThemePicker />}
         items={[
           { label: wrap ? 'Wrap: on' : 'Wrap: off', onClick: () => setWrap(!wrap) },
+          {
+            // ADR 0004: a geometry lease makes the agent draw at this screen's columns; the
+            // desktop's copy of the Pane narrows until it is released. Releasing on leave is
+            // the Hub reaper's job; this toggle only asks.
+            label: phoneWidth ? 'Phone width: on' : 'Phone width: off',
+            hint: 'the pane draws at your columns',
+            onClick: () => void togglePhoneWidth(),
+          },
           { label: fit ? 'Fit to width: on' : 'Fit to width: off', hint: grid, onClick: () => setFit(!fit) },
           {
             label: themedOn ? 'Theme colors: on' : 'Theme colors: off',

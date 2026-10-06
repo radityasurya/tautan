@@ -680,7 +680,7 @@ function LinkButton({ children, onClick, icon, iconRight, size = "md", theme: tp
 // ─── 4. FORM INPUTS (soft background, minimal stroke) ─────────
 
 function TextInput({
-  value, onChange, placeholder, label, caption, error, icon, disabled,
+  value, onChange, placeholder, label, caption, error, icon, disabled, autoFocus, onFocus,
   type = "text", size = "md", theme: tp, style: sp,
 }) {
   const ctx = useThemeContext(); const theme = tp || ctx; const pal = usePal(theme);
@@ -707,8 +707,8 @@ function TextInput({
         )}
         <input
           type={type} value={value} onChange={(e) => onChange?.(e.target.value)}
-          placeholder={placeholder} disabled={disabled}
-          onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+          placeholder={placeholder} disabled={disabled} autoFocus={autoFocus}
+          onFocus={(e) => { setFocused(true); onFocus?.(e); }} onBlur={() => setFocused(false)}
           style={{
             ...s, width: "100%", boxSizing: "border-box", fontFamily: tokens.font.sans,
             color: disabled ? pal.textMuted : pal.text,

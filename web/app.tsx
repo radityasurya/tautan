@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { AnchorHTMLAttributes, ReactNode } from 'react';
 import type { ScreenEvent, State } from '../shared/types.ts';
+import { NeedsCard } from './alert.tsx';
 import { Diff } from './diff.tsx';
+import { FileScreen } from './file.tsx';
 import { Home, seedSeen, unseen } from './home.tsx';
 import { Hosts } from './hosts.tsx';
 import { AgentsTab, HostsTab, SettingsTab } from './icons.tsx';
@@ -290,8 +292,62 @@ export function App() {
   const kitTheme = useKitTheme();
   const paneKey = route.startsWith('/pane/') ? decodeURIComponent(route.slice('/pane/'.length)) : undefined;
   const diffKey = route.startsWith('/diff/') ? decodeURIComponent(route.slice('/diff/'.length)) : undefined;
+  const fileRoute = route.startsWith('/file/') ? route.slice('/file/'.length) : '';
+  const [encodedFileKey, fileQuery = ''] = fileRoute.split('?', 2);
+  const fileKey = encodedFileKey ? decodeURIComponent(encodedFileKey) : undefined;
+  const filePath = fileKey ? (new URLSearchParams(fileQuery).get('path') ?? '') : '';
   const { state, screen, connected } = useEvents(paneKey);
   const needsYou = state?.panes.filter((p) => p.status === 'blocked' && unseen(p)).length ?? 0;
+  const wakeLock = useRef<{ release(): Promise<void> } | null>(null);
+  const wakeLockToken = useRef(0);
+
+  useEffect(() => {
+    if (!paneKey) return;
+    const token = ++wakeLockToken.current;
+    let requestToken = 0;
+    const release = async () => {
+      const lock = wakeLock.current;
+      wakeLock.current = null;
+      try { await lock?.release(); } catch {}
+    };
+    const acquire = async () => {
+      if (document.visibilityState !== 'visible' || wakeLock.current) return;
+      const request = ++requestToken;
+      try {
+        const lock = await (navigator as Navigator & {
+          wakeLock?: { request(type: 'screen'): Promise<{ release(): Promise<void> }> };
+        }).wakeLock?.request('screen');
+        if (!lock) return;
+        if (wakeLockToken.current !== token || requestToken !== request || document.visibilityState !== 'visible') {
+          try { await lock.release(); } catch {}
+          return;
+        }
+        wakeLock.current = lock;
+      } catch {}
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void acquire();
+      else {
+        ++requestToken;
+        void release();
+      }
+    };
+    void acquire();
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      ++wakeLockToken.current;
+      ++requestToken;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      void release();
+    };
+  }, [paneKey]);
+
+  useEffect(() => {
+    if (!paneKey) return;
+    const title = state?.panes.find((pane) => pane.key === paneKey)?.title ?? paneKey.split('/').pop() ?? paneKey;
+    document.title = `${title} · tautan`;
+    return () => { document.title = 'tautan'; };
+  }, [paneKey, state]);
 
   // The app icon counts what the Needs you section holds: unseen `blocked` and `done`.
   // The tab badge stays stricter, because only `blocked` is worth a push.
@@ -302,15 +358,21 @@ export function App() {
   return (
     <ThemeProvider theme={kitTheme}>
       <DebugOverlay />
-      {!connected && (
-        <div role="status" className="fixed inset-x-0 top-0 z-50 h-0.5 animate-pulse" style={{ background: tokens[kitTheme].warning }} title="Reconnecting">
-          <span className="sr-only">Reconnecting</span>
-        </div>
-      )}
+      <div
+        role="status"
+        className={`fixed inset-x-0 top-0 z-50 overflow-hidden ${connected ? 'h-0' : 'h-0.5 animate-pulse'}`}
+        style={connected ? undefined : { background: tokens[kitTheme].warning }}
+        title={connected ? undefined : 'Reconnecting'}
+      >
+        <span className="sr-only">{connected ? '' : 'Reconnecting'}</span>
+      </div>
+      <NeedsCard state={state} openPaneKey={paneKey} onOpen={(key) => navigate(`#/pane/${encodeURIComponent(key)}`)} />
       {paneKey ? (
         <PaneScreen paneKey={paneKey} state={state} screen={screen} />
       ) : diffKey ? (
         <Diff workspaceKey={diffKey} state={state} />
+      ) : fileKey ? (
+        <FileScreen paneKey={fileKey} path={filePath} state={state} />
       ) : route === '/hosts' ? (
         <Hosts state={state} />
       ) : route === '/settings' ? (
@@ -318,7 +380,7 @@ export function App() {
       ) : (
         <Home state={state} />
       )}
-      {!paneKey && !diffKey && <TabBar route={route} badge={needsYou} />}
+      {!paneKey && !diffKey && !fileKey && <TabBar route={route} badge={needsYou} />}
     </ThemeProvider>
   );
 }

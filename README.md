@@ -54,9 +54,32 @@ for the vocabulary.
 
 ## Install
 
-Pick one path. Run the Hub on the machine that already has SSH access to the others.
+Run the Hub on the machine that already has SSH access to the other Hosts.
 
-### bunx
+### Herdr plugin
+
+Install tautan with herdr:
+
+```sh
+herdr plugin install radityasurya/tautan
+```
+
+In herdr, run the **Start tautan** action. Then set up Tailscale and open the **Phone setup**
+pane. To open that pane from the command line, run:
+
+```sh
+herdr plugin pane open --plugin tautan --entrypoint phone-setup
+```
+
+The pane prints the tailnet URL and its QR code. Scan it with your phone, open the URL, and
+use **Add to Home Screen**.
+
+The plugin builds tautan, adds Start, Stop, and Status actions, and adds the **Phone setup**
+pane. It does not start the Hub automatically.
+
+### Manual
+
+#### bunx
 
 Requires [Bun](https://bun.sh) 1.2+ and a running herdr on the same machine.
 
@@ -64,8 +87,12 @@ Requires [Bun](https://bun.sh) 1.2+ and a running herdr on the same machine.
 bunx tautan
 ```
 
-The Hub prints `http://127.0.0.1:7700` and the Muxes it found. To keep it running after you
-log out, add a systemd user unit at `~/.config/systemd/user/tautan.service`:
+The Hub prints `http://127.0.0.1:7700` and the Muxes it found.
+
+#### systemd
+
+To keep a bunx Hub running after you log out, add a systemd user unit at
+`~/.config/systemd/user/tautan.service`:
 
 ```ini
 [Unit]
@@ -90,7 +117,7 @@ systemctl --user enable --now tautan
 loginctl enable-linger $USER
 ```
 
-### Docker
+#### Docker
 
 The image is `ghcr.io/radityasurya/tautan:latest`. It needs the herdr socket and your SSH
 configuration, both read-only:
@@ -137,7 +164,7 @@ On Unraid, use a Community Applications template:
 The container runs as uid 1000. If the herdr socket belongs to another user, set the
 container's uid to that user, or the Hub cannot open the socket.
 
-### From source
+#### From source
 
 ```sh
 git clone https://github.com/radityasurya/tautan
@@ -163,7 +190,8 @@ Then, on the phone:
 2. Share → **Add to Home Screen**. iOS only delivers push to an installed PWA.
 3. Open the installed app, go to **Settings**, and turn on **Push when an agent is blocked**.
 
-Never expose port 7700 any other way.
+Never expose port 7700 any other way. Never use Tailscale Funnel; the Hub refuses Funnel
+requests.
 
 ## Configure
 

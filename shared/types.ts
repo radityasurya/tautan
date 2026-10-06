@@ -7,7 +7,7 @@ export interface Workspace { id: string; label: string; cwd?: string }
 export interface Tab { id: string; workspaceId: string; label: string }
 export interface Pane {
   id: string; tabId: string; workspaceId: string; title: string; cwd?: string;
-  agent?: string; status: Status; revision: number; cols?: number; rows?: number;
+  agent?: string; agentSession?: string; status: Status; revision: number; cols?: number; rows?: number;
   /** foreground command name (tmux: pane_current_command; herdr: last foreground process), used to pick the App profile */ command?: string;
 }
 export interface Tree { workspaces: Workspace[]; tabs: Tab[]; panes: Pane[] }
@@ -70,8 +70,10 @@ export interface StatePane {
 export interface State { hosts: StateHost[]; muxes: StateMux[]; workspaces: StateWorkspace[]; tabs: StateTab[]; panes: StatePane[] }
 /** GET /api/panes/:key/screen?mode= and SSE `event: screen` */
 export interface ScreenEvent extends Screen { key: string }
-/** POST /api/panes/:key/input — text is sent first, then keys, then raw (bytes written to the pty untouched) */
-export interface InputBody { text?: string; keys?: string[]; raw?: string }
+/** POST /api/panes/:key/input — text is sent first, then keys, then raw (bytes written to the pty untouched).
+ *  An optional `promptId` (from GET …/explain) makes the Hub refuse with 409 when the prompt
+ *  on screen moved on; the key bar and quick replies send none and keep the old behaviour. */
+export interface InputBody { text?: string; keys?: string[]; raw?: string; promptId?: string }
 /** POST /api/panes/:key/mouse — the Hub builds the SGR bytes; `allow` must be true (profile or per-Pane switch) or the Hub answers 409 */
 export interface MouseBody { kind: 'click' | 'right' | 'double' | 'wheelUp' | 'wheelDown'; col: number; row: number; allow: boolean }
 /** what tapping an Affordance does: keys → send_keys names; text → sendText; command → text + enter; copy → clipboard */
@@ -127,6 +129,10 @@ export interface Settings {
   /** the `Tailscale-User-Login` header as seen on this request; absent when not behind tailscale serve */
   login?: string;
   servedBy?: string;
+  version?: {
+    tautan: string;
+    herdr: { muxKey: string; label: string; version: string }[];
+  };
   hosts: HostConfig[];
   /** Smart replies: provider/model absent when the Hub has no TAUTAN_SUGGEST; enabled is the persisted Hub flag */
   suggest: { provider?: string; model?: string; enabled: boolean };

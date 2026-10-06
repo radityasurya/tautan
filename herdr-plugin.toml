@@ -1,0 +1,39 @@
+id = "tautan"
+name = "tautan"
+version = "0.1.1"
+min_herdr_version = "0.9.2"
+
+[[build]]
+command = ["bun", "install"]
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["bun", "run", "build"]
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["bun", "run", "server/plugin-start.ts"]
+
+[[actions]]
+id = "start"
+title = "Start tautan"
+contexts = ["global"]
+command = ["bun", "scripts/plugin.ts", "start"]
+
+[[actions]]
+id = "stop"
+title = "Stop tautan"
+contexts = ["global"]
+command = ["bun", "scripts/plugin.ts", "stop"]
+
+[[actions]]
+id = "status"
+title = "tautan status"
+contexts = ["global"]
+command = ["bun", "scripts/plugin.ts", "status"]
+
+[[panes]]
+id = "phone-setup"
+title = "Phone setup"
+placement = "zoomed"
+command = ["bun", "scripts/plugin.ts", "phone"]

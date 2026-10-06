@@ -65,6 +65,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== location.origin) return;
   if (url.pathname === '/api/events') return; // SSE: buffering it through the worker kills the stream
+  if (/^\/api\/panes\/[^/]+\/file$/.test(url.pathname)) return;
   if (url.pathname.startsWith('/api/')) event.respondWith(networkFirst(request));
   else if (url.pathname.startsWith('/assets/')) event.respondWith(cacheFirst(request));
   else if (request.mode === 'navigate') event.respondWith(networkFirst(request, '/index.html'));

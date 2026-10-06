@@ -1,12 +1,21 @@
-import { isAbsolute, resolve, sep } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { realpath, stat } from 'node:fs/promises';
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { DiffResult, DiffScope, HostConfig, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SuggestSettingBody } from '../shared/types.ts';
 import { parseUnifiedDiff } from '../shared/diff.ts';
+import { promptId } from '../shared/blocked.ts';
 import { HerdrMux } from './herdr.ts';
 import { discoverLocalMuxes, discoverRemote, hostId, startRemoteHost, syncHosts, validTarget, validateHosts, writeHostsConfig } from './hosts.ts';
 import { mouseBytes, type Hub } from './mux.ts';
+import { LeaseError, LeaseHolder } from './lease.ts';
+import { ChatLens } from './chat.ts';
 import { EmptyBody, sanitizeName, TooLarge, writeAttachment } from './attach.ts';
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
+const tautanVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
+const QUOTA_TTL = 5 * 60 * 1_000;
+let quotaCache: { value: unknown; at: number } | undefined;
+let quotaRequest: Promise<unknown> | undefined;
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 const plainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const validLabel = (value: unknown, required = false) => value === undefined ? !required : typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 80;
@@ -14,6 +23,67 @@ const validCwd = (value: unknown) => value === undefined || typeof value === 'st
 const nonEmpty = (value: unknown) => typeof value === 'string' && value.trim().length > 0;
 const quoteShell = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 type GitResult = { stdout: string; stderr: string; code: number };
+
+class FileRouteError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
+const maxFileBytes = () => {
+  const value = Number(process.env.TAUTAN_MAX_FILE_MB);
+  return Math.floor((Number.isFinite(value) && value > 0 ? value : 5) * 1024 * 1024);
+};
+const fileType = (path: string) => ({
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+}[extname(path).toLowerCase()] ?? 'text/plain; charset=utf-8');
+const fileHeaders = (path: string) => ({ 'content-type': fileType(path), 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' });
+const inside = (root: string, path: string) => {
+  const pathFromRoot = relative(root, path);
+  return pathFromRoot === '' || !isAbsolute(pathFromRoot) && !pathFromRoot.startsWith('..');
+};
+
+async function localFile(cwd: string, path: string, cap: number): Promise<Response> {
+  let root: string; let target: string;
+  try { root = await realpath(cwd); } catch { throw new FileRouteError(404, 'not found'); }
+  try { target = await realpath(path); } catch { throw new FileRouteError(404, 'not found'); }
+  if (!inside(root, target)) throw new FileRouteError(403, 'escape');
+  let info: Awaited<ReturnType<typeof stat>>;
+  try { info = await stat(target); } catch { throw new FileRouteError(404, 'not found'); }
+  // A directory has no file payload for the viewer.
+  if (!info.isFile()) throw new FileRouteError(415, 'not a file');
+  if (info.size > cap) throw new FileRouteError(413, 'too large');
+  const body = await Bun.file(target).slice(0, cap + 1).arrayBuffer();
+  if (body.byteLength > cap) throw new FileRouteError(413, 'too large');
+  return new Response(body, { headers: fileHeaders(path) });
+}
+
+function remoteFileCommand(cwd: string, path: string, cap: number): string {
+  return `command -v realpath >/dev/null 2>&1 && command -v stat >/dev/null 2>&1 && command -v head >/dev/null 2>&1 || exit 15; [ -d ${quoteShell(cwd)} ] || exit 10; [ -e ${quoteShell(path)} ] || exit 11; cwd=$(realpath -- ${quoteShell(cwd)}) || exit 10; file=$(realpath -- ${quoteShell(path)}) || exit 10; if [ "$cwd" != / ]; then case "$file" in "$cwd"|"$cwd"/*) ;; *) exit 12;; esac; fi; if [ -d "$file" ]; then exit 13; fi; [ -f "$file" ] || exit 13; size=$(stat -c %s -- "$file" 2>/dev/null || stat -f %z -- "$file") || exit 15; case "$size" in ''|*[!0-9]*) exit 15;; esac; [ "$size" -le ${cap} ] || exit 14; head -c ${cap} -- "$file" || exit 15`;
+}
+
+async function remoteFile(cwd: string, path: string, cap: number, target: string): Promise<Response> {
+  const child = Bun.spawn(['ssh', '-o', 'BatchMode=yes', target, '--', remoteFileCommand(cwd, path, cap)], { stdout: 'pipe', stderr: 'pipe' });
+  const [body, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited]);
+  if (code === 10 || code === 12) throw new FileRouteError(403, 'escape');
+  if (code === 11) throw new FileRouteError(404, 'not found');
+  if (code === 13) throw new FileRouteError(415, 'not a file');
+  if (code === 14) throw new FileRouteError(413, 'too large');
+  if (code === 15) throw new FileRouteError(502, 'remote');
+  if (code) throw new Error(stderr.trim().split(/\r?\n/).filter(Boolean).at(-1) || 'ssh failed');
+  return new Response(body, { headers: fileHeaders(path) });
+}
+
+async function quotaReport(): Promise<unknown> {
+  if (quotaCache && Date.now() - quotaCache.at < QUOTA_TTL) return quotaCache.value;
+  if (!quotaRequest) quotaRequest = (async () => {
+    const child = Bun.spawn(['quota-axi', '--json'], { stdout: 'pipe', stderr: 'ignore' });
+    const [stdout, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    if (code) throw new Error('unavailable');
+    const value: unknown = JSON.parse(stdout);
+    quotaCache = { value, at: Date.now() };
+    return value;
+  })().finally(() => { quotaRequest = undefined; });
+  return quotaRequest;
+}
 
 async function runGit(cwd: string, args: string[], target?: string): Promise<GitResult> {
   const command = target
@@ -48,12 +118,18 @@ export function startHttp(hub: Hub, opts: {
 }): ReturnType<typeof Bun.serve> {
   const root = resolve(opts.staticDir);
   const retries = new Set<string>(); let probes = 0;
+  const leases = new LeaseHolder(hub);
+  const chats = new ChatLens(hub);
+  hub.onClose?.(() => { void leases.releaseAll(); chats.close(); });
   return Bun.serve({
     port: opts.port, hostname: opts.hostname,
     // SSE streams idle between pings; adapter has its own 10 s RPC timeout
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
+      // A Funnel publish puts the Hub on the public internet, and the forward carries a real
+      // Origin, so the Origin check below cannot see it. Refuse before anything else.
+      if (req.headers.has('Tailscale-Funnel-Request')) return json({ error: 'funnel' }, 403);
       if (hub.trustedUser && req.headers.get('tailscale-user-login') !== hub.trustedUser) return json({ error: 'login' }, 403);
       if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
         const origin = req.headers.get('origin');
@@ -132,7 +208,14 @@ export function startHttp(hub: Hub, opts: {
           if (!nonEmpty(body.muxKey) || !validLabel(body.label, true) || targetKeys.length !== 1 || !nonEmpty(body[targetKeys[0]!])) return json({ error: 'body' }, 400);
           await hub.rename(body as unknown as RenameBody); return new Response(null, { status: 204 });
         }
-        if (req.method === 'GET' && url.pathname === '/api/settings') return json({ ...hub.settings(), login: req.headers.get('tailscale-user-login') ?? undefined });
+        if (req.method === 'GET' && url.pathname === '/api/settings/quota') {
+          try { return json(await quotaReport()); }
+          catch { return json({ error: 'unavailable' }, 503); }
+        }
+        if (req.method === 'GET' && url.pathname === '/api/settings') return json({
+          ...hub.settings(), login: req.headers.get('tailscale-user-login') ?? undefined,
+          version: { tautan: tautanVersion, herdr: await hub.herdrVersions() },
+        });
         if (req.method === 'PUT' && url.pathname === '/api/settings') {
           let body: SettingsBody;
           try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
@@ -213,18 +296,73 @@ export function startHttp(hub: Hub, opts: {
           const stream = new ReadableStream<Uint8Array>({
             async start(controller) {
               let closed = false;
+              // A dead client shows up as an enqueue throw, not as an abort: on Bun the
+              // request signal aborts as soon as the streaming response is returned, so it
+              // can never be the disconnect signal (every stream unsubscribed at once —
+              // the client got the initial state and nothing after it).
               const send = (event: string, value: unknown) => {
-                if (!closed) controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`));
+                if (closed) return;
+                try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`)); }
+                catch { cleanup(); }
               };
               send('state', await hub.state());
               const unsubscribe = hub.subscribe({ paneKey, mode, onState: state => send('state', state), onScreen: screen => send('screen', screen) });
-              const ping = setInterval(() => { if (!closed) controller.enqueue(encoder.encode(': ping\n\n')); }, 25_000);
+              const ping = setInterval(() => { if (!closed) { try { controller.enqueue(encoder.encode(': ping\n\n')); } catch { cleanup(); } }  }, 25_000);
               cleanup = () => { if (closed) return; closed = true; unsubscribe(); clearInterval(ping); try { controller.close(); } catch {} };
-              req.signal.addEventListener('abort', cleanup, { once: true });
             },
             cancel() { cleanup(); },
           });
           return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' } });
+        }
+        const chatMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat$/);
+        if (req.method === 'GET' && chatMatch) {
+          let key: string;
+          try { key = decodeURIComponent(chatMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
+          if (hub.resolvePane(key)?.entry.mux.kind !== 'herdr') return json({ error: 'unsupported' }, 501);
+          const chat = await chats.query(key);
+          return chat ? json(chat) : json({ error: 'no-session' }, 404);
+        }
+        const fileMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/file$/);
+        if (req.method === 'GET' && fileMatch) {
+          let key: string;
+          try { key = decodeURIComponent(fileMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          const path = url.searchParams.get('path');
+          if (!path) return json({ error: 'path' }, 400);
+          const pane = (await hub.state()).panes.find(item => item.key === key);
+          if (!pane) return json({ error: 'pane not found' }, 404);
+          if (!pane.cwd) return json({ error: 'cwd' }, 409);
+          const candidate = resolve(pane.cwd, path); const host = hub.host(await hub.paneHost(key));
+          return host?.target
+            ? await remoteFile(pane.cwd, candidate, maxFileBytes(), host.target)
+            : await localFile(pane.cwd, candidate, maxFileBytes());
+        }
+        const leaseMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/lease$/);
+        if (req.method === 'POST' && leaseMatch) {
+          let key: string;
+          try { key = decodeURIComponent(leaseMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
+          let body: { cols?: unknown; rows?: unknown; takeover?: unknown };
+          try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
+          const cols = Number(body.cols); const rows = Number(body.rows);
+          if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || cols > 500 || rows < 4 || rows > 200)
+            return json({ error: 'geometry' }, 400);
+          try {
+            await leases.acquire(key, { cols, rows, takeover: body.takeover === true });
+            return new Response(null, { status: 204 });
+          } catch (error) {
+            if (error instanceof LeaseError) {
+              const status = { 'slot-held': 409, 'not-herdr': 501, 'not-found': 404, 'lease-failed': 502 }[error.code]!;
+              return json({ error: error.code }, status);
+            }
+            throw error;
+          }
+        }
+        if (req.method === 'DELETE' && leaseMatch) {
+          let key: string;
+          try { key = decodeURIComponent(leaseMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          await leases.release(key);
+          return new Response(null, { status: 204 });
         }
         const mouseMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/mouse$/);
         if (req.method === 'POST' && mouseMatch) {
@@ -270,13 +408,26 @@ export function startHttp(hub: Hub, opts: {
             const mode: ScreenMode = url.searchParams.get('mode') === 'recent' ? 'recent' : 'visible';
             return json(await hub.read(key, mode));
           }
-          if (req.method === 'GET' && action === 'explain') return json(await hub.explain(key));
+          if (req.method === 'GET' && action === 'explain') {
+            const explain = await hub.explain(key);
+            if (!explain) return json(null);
+            return json({ ...explain, promptId: await promptId(explain, await hub.read(key, 'visible')) });
+          }
           if (req.method === 'POST' && action === 'input') {
             let body: InputBody;
             try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
             if (typeof body !== 'object' || body === null || Array.isArray(body) || body.text !== undefined && typeof body.text !== 'string' ||
               body.keys !== undefined && (!Array.isArray(body.keys) || body.keys.some(key => typeof key !== 'string')) ||
-              body.raw !== undefined && typeof body.raw !== 'string') return json({ error: 'body' }, 400);
+              body.raw !== undefined && typeof body.raw !== 'string' ||
+              body.promptId !== undefined && typeof body.promptId !== 'string') return json({ error: 'body' }, 400);
+            // The card draws from one prompt; an id it carried must still name the prompt on
+            // screen, or the answer lands in whatever moved on. No id: the key bar and the
+            // quick replies, unchanged.
+            if (body.promptId !== undefined) {
+              const explain = await hub.explain(key);
+              const id = explain ? await promptId(explain, await hub.read(key, 'visible')) : undefined;
+              if (id !== body.promptId) return json({ error: 'prompt_changed' }, 409);
+            }
             await hub.input(key, body); return new Response(null, { status: 204 });
           }
           if (req.method === 'POST' && action === 'seen') {
@@ -300,6 +451,7 @@ export function startHttp(hub: Hub, opts: {
         if (file.type) headers.set('content-type', file.type);
         return new Response(req.method === 'HEAD' ? null : file, { headers });
       } catch (error) {
+        if (error instanceof FileRouteError) return json({ error: error.message }, error.status);
         const message = errorMessage(error);
         if (message === 'pane not found' || message === 'mux not found' || message === 'workspace not found' || message === 'tab not found') return json({ error: message }, 404);
         if (message === 'unsupported') return json({ error: message }, 501);

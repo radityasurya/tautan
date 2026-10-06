@@ -26,7 +26,7 @@ flowchart LR
 
 | Boundary | What enforces it |
 |---|---|
-| Internet → tailnet | Tailscale. The Hub is never reachable from the internet. |
+| Internet → tailnet | Tailscale. The Hub is never reachable from the internet. A `tailscale funnel` publish is refused: Funnel forwards carry `Tailscale-Funnel-Request`, and the Hub answers 403 `{error: 'funnel'}` before every other check — the Origin check cannot see a Funnel request, because it carries a real Origin. |
 | Tailnet → Hub | `tailscale serve` (HTTPS, identity header). The Hub itself listens on loopback only. |
 | Phone → Hub writes | `Origin` must match `Host` on every non-GET request (blocks DNS rebinding and cross-site posts). Optional trusted login: `Tailscale-User-Login` must equal the configured user. |
 | Hub → multiplexers | Unix socket file permissions. herdr has no authentication of its own. |
@@ -129,6 +129,10 @@ sequence — and it is also why only the Hub builds those bytes.
   one is set. Nothing new is exposed: a phone that can type into a Pane can already do
   everything the keys do.
 
+## File viewer
+
+The Hub serves files below a Pane's cwd only, after resolving symlinks, capped by `TAUTAN_MAX_FILE_MB` (5 MiB by default). SVG is served as text and every response is no-store. A tailnet neighbour without a trusted login can read these files, under the same trust model as Screens.
+
 ## Diff review
 
 `GET /api/workspaces/:key/diff` runs `git diff` in that Workspace's cwd. The
@@ -171,7 +175,8 @@ cleanup attempt.
 1. Run the Hub on the machine you already trust with SSH access to the others.
 2. Set the trusted login in Settings if more than one person is on the tailnet.
 3. Use Tailscale ACLs so only your phone can reach the Hub Host's port.
-4. Keep `tailscale serve` as the only way in; never expose 7700 directly.
+4. Keep `tailscale serve` as the only way in; never expose 7700 directly, and never
+   `tailscale funnel` — the Hub refuses Funnel requests outright.
 
 ## Reporting a vulnerability
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { FocusEvent, ReactNode } from 'react';
 
 import { Toggle } from './hosts.tsx';
 import { AlertDialog, Button, Caption, Chip, Sheet as KitSheet, TextInput, usePal } from './halaska-kit';
@@ -116,6 +116,20 @@ const WHY: Record<string, string> = {
   login: 'That login is not the one this request carries',
 };
 const why = (code: string) => WHY[code] ?? `That did not work · ${code}`;
+
+const WORKTREE_ADJECTIVES = ['bold', 'bright', 'calm', 'clever', 'quick', 'solar', 'steady', 'swift'];
+const WORKTREE_NOUNS = ['badger', 'comet', 'falcon', 'maple', 'otter', 'river', 'sable', 'willow'];
+
+function suggestedWorktreeBranch() {
+  const random = crypto.getRandomValues(new Uint16Array(3));
+  return `worktree/${WORKTREE_ADJECTIVES[random[0]! % WORKTREE_ADJECTIVES.length]!}-${WORKTREE_NOUNS[random[1]! % WORKTREE_NOUNS.length]!}-${random[2]!.toString(16).padStart(4, '0')}`;
+}
+
+function workspaceLabel(branch: string) {
+  const name = branch.startsWith('worktree/') ? branch.slice('worktree/'.length) : branch;
+  const label = name.replaceAll('-', ' ');
+  return label ? `${label[0]!.toUpperCase()}${label.slice(1)}` : 'Optional';
+}
 
 export function ErrorLine({ error, busy, onRetry }: { error: string; busy: boolean; onRetry: () => void }) {
   return (
@@ -274,12 +288,14 @@ export function NewWorkspaceSheet({
   const [label, setLabel] = useState('');
   const [branch, setBranch] = useState('');
   const [worktree, setWorktree] = useState(false);
+  const [selectSuggestedBranch, setSelectSuggestedBranch] = useState(false);
   useEffect(() => {
     if (open) {
       setDir(cwd ?? '');
       setLabel('');
       setBranch('');
       setWorktree(false);
+      setSelectSuggestedBranch(false);
     }
   }, [open, cwd]);
 
@@ -287,10 +303,33 @@ export function NewWorkspaceSheet({
     <Sheet open={open} title="New Workspace" onClose={onClose}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <TextInput value={dir} onChange={setDir} label="Directory" placeholder="/home/user/projects/tautan" />
-        <TextInput value={label} onChange={setLabel} label="Label" placeholder="Optional" />
+        <TextInput value={label} onChange={setLabel} label="Label" placeholder={workspaceLabel(branch)} />
         {/* A branch only means something with the switch on, so the field arrives with it. */}
-        <Toggle label="As git worktree" hint="Checks the branch out beside the directory" checked={worktree} onChange={setWorktree} />
-        {worktree && <TextInput value={branch} onChange={setBranch} label="Branch" placeholder="feature/tabs" />}
+        <Toggle
+          label="As git worktree"
+          hint="Checks the branch out beside the directory"
+          checked={worktree}
+          onChange={(next) => {
+            if (next && !branch) {
+              setBranch(suggestedWorktreeBranch());
+              setSelectSuggestedBranch(true);
+            }
+            setWorktree(next);
+          }}
+        />
+        {worktree && (
+          <TextInput
+            value={branch}
+            onChange={setBranch}
+            label="Branch"
+            placeholder="feature/tabs"
+            autoFocus={selectSuggestedBranch}
+            onFocus={(event: FocusEvent<HTMLInputElement>) => {
+              if (selectSuggestedBranch) event.currentTarget.select();
+              setSelectSuggestedBranch(false);
+            }}
+          />
+        )}
         {error && <ErrorLine error={error} busy={busy} onRetry={retry} />}
         <Button
           variant="primary"
@@ -338,34 +377,81 @@ export function RenameSheet({
   );
 }
 
-/** A destructive confirm: the kit AlertDialog, which no swipe can dismiss. The write
- *  runs on Confirm; the dialog closes either way, and a failed close leaves the row in
- *  place, so acting again is the retry. */
+/** A destructive confirm: the kit AlertDialog, which no swipe can dismiss. A refused
+ *  write briefly closes it, then reopens with the Hub's reason and the right retry. */
 export function ConfirmCloseSheet({
   open,
   onClose,
   onConfirm,
   title,
   kind = 'Pane',
+  cost,
 }: {
   open: boolean;
   onClose: () => void;
   onConfirm: Submit<void>;
   title: string;
-  kind?: 'Pane' | 'Workspace';
+  kind?: 'Pane' | 'Tab' | 'Workspace';
+  cost?: string;
 }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [overruled, setOverruled] = useState(false);
+  const pending = useRef(false);
+  const gen = useRef(0);
+  useEffect(() => {
+    if (!open) {
+      gen.current++;
+      pending.current = false;
+      setBusy(false);
+      setError('');
+      setOverruled(false);
+    }
+  }, [open]);
+
+  const recoverable = /dirty_worktree_requires_force|dirty (?:checkout|worktree)|modified or untracked files|uncommitted (?:changes|files)|agents?.*\brunning\b|\brunning agents?\b/i.test(error);
+  const consequence =
+    kind === 'Workspace'
+      ? 'The Workspace and everything running in it stops.'
+      : kind === 'Tab'
+        ? 'Every Pane in the Tab stops.'
+        : 'The Pane and anything running in it stops.';
+  const submit = (anyway: boolean) => {
+    const at = gen.current;
+    pending.current = true;
+    setBusy(true);
+    setError('');
+    if (anyway) setOverruled(true);
+    Promise.resolve()
+      .then(onConfirm)
+      .then(
+        () => {
+          if (gen.current !== at) return;
+          pending.current = false;
+          setBusy(false);
+          onClose();
+        },
+        (e: unknown) => {
+          if (gen.current !== at) return;
+          pending.current = false;
+          setBusy(false);
+          setError((e instanceof Error && e.message) || 'network');
+        },
+      );
+  };
+
   return (
     <AlertDialog
-      open={open}
-      onClose={onClose}
+      open={open && !busy}
+      onClose={() => {
+        if (!pending.current) onClose();
+      }}
       variant="danger"
       title={`Close ${kind}`}
-      description={`Close “${title}”? ${
-        kind === 'Workspace' ? 'The Workspace and everything running in it stops.' : 'The Pane and anything running in it stops.'
-      }`}
-      confirmLabel="Close"
+      description={error || `Close “${title}”? ${cost || consequence}`}
+      confirmLabel={error ? (recoverable && !overruled ? 'Close anyway' : 'Retry') : 'Close'}
       cancelLabel="Cancel"
-      onConfirm={() => void onConfirm()}
+      onConfirm={() => submit(recoverable && !overruled)}
     />
   );
 }
