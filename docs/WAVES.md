@@ -475,6 +475,126 @@ transcript.
 
 ---
 
+# Wave 10 — One look on desktop and phone
+
+**Phases 19–22. Goal:** build the recommended variant of every screen on the design canvas,
+so the desktop and the phone share one set of parts.
+
+**Source:** the canvas "tautan screens" (claude.ai/artifact/CKCZc8dyzhzzeKkisc3LjW),
+2026-10-06. Each feature row there has a Desktop board and a Mobile board. This wave builds
+the variant marked "recommended" on each board, and nothing else.
+
+**Why now:** on a desktop the Pane is a phone column in the middle of the window, and on a
+phone the Pane header fits six controls into 390 px. Both look broken before any feature
+work can land.
+
+**How it is cut.** Four phases, one after another. Each phase ships alone and keeps the app
+usable. Phase 19 adds the desktop frame. The other phases fill it, and the same component
+renders at both widths, so the desktop and the phone cannot drift apart.
+
+## The parts and their recommended variant
+
+| Feature | Desktop (≥ 1024 px) | Phone (< 1024 px) |
+|---|---|---|
+| Frame | Pane list as a sidebar beside the open Pane | One screen at a time, as today |
+| Header | A: path, title, Status chip, Chat/Screen, Read aloud, ⋯. C when blocked | A: Status under the title, lens as two icons, Read aloud in ⋯. C when blocked |
+| Tabs | A: browser tabs with close, Pane count, `⌘1–9` | A: underline, + at the end, Pane chips only for a split Tab. C (picker) past five Tabs |
+| Composer | A: Claude Code box, suggestions above, toolbar inside. D when blocked. E for a shell | A: keys row, replies, input. B when blocked. C when keys are open |
+| Chat / Screen | Same component as the phone, wider measure | Chat: bubbles and tool cards. Screen: the grid |
+| Pane list | A: sidebar, Needs you pinned with a Yes button | A: grouped by Workspace, Needs you card with Yes / No / Open |
+| Settings | Section nav on the left, content on the right | Grouped cards. Hosts first. Bottom bar has two tabs |
+| Hosts | Settings › Hosts: one card per Host, a Mux × Workspace table | A: Host rows in Settings. B: Host detail with each Mux and its Workspaces |
+
+## Lanes
+
+| # | Lane | Specialist | Parallel |
+|---|---|---|---|
+| 10.1 | Desktop frame: breakpoint, sidebar, Settings nav | `frontend` | first |
+| 10.2 | Header A and C, both widths | `frontend` | after 10.1 |
+| 10.3 | Tabs A, both widths, and the phone picker | `frontend` | with 10.2 |
+| 10.4 | Composer A, blocked, shell, keys grid | `frontend` | after 10.2 |
+| 10.5 | Toolbar data: mode, model, context from the Screen | `glm-run` | with 10.4 |
+| 10.6 | Pane list A, both widths | `frontend` | after 10.1 |
+| 10.7 | Settings with Hosts, Mux and Workspace detail | `frontend` | after 10.1 |
+| 10.8 | Split Panes side by side on desktop | `deep-reasoner`, then `glm-run` and `frontend` | last, optional |
+| 10.9 | Drive both widths, then update `docs/UI.md` and `docs/DESIGN.md` | `qa`, then `scribe` | after each phase |
+
+**10.1 brief.** One breakpoint: `lg` (1024 px). Below it nothing changes. At `lg` and up,
+`web/app.tsx` renders the Pane list in a 300 px sidebar beside the route. The sidebar is the
+same `Home` list in a compact mode, not a second list. The Pane drops its `max-w-2xl`
+column and fills the space. `⌘B` hides the sidebar. Settings and Hosts get a left section
+nav at `lg`. The bottom tab bar shows only below `lg`. Keep one `EventSource`: the frame
+must not open a second one.
+
+**10.2 brief.** One `PaneHeader` in `web/header.tsx` with two layouts. On the phone, the
+title button opens Switch and shows `● status · agent · tab ⌄` under the title. The lens
+becomes two 36 px icon buttons. Read aloud moves into the ⋯ sheet. At `lg`, show the
+`host / workspace / tab` path above the title, the Status chip, the labelled lens and Read
+aloud. When the Status is `blocked`, draw a 2 px warning line under the bar. On the phone,
+a **Review** button replaces the lens and scrolls to the blocked card. On desktop, the
+header shows the command and the Yes and No choices with their keys. "Always" stays in the
+card only.
+
+**10.3 brief.** Move + after the last Tab on the phone. Show the Pane chips row only when
+the Tab has more than one Pane. That is how the strip works today; keep it. Past five Tabs,
+the phone shows a picker button: `● label · Tab n of m · k blocked ⌄`, with one dot per Tab
+under it. The picker opens the existing Switch drawer at Tab level. At `lg`, draw browser
+tabs: a 2 px accent top edge on the open Tab, a close button on hover and on the open Tab,
+and the Pane count. `⌘1–9` opens a Tab and `⌘T` opens New Tab. Tab close keeps the
+confirm rule from Phase 14.
+
+**10.4 brief.** One `Composer` component, moved out of `web/pane.tsx`. Phone layout: the
+keys toggle, `esc` and `^C`, a divider, then quick replies, then the input with attach and
+mic. Mic becomes Send when the input has text. Desktop layout: suggestion chips above a
+bordered box with a two-line textarea. The toolbar inside the box holds attach, `/`, `@`,
+the mode chip, `esc`, `^C`, context, model, mic and Send. Below the box, show the shortcut
+line. `/` and `@` type that character into the input and send nothing. The Agent's own TUI
+shows its own menu, so tautan adds no command palette (see "What this plan does not do").
+Blocked: the existing blocked card takes the suggestions' place. On desktop its choices go
+in one row with `1 2 3` key labels. On the phone they are full-width 44 px rows. A Pane
+with no Agent shows a `$` prompt in mono, keys first, and recent commands as chips. The
+open keys preset is a fixed six-column grid, not a scroller.
+
+**10.5 brief.** The mode chip, the model and the context percentage come from the Screen.
+Do not ask the Agent. Add a recogniser per App profile to `web/profiles.ts`. For Claude Code,
+read the `⏵⏵ … (shift+tab to cycle)` line and the status line. When a value is not on the
+Screen, hide its toolbar item. Never show a guess. Tapping the mode chip sends `shift+tab`.
+Leave behind unit tests on recorded Screens in `test/`.
+
+**10.6 brief.** Home keeps its Needs you and Running sections. They stay pinned. Change the
+blocked row into a card: the Agent, the Workspace and Tab, the command line from Explain,
+and Yes / No / Open. Yes and No send the same keys as the blocked card, through the same
+stale-prompt `409` guard. At `lg`, the sidebar list uses 36 px rows and the Needs you card
+has only Yes. No answers the prompt in the sidebar.
+
+**10.7 brief.** The phone bottom bar goes from three tabs to two: Panes and Settings. Hosts
+moves to the top of Settings. Each row shows the Host, its Mux kinds and versions, and its
+Workspace count. An unreachable Host shows its error and the retry time. A row opens Host
+detail at `#/hosts/<id>`, which lists each Mux with its socket, then its Workspaces with
+their Tab and Pane counts and Status. Add and Edit Host reuse the existing sheet in
+`web/hosts.tsx`. At `lg`, Settings › Hosts shows one card per Host and a Mux × Workspace
+table that scrolls sideways when narrow. `#/hosts` still opens Hosts, so saved links keep
+working.
+
+**10.8 brief.** Today the app holds one `EventSource` and watches one Pane. Showing a split
+Tab side by side means watching more than one Pane. Decide first, and record it: either the
+SSE stream carries a set of watched Panes, or the extra Panes render the last snapshot from
+the state stream with no live poll. Only then build it. Until this lane lands, desktop
+shows the Pane chips row, the same as the phone. Ship Phases 19–22 without it.
+
+**10.9 brief.** Drive the built app at 390 × 844 and at 1440 × 900 with `chrome-devtools-axi`
+on a throwaway herdr, never the live socket. Check each board against the canvas: same
+radii, tokens, row heights, and the Status colours. Take a screenshot per screen per
+width. Then rewrite the affected sections of `docs/UI.md` and add the canvas link to
+`docs/DESIGN.md` under "How to update the mockups".
+
+**Verify:** open the same blocked agent Pane on the phone and in a desktop browser. On both,
+the header reads `needs you`, the Tab strip shows the Tab's Status dot, and Yes answers from
+the card, from the header on desktop, and from the Pane list. Resize the desktop window
+below 1024 px: the sidebar goes away and the phone layout takes over with no reload.
+
+---
+
 ## What this plan does not do
 
 | Rejected | Why |

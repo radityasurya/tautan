@@ -387,9 +387,54 @@ Wave 9. Design: [ADR 0005](./adr/0005-chat-lens-second-view.md).
 Verify: on a Host running herdr 0.9.3+, open an agent Pane, switch to Chat — the turns
 render; on 0.9.2 the switch falls back to the Screen with no error surface.
 
+## Phase 19 — the desktop frame
+
+Wave 10. Design: the canvas linked in [WAVES.md](./WAVES.md#wave-10--one-look-on-desktop-and-phone).
+
+- [ ] At 1024 px and up, the Pane list is a sidebar beside the open Pane, `⌘B` hides it,
+      and the Pane fills the space — `web/app.tsx`, `web/home.tsx`, `web/pane.tsx`
+- [ ] Settings and Hosts get a left section nav at the same width — `web/settings.tsx`,
+      `web/hosts.tsx`
+
+Verify: open a Pane in a desktop browser — the list stays beside it; shrink the window below
+1024 px and the phone layout returns with no reload.
+
+## Phase 20 — header and Tabs
+
+- [ ] One Pane header for both widths: Status under the title on the phone, path and
+      Status chip on desktop, a warning line and a quick answer while blocked —
+      `web/header.tsx`, `web/pane.tsx`
+- [ ] Tabs: underline strip with + at the end on the phone, a picker past five Tabs;
+      browser tabs with close and `⌘1–9` on desktop — `web/pane.tsx`
+
+Verify: on the phone, the header shows title, Status, lens and ⋯ with no truncated Status;
+on a blocked Pane, Review scrolls to the card. On desktop, `⌘2` opens the second Tab.
+
+## Phase 21 — the composer
+
+- [ ] One composer component: phone keys row and replies; desktop box with suggestions
+      above and the toolbar inside; blocked, shell and keys-grid states — `web/composer.tsx`,
+      `web/pane.tsx`
+- [ ] Mode, model and context read from the Screen per App profile, hidden when absent —
+      `web/profiles.ts`, `test/`
+
+Verify: on a Claude Code Pane on desktop, tap the mode chip — the Agent cycles its mode and
+the chip follows. On a shell Pane, the `$` prompt and history chips show instead.
+
+## Phase 22 — Pane list and Settings
+
+- [ ] Needs you card with Yes / No / Open on the phone and Yes in the desktop sidebar,
+      behind the same stale-prompt guard — `web/home.tsx`
+- [ ] Hosts move into Settings; Host detail lists each Mux and its Workspaces; the bottom
+      bar has two tabs — `web/settings.tsx`, `web/hosts.tsx`, `web/app.tsx`
+
+Verify: answer a blocked prompt from the Pane list without opening the Pane. Open Settings,
+tap a Host, and see each Mux with its Workspaces and their Status.
+
 ## Later (explicitly out of v1)
 
 - Split / move / layout editing
+- Split Panes side by side on desktop (Wave 10, lane 10.8) until the SSE stream can watch more than one Pane
 - Per-agent prompt grammars (native widgets for select lists)
 - Passcode or SSO in front of the Hub
 - Per-Workspace push muting; attachment pruning
