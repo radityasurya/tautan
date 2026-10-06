@@ -6,7 +6,7 @@ import { boxInner, classify, continues, fillOf, hangOf, splitAt, tuiScreen, type
 import type {
   NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
-import { AffordanceLayer, useCell, useMouseForward } from './affordances.tsx';
+import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordances.tsx';
 
 import { api, haptic, navigate, opensWith, post, reducedMotion, useDesktop } from './app.tsx';
 import { yesNoKeys } from '../shared/blocked.ts';
@@ -531,13 +531,44 @@ function lastBlock(text?: string): string {
   return blocks.at(-1) ?? '';
 }
 
-export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state: State | null; screen: ScreenEvent | null }) {
-  const pane = state?.panes.find((p) => p.key === paneKey);
-  const ws = state?.workspaces.find((w) => w.muxKey === pane?.muxKey && w.id === pane?.workspaceId);
-  const mux = state?.muxes.find((m) => m.key === pane?.muxKey);
-  const host = state?.hosts.find((h) => h.id === mux?.hostId);
-  /** Only herdr writes. tmux answers 501, so New Tab, Rename and Close are not offered. */
-  const writable = mux?.kind === 'herdr';
+/** The Wrap pref for one Pane kind: an agent defaults to Wrap, a shell to auto — line output
+ *  wraps, a full-screen program (htop, k9s, vim) keeps the grid, where the columns are the
+ *  layout. An explicit on or off wins over auto. Remembered per kind, not per Pane. */
+function readWrapChoice(kind: 'agent' | 'shell'): WrapChoice {
+  if (kind === 'agent') return localStorage.getItem('tautan.wrap.agent') === 'off' ? 'off' : 'on';
+  const shell = localStorage.getItem('tautan.wrap.shell');
+  return shell === 'on' || shell === 'off' ? shell : 'auto';
+}
+
+/** What PaneGrid last measured, for the chrome that stays in PaneScreen: the ⋯ menu's Phone
+ *  width lease (cell, room) and the strip's mouse chip and the menu's mouse line
+ *  (effectiveWrap). */
+interface GridMeasure {
+  cell: Cell;
+  room: number;
+  effectiveWrap: boolean;
+}
+
+/**
+ * One Pane's Screen grid (ADR 0003): the wrap/fit/mixed render, the scroller, the Affordance
+ * overlay and mouse forwarding, measured against its own frame. The Chat lens and every
+ * per-route control stay in PaneScreen. `interactive: false` is the split's unfocused cell
+ * (lane 10.8c): view-only, no Affordances, no mouse reports. The wrap, fit and mouse prefs
+ * are read from localStorage on render, so the ⋯ menu's toggles land by re-render, not props.
+ */
+function PaneGrid({
+  paneKey,
+  pane,
+  screen,
+  interactive = true,
+  onMeasure,
+}: {
+  paneKey: string;
+  pane?: StatePane;
+  screen: ScreenEvent | null;
+  interactive?: boolean;
+  onMeasure?: (measure: GridMeasure) => void;
+}) {
   // A switch keeps the last Pane's Screen on the grid until this Pane's first `screen`
   // event, so the grid swaps rather than blanks. After HOLD_MS with nothing, the skeleton.
   const current = screen?.key === paneKey ? screen : null;
@@ -552,60 +583,15 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const shown = current ?? held;
   const lines = useMemo(() => (shown ? parseAnsi(shown.text) : []), [shown]);
 
-  // Wrap is the default reading mode for an agent. A shell defaults to auto: line output
-  // wraps, a full-screen program (htop, k9s, vim) keeps the grid, where the columns are the
-  // layout. An explicit on or off wins over auto. Remembered per kind, not per Pane.
   const kind = pane?.agent ? 'agent' : 'shell';
-  const [wraps, setWraps] = useState(() => {
-    const shell = localStorage.getItem('tautan.wrap.shell');
-    return {
-      agent: localStorage.getItem('tautan.wrap.agent') === 'off' ? 'off' : 'on',
-      shell: shell === 'on' || shell === 'off' ? shell : 'auto',
-    } as Record<'agent' | 'shell', WrapChoice>;
-  });
-  const wrapChoice = wraps[kind];
-  const setWrap = (v: WrapChoice) => {
-    if (v === 'auto') localStorage.removeItem(`tautan.wrap.${kind}`);
-    else localStorage.setItem(`tautan.wrap.${kind}`, v);
-    setWraps((w) => ({ ...w, [kind]: v }));
-  };
+  const wrapChoice = readWrapChoice(kind);
   // Fit is off until the user asks for it: the column grows to the grid's own width on a
   // desktop, so scaling is a phone answer, not the default. The scale is min(1, …), so a
   // grid that already fits is left alone even then.
-  const [fit, setFitState] = useState(() => localStorage.getItem('tautan.fit') === 'on');
-  const setFit = (v: boolean) => { localStorage.setItem('tautan.fit', v ? 'on' : 'off'); setFitState(v); };
+  const fit = localStorage.getItem('tautan.fit') === 'on';
   const [scale, setScale] = useState(1);
   const [fade, setFade] = useState(false);
   const [fresh, setFresh] = useState(false);
-  const [explain, setExplain] = useState<ExplainResponse | null>(null);
-  const [showSwitch, setShowSwitch] = useState(() => opensWith('switch'));
-  const [showMore, setShowMore] = useState(() => opensWith('more'));
-  const [showNewTab, setShowNewTab] = useState(() => opensWith('newtab'));
-  // Off means the agent's own 256-colour and truecolour values render as sent.
-  const [themedOn, setThemedOn] = useState(themedColors);
-  const [rename, setRename] = useState(false);
-  const [confirmClose, setConfirmClose] = useState(false);
-  const [tabMenu, setTabMenu] = useState<string | null>(null);
-  const [tabRename, setTabRename] = useState<string | null>(null);
-  const [tabClose, setTabClose] = useState<string | null>(null);
-  const desktop = useDesktop();
-  /** The Tab picker opens Switch at Tab level; the header's trigger opens it at Pane level. */
-  const [switchTabs, setSwitchTabs] = useState(false);
-  /** The prompt id whose answer came back 409, from the card or the header alike. */
-  const [stalePrompt, setStalePrompt] = useState<string | null>(null);
-  /** The header's Yes or No is on its way: both stay disabled, so one tap is one answer. */
-  const [answering, setAnswering] = useState(false);
-  const card = useRef<HTMLDivElement>(null);
-  const [lensChoice, setLensChoice] = useState<{ paneKey: string; mode: LensMode }>(() => ({
-    paneKey,
-    mode: readLens(paneKey),
-  }));
-  const lens = lensChoice.paneKey === paneKey ? lensChoice.mode : readLens(paneKey);
-  const setLens = useCallback((mode: LensMode) => {
-    writeLens(paneKey, mode);
-    setLensChoice({ paneKey, mode });
-  }, [paneKey]);
-  const showScreen = useCallback(() => setLens('screen'), [setLens]);
 
   // Keep the view pinned to the bottom unless the user scrolled up.
   const box = useRef<HTMLDivElement>(null);
@@ -653,24 +639,6 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const profile = useMemo(() => profileFor(pane), [pane?.agent, pane?.command]);
   const affordances = useMemo(() => findAffordances(lines, profile), [lines, profile]);
   const cell = useCell(pre, scale, fonts);
-  // ---- phone width (ADR 0004) ----
-  const [phoneWidth, setPhoneWidth] = useState(false);
-  useEffect(() => { setPhoneWidth(false); }, [paneKey]); // the Hub's reaper releases on leave
-  const togglePhoneWidth = async () => {
-    haptic();
-    if (phoneWidth) {
-      setPhoneWidth(false);
-      await fetch(`/api/panes/${encodeURIComponent(paneKey)}/lease`, { method: 'DELETE' }).catch(() => {});
-      return;
-    }
-    // This screen's own readable geometry, the same cells the grid is drawn with.
-    const cols = Math.max(10, Math.min(500, Math.floor((room || 374) / Math.max(4, cell.cw))));
-    const rows = Math.max(4, Math.min(200, Math.floor(window.innerHeight / Math.max(8, cell.rh)) - 8));
-    const response = await fetch(`/api/panes/${encodeURIComponent(paneKey)}/lease`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cols, rows }),
-    }).catch(() => null);
-    if (response?.ok) setPhoneWidth(true);
-  };
   // `room` excludes the scroller's padding, so add it back for a like-for-like grid check.
   // A held Screen has no Pane record: unknown columns stay wrapped. The room is the space
   // the scroller COULD take, not the column wrap has already shrunk it to — otherwise a
@@ -694,11 +662,10 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
       : null,
     [effectiveWrap, screenText, lines, pane?.cols],
   );
-  /** Bumped by the ⋯ switch, so the per-Pane override is re-read without a second store. */
-  const [override, setOverride] = useState(0);
-  const mouseOn = useMemo(() => mouseAllowed(paneKey, pane), [paneKey, pane?.agent, pane?.command, override]);
-  // Cell coordinates need the grid, so both mechanisms stop at Wrap.
-  const forwarding = mouseOn && !effectiveWrap;
+  const mouseOn = mouseAllowed(paneKey, pane);
+  // Cell coordinates need the grid, so both mechanisms stop at Wrap. A view-only cell sends
+  // nothing (lane 10.8c).
+  const forwarding = interactive && mouseOn && !effectiveWrap;
   /** The row window the overlay draws, in tens of rows, so scrolling repaints it rarely. */
   const [band, setBand] = useState(0);
   const mouse = useMouseForward({
@@ -723,6 +690,205 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     setScale(fit ? Math.min(1, nextRoom / el.scrollWidth) : 1);
     measure();
   }, [fit, effectiveWrap, lines, viewportW, fonts, cell.cw]);
+
+  // The grid is the only place these can be measured; the ⋯ menu and the strip live above it.
+  useEffect(() => {
+    onMeasure?.({ cell, room, effectiveWrap });
+  }, [onMeasure, cell, room, effectiveWrap]);
+
+  const skeleton = !shown && waited;
+
+  return (
+    <div ref={frame} className="relative min-h-0 flex-1">
+      <div
+        ref={box}
+        {...mouse}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          if (pinned.current) setFresh(false);
+          setBand(Math.floor(el.scrollTop / Math.max(1, cell.rh * scale) / 10));
+          measure();
+        }}
+        // Wrap fits the column, so it gets the right gutter too: a box border never meets the edge.
+        className={`h-full overflow-auto pt-1 pb-2 pl-4 lg:pr-4 ${effectiveWrap ? 'pr-4' : ''}`}
+        style={{
+          ...(fade ? { maskImage: FADE, WebkitMaskImage: FADE } : null),
+          // A vertical drag is the app's wheel while forwarding; sideways stays the
+          // scroller's, so a 120-column grid can still be read across.
+          ...(forwarding ? { touchAction: 'pan-x' as const } : null),
+        }}
+      >
+        <pre
+          ref={pre}
+          // Left-aligned on the header's gutter at every width: a grid narrower than the
+          // Pane's column starts where the Tabs do, not as a centred island.
+          className={`relative text-caption ${
+            // Wrapped text takes the column; unwrapped text keeps the grid's own width.
+            // `w-max` would be max-content, which never wraps, so Wrap needs `w-full`.
+            effectiveWrap ? 'w-full break-words whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre lg:min-w-0'
+          }`}
+          // The grid keeps tautan-box first: box-drawing and Braille come from the subset,
+          // everything else falls through to Geist Mono.
+          style={{
+            fontFamily: '"tautan-box", "Geist Mono", ui-monospace, monospace',
+            // Never reflow wider than the Pane itself (the agent wrote for `cols` columns),
+            // nor past a reading measure: a 244-column Pane on a wide desktop is ~150
+            // characters a line, too long to read.
+            maxWidth: effectiveWrap ? `min(${pane?.cols ?? WRAP_MEASURE}ch, ${WRAP_MEASURE}ch)` : undefined,
+            ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left' } : null),
+          }}
+        >
+          {effectiveWrap && kinds ? (
+            <Wrapped lines={lines} kinds={kinds.kinds} joins={kinds.joins} fills={kinds.fills} />
+          ) : (
+            lines.map((spans, i) => (
+              <Fragment key={i}>
+                {gridRuns(spans)}
+                {'\n'}
+              </Fragment>
+            ))
+          )}
+          {/* Inside the `<pre>`, so the Fit transform scales the boxes with the text. A held
+              Screen is the last Pane's, so its Affordances would type into the wrong Pane;
+              a view-only cell (lane 10.8c) draws none. */}
+          {interactive && !effectiveWrap && current && affordances.length > 0 && (
+            <AffordanceLayer
+              paneKey={paneKey}
+              list={affordances}
+              cell={cell}
+              scale={scale}
+              from={band * 10 - 10}
+              to={band * 10 + 60}
+            />
+          )}
+        </pre>
+        {skeleton && (
+          <div aria-busy aria-label="Loading screen" className="flex flex-col gap-2 pt-1 pr-4">
+            <Skeleton width="66%" height={12} />
+            <Skeleton width="100%" height={12} />
+            <Skeleton width="92%" height={12} />
+            <Skeleton width="75%" height={12} />
+          </div>
+        )}
+      </div>
+      {fresh && (
+        <button
+          type="button"
+          onClick={() => {
+            const el = box.current;
+            if (el) el.scrollTop = el.scrollHeight;
+            pinned.current = true;
+            setFresh(false);
+          }}
+          className="absolute inset-x-0 bottom-2 mx-auto flex w-max items-center gap-1.5 rounded-chip bg-elevated px-3 py-1.5 text-caption font-medium text-fg shadow-elevated"
+        >
+          <Down />
+          New output
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state: State | null; screen: ScreenEvent | null }) {
+  const pane = state?.panes.find((p) => p.key === paneKey);
+  const ws = state?.workspaces.find((w) => w.muxKey === pane?.muxKey && w.id === pane?.workspaceId);
+  const mux = state?.muxes.find((m) => m.key === pane?.muxKey);
+  const host = state?.hosts.find((h) => h.id === mux?.hostId);
+  /** Only herdr writes. tmux answers 501, so New Tab, Rename and Close are not offered. */
+  const writable = mux?.kind === 'herdr';
+  // The grid itself is PaneGrid; these lines are the chrome's own copy, because the Composer,
+  // the Chat lens and the ⋯ menu all read them here. A switch keeps the last Pane's Screen
+  // until this Pane's first `screen` event, the same hold PaneGrid holds.
+  const current = screen?.key === paneKey ? screen : null;
+  const [waited, setWaited] = useState(false);
+  useEffect(() => {
+    setWaited(false);
+    if (current) return;
+    const t = setTimeout(() => setWaited(true), HOLD_MS);
+    return () => clearTimeout(t);
+  }, [paneKey, !current]);
+  const held = !current && !waited ? screen : null;
+  const shown = current ?? held;
+  const lines = useMemo(() => (shown ? parseAnsi(shown.text) : []), [shown]);
+
+  // Wrap and Fit are PaneGrid's to apply (see readWrapChoice); the state here only drives
+  // the ⋯ menu's labels, so its toggles land by re-render.
+  const kind = pane?.agent ? 'agent' : 'shell';
+  const [wraps, setWraps] = useState(() => ({ agent: readWrapChoice('agent'), shell: readWrapChoice('shell') }));
+  const wrapChoice = wraps[kind];
+  const setWrap = (v: WrapChoice) => {
+    if (v === 'auto') localStorage.removeItem(`tautan.wrap.${kind}`);
+    else localStorage.setItem(`tautan.wrap.${kind}`, v);
+    setWraps((w) => ({ ...w, [kind]: v }));
+  };
+  const [fit, setFitState] = useState(() => localStorage.getItem('tautan.fit') === 'on');
+  const setFit = (v: boolean) => { localStorage.setItem('tautan.fit', v ? 'on' : 'off'); setFitState(v); };
+  const [explain, setExplain] = useState<ExplainResponse | null>(null);
+  const [showSwitch, setShowSwitch] = useState(() => opensWith('switch'));
+  const [showMore, setShowMore] = useState(() => opensWith('more'));
+  const [showNewTab, setShowNewTab] = useState(() => opensWith('newtab'));
+  // Off means the agent's own 256-colour and truecolour values render as sent.
+  const [themedOn, setThemedOn] = useState(themedColors);
+  const [rename, setRename] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [tabMenu, setTabMenu] = useState<string | null>(null);
+  const [tabRename, setTabRename] = useState<string | null>(null);
+  const [tabClose, setTabClose] = useState<string | null>(null);
+  const desktop = useDesktop();
+  /** The Tab picker opens Switch at Tab level; the header's trigger opens it at Pane level. */
+  const [switchTabs, setSwitchTabs] = useState(false);
+  /** The prompt id whose answer came back 409, from the card or the header alike. */
+  const [stalePrompt, setStalePrompt] = useState<string | null>(null);
+  /** The header's Yes or No is on its way: both stay disabled, so one tap is one answer. */
+  const [answering, setAnswering] = useState(false);
+  const card = useRef<HTMLDivElement>(null);
+  const [lensChoice, setLensChoice] = useState<{ paneKey: string; mode: LensMode }>(() => ({
+    paneKey,
+    mode: readLens(paneKey),
+  }));
+  const lens = lensChoice.paneKey === paneKey ? lensChoice.mode : readLens(paneKey);
+  const setLens = useCallback((mode: LensMode) => {
+    writeLens(paneKey, mode);
+    setLensChoice({ paneKey, mode });
+  }, [paneKey]);
+  const showScreen = useCallback(() => setLens('screen'), [setLens]);
+
+  // What PaneGrid last measured (see GridMeasure): zero until its first effect runs, which
+  // is one paint later than the grid's own view of itself.
+  const [gridMeasure, setGridMeasure] = useState<GridMeasure>(() => ({ cell: { cw: 0, rh: 0 }, room: 0, effectiveWrap: false }));
+  const onGridMeasure = useCallback((measure: GridMeasure) => setGridMeasure(measure), []);
+
+  // ---- interactive screen (ADR 0003) ----
+  // The App profile is the gate: it says which Hints to look for, which keys the dock
+  // carries, and whether this program reads a mouse report at all.
+  const profile = useMemo(() => profileFor(pane), [pane?.agent, pane?.command]);
+  const affordances = useMemo(() => findAffordances(lines, profile), [lines, profile]);
+  // ---- phone width (ADR 0004) ----
+  const [phoneWidth, setPhoneWidth] = useState(false);
+  useEffect(() => { setPhoneWidth(false); }, [paneKey]); // the Hub's reaper releases on leave
+  const togglePhoneWidth = async () => {
+    haptic();
+    if (phoneWidth) {
+      setPhoneWidth(false);
+      await fetch(`/api/panes/${encodeURIComponent(paneKey)}/lease`, { method: 'DELETE' }).catch(() => {});
+      return;
+    }
+    // This screen's own readable geometry, the same cells the grid is drawn with.
+    const cols = Math.max(10, Math.min(500, Math.floor((gridMeasure.room || 374) / Math.max(4, gridMeasure.cell.cw))));
+    const rows = Math.max(4, Math.min(200, Math.floor(window.innerHeight / Math.max(8, gridMeasure.cell.rh)) - 8));
+    const response = await fetch(`/api/panes/${encodeURIComponent(paneKey)}/lease`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cols, rows }),
+    }).catch(() => null);
+    if (response?.ok) setPhoneWidth(true);
+  };
+  // The ⋯ menu's Wrap line names what auto resolved to. PaneGrid applies the same rule.
+  const screenText = useMemo(() => lines.map(textOf).join('\n'), [lines]);
+  const wrap = wrapChoice === 'auto' ? !profile.mouse && !tuiScreen(screenText, pane?.cols) : wrapChoice === 'on';
+  /** Bumped by the ⋯ switch, so the per-Pane override is re-read without a second store. */
+  const [override, setOverride] = useState(0);
+  const mouseOn = useMemo(() => mouseAllowed(paneKey, pane), [paneKey, pane?.agent, pane?.command, override]);
 
   // Mark Seen once the screen settles: Seen is tautan's own flag, never written to the Mux.
   useEffect(() => {
@@ -763,10 +929,23 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // tab, so a relabelled or newly created Tab moves it without a second source of truth.
   const strip = useRef<HTMLDivElement>(null);
   const [underline, setUnderline] = useState({ x: 0, w: 0 });
-  useLayoutEffect(() => {
+  const measureUnderline = () => {
     const on = strip.current?.querySelector<HTMLElement>('[aria-selected="true"]');
     setUnderline(on ? { x: on.offsetLeft, w: on.offsetWidth } : { x: 0, w: 0 });
-  }, [tabs, pane?.tabId, viewportW]);
+  };
+  useLayoutEffect(() => {
+    measureUnderline();
+  }, [tabs, pane?.tabId]);
+  // The strip outlives PaneGrid (the Chat lens unmounts the grid, not the strip), so the
+  // underline gets its own ruler: a resize during Chat still slides it under the open Tab.
+  // Re-armed on the layout flip because the strip only exists below `lg`.
+  useEffect(() => {
+    const el = strip.current;
+    if (!el) return;
+    const ro = new ResizeObserver(measureUnderline);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [desktop]);
 
   const openTab = (id: string) => {
     const tab = tabs.find((t) => t.id === id);
@@ -885,7 +1064,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         onReread: reread,
       }
     : null;
-  const mouseChip = forwarding && (
+  const mouseChip = mouseOn && !gridMeasure.effectiveWrap && (
     // Taps on the grid are going to the program, not to tautan.
     <span className="shrink-0 rounded-chip border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
       mouse
@@ -911,20 +1090,14 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   // The App profile decides for every Pane running that program; the switch decides for
   // this one. Effective Wrap wins over both, so the row says so rather than lying about it.
   const mouseSource =
-    mouseOn && effectiveWrap
+    mouseOn && gridMeasure.effectiveWrap
       ? 'off while Wrap is on'
       : localStorage.getItem(`tautan.mouse.${paneKey}`)
         ? 'overridden'
         : `from ${pane?.command ?? pane?.agent ?? 'the generic'} profile`;
-  // At `lg` the frame (app.tsx) gives the Pane the space beside the sidebar and the Pane
-  // fills it; the old content-sized, centred column is gone. A phone is simply the window.
-  const skeleton = !shown && waited;
 
   return (
-    <div
-      ref={frame}
-      className="flex h-dvh w-full flex-col"
-    >
+    <div className="flex h-dvh w-full flex-col">
       <PaneHeader
         desktop={desktop}
         title={pane?.title ?? '…'}
@@ -1074,94 +1247,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
           onReview={explain ? review : undefined}
         />
       ) : (
-        <div className="relative min-h-0 flex-1">
-          <div
-          ref={box}
-          {...mouse}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-            if (pinned.current) setFresh(false);
-            setBand(Math.floor(el.scrollTop / Math.max(1, cell.rh * scale) / 10));
-            measure();
-          }}
-          // Wrap fits the column, so it gets the right gutter too: a box border never meets the edge.
-          className={`h-full overflow-auto pt-1 pb-2 pl-4 lg:pr-4 ${effectiveWrap ? 'pr-4' : ''}`}
-          style={{
-            ...(fade ? { maskImage: FADE, WebkitMaskImage: FADE } : null),
-            // A vertical drag is the app's wheel while forwarding; sideways stays the
-            // scroller's, so a 120-column grid can still be read across.
-            ...(forwarding ? { touchAction: 'pan-x' as const } : null),
-          }}
-        >
-          <pre
-            ref={pre}
-            // Left-aligned on the header's gutter at every width: a grid narrower than the
-            // Pane's column starts where the Tabs do, not as a centred island.
-            className={`relative text-caption ${
-              // Wrapped text takes the column; unwrapped text keeps the grid's own width.
-              // `w-max` would be max-content, which never wraps, so Wrap needs `w-full`.
-              effectiveWrap ? 'w-full break-words whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre lg:min-w-0'
-            }`}
-            // The grid keeps tautan-box first: box-drawing and Braille come from the subset,
-            // everything else falls through to Geist Mono.
-            style={{
-              fontFamily: '"tautan-box", "Geist Mono", ui-monospace, monospace',
-              // Never reflow wider than the Pane itself (the agent wrote for `cols` columns),
-              // nor past a reading measure: a 244-column Pane on a wide desktop is ~150
-              // characters a line, too long to read.
-              maxWidth: effectiveWrap ? `min(${pane?.cols ?? WRAP_MEASURE}ch, ${WRAP_MEASURE}ch)` : undefined,
-              ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left' } : null),
-            }}
-          >
-            {effectiveWrap && kinds ? (
-              <Wrapped lines={lines} kinds={kinds.kinds} joins={kinds.joins} fills={kinds.fills} />
-            ) : (
-              lines.map((spans, i) => (
-                <Fragment key={i}>
-                  {gridRuns(spans)}
-                  {'\n'}
-                </Fragment>
-              ))
-            )}
-            {/* Inside the `<pre>`, so the Fit transform scales the boxes with the text. A held
-                Screen is the last Pane's, so its Affordances would type into the wrong Pane. */}
-            {!effectiveWrap && current && affordances.length > 0 && (
-              <AffordanceLayer
-                paneKey={paneKey}
-                list={affordances}
-                cell={cell}
-                scale={scale}
-                from={band * 10 - 10}
-                to={band * 10 + 60}
-              />
-            )}
-          </pre>
-          {skeleton && (
-            <div aria-busy aria-label="Loading screen" className="flex flex-col gap-2 pt-1 pr-4">
-              <Skeleton width="66%" height={12} />
-              <Skeleton width="100%" height={12} />
-              <Skeleton width="92%" height={12} />
-              <Skeleton width="75%" height={12} />
-            </div>
-          )}
-        </div>
-          {fresh && (
-            <button
-              type="button"
-              onClick={() => {
-                const el = box.current;
-                if (el) el.scrollTop = el.scrollHeight;
-                pinned.current = true;
-                setFresh(false);
-              }}
-              className="absolute inset-x-0 bottom-2 mx-auto flex w-max items-center gap-1.5 rounded-chip bg-elevated px-3 py-1.5 text-caption font-medium text-fg shadow-elevated"
-            >
-              <Down />
-              New output
-            </button>
-          )}
-        </div>
+        <PaneGrid paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
       )}
 
       <Composer
