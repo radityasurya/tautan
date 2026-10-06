@@ -556,7 +556,9 @@ export function App() {
       </div>
       <NeedsCard state={state} openPaneKey={paneKey} onOpen={(key) => navigate(`#/pane/${encodeURIComponent(key)}`)} />
       {desktop ? (
-        <div className="flex">
+        // The frame is the window: the sidebar and the screen each scroll inside it, so the
+        // document itself never does (a tall Settings page used to put a scrollbar on <html>).
+        <div className="flex h-dvh overflow-hidden">
           {section ? (
             <ScreenNav hosts={!!hostsAt} current={hostsAt ? (hostId ?? '') : (settingsAt ?? '')} state={state} />
           ) : (
@@ -577,7 +579,7 @@ export function App() {
               </aside>
             )
           )}
-          <div className="min-w-0 flex-1">{screens}</div>
+          <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain">{screens}</div>
         </div>
       ) : (
         <>
