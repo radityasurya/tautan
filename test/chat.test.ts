@@ -134,6 +134,59 @@ describe('parseTranscript', () => {
     expect(parseTranscript(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }))[0]!.text).toBe(text);
   });
 
+  describe('tool results', () => {
+    const use = (id: string, command: string) => ({ type: 'tool_use', id, name: 'Bash', input: { command } });
+    const result = (id: string, content: unknown, extra: Record<string, unknown> = {}) =>
+      ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content, ...extra }] } });
+    const parse = (...entries: unknown[]) => parseTranscript(entries.map((e) => JSON.stringify(e)).join('\n'));
+
+    test('pairs each result with its tool_use by id, text blocks only', () => {
+      const [turn] = parse(
+        { type: 'assistant', message: { content: [use('t1', 'ls'), use('t2', 'pwd')] } },
+        result('t2', [{ type: 'text', text: '/home/dev' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }]),
+        result('t1', 'a\nb\n'),
+      );
+      expect(turn!.tools.map((t) => [t.result, t.resultLines, t.isError])).toEqual([['a\nb', 2, undefined], ['/home/dev', 1, undefined]]);
+    });
+
+    test('is_error marks the row, and an empty result leaves no result', () => {
+      const [turn] = parse(
+        { type: 'assistant', message: { content: [use('t1', 'false'), use('t2', 'true')] } },
+        result('t1', 'Exit code 1', { is_error: true }),
+        result('t2', ''),
+      );
+      expect(turn!.tools[0]).toMatchObject({ result: 'Exit code 1', isError: true });
+      expect('result' in turn!.tools[1]!).toBe(false);
+    });
+
+    test('strips ANSI and control characters, keeps newlines and the last carriage-return segment', () => {
+      const [turn] = parse(
+        { type: 'assistant', message: { content: [use('t1', 'bun test')] } },
+        result('t1', '\x1b[32m✓ pass\x1b[0m\r\n\x1b]0;title\x07 10%\r 100%\n\tdone\x07\x08'),
+      );
+      expect(turn!.tools[0]!.result).toBe('✓ pass\n 100%\n\tdone');
+    });
+
+    test('a long result keeps its tail, whole lines, after a … marker, with the full line count', () => {
+      const lines = Array.from({ length: 1_240 }, (_, n) => `line ${n + 1}`);
+      const [turn] = parse({ type: 'assistant', message: { content: [use('t1', 'seq')] } }, result('t1', lines.join('\n')));
+      const tool = turn!.tools[0]!;
+      expect(tool.resultLines).toBe(1_240);
+      expect(tool.result!.length).toBeLessThanOrEqual(4_000);
+      expect(tool.result!.startsWith('…\nline ')).toBe(true);
+      expect(tool.result!.endsWith('line 1240')).toBe(true);
+      expect(tool.result!.split('\n')[1]).toMatch(/^line \d+$/); // no half line after the marker
+    });
+
+    test('a subagent transcript pairs its sidechain results too', () => {
+      const jsonl = [
+        { type: 'assistant', isSidechain: true, message: { content: [use('t1', 'ls')] } },
+        { ...result('t1', 'web'), isSidechain: true },
+      ].map((e) => JSON.stringify(e)).join('\n');
+      expect(parseTranscript(jsonl, { sidechain: true })[0]!.tools[0]!.result).toBe('web');
+    });
+  });
+
   describe('tool_result images', () => {
     const image = (data: string, media_type = 'image/png') => ({ type: 'image', source: { type: 'base64', media_type, data } });
     const read = (id: string, file_path: string) => ({ type: 'tool_use', id, name: 'Read', input: { file_path } });

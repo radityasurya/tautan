@@ -22,6 +22,14 @@ export interface Tool {
   /** The subagent this tool started (Task/Agent): its turns come from
    *  `GET /api/panes/:key/chat?agent=<subagentId>`. */
   subagentId?: string;
+  /** What the tool returned (Claude's tool_result, pi's toolResult), text blocks only: plain
+   *  text, ANSI and control characters stripped, newlines kept. Over RESULT_CHARS it keeps the
+   *  tail, whole lines, after a leading `…` line. Absent when the tool returned no text. */
+  result?: string;
+  /** Lines in the whole result before the cap, so a capped one can say "last 80 of 1 240". */
+  resultLines?: number;
+  /** The tool reported a failure (Claude's `is_error`, pi's `isError`). */
+  isError?: boolean;
 }
 
 /** A subagent of the conversation, from Claude Code's `<session>/subagents/agent-<id>.meta.json`. */
@@ -57,7 +65,7 @@ export interface Turn {
   at?: number;
 }
 
-type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown };
+type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
 
 const commandWrapper = /^(?:command-name|command-message|local-command(?:-[\w-]+)?|task-notification|bash-(?:input|stdout))$/;
 const shortened = (text: string) => text.length > 80 ? `${text.slice(0, 79)}…` : text;
@@ -223,6 +231,26 @@ export interface ParseOpts {
   /** Keep isSidechain entries; every entry of a subagent's own file carries the flag. */
   sidechain?: boolean;
 }
+// ponytail: every result rides in the chat JSON, refetched on each revision; 4 000 characters
+// each is the ceiling. Serve full output from a per-tool route if transcripts outgrow it.
+const RESULT_CHARS = 4_000;
+const ESCAPES = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f]/g;
+
+/** Pin a tool's result text and its failure flag on the row. A carriage return keeps only what
+ *  followed it on its line, as a terminal would show a progress bar. */
+function attachResult(tool: Tool | undefined, content: unknown, isError: unknown) {
+  if (!tool) return;
+  if (isError === true) tool.isError = true;
+  const text = resultText(content).replace(ESCAPES, '').replace(/\r\n/g, '\n').replace(/[^\n]*\r/g, '').replace(CONTROLS, '').replace(/\s+$/, '');
+  if (!text.trim()) return;
+  tool.resultLines = text.split('\n').length;
+  if (text.length <= RESULT_CHARS) { tool.result = text; return; }
+  const tail = text.slice(-(RESULT_CHARS - 2));
+  const cut = tail.indexOf('\n');
+  tool.result = `…\n${cut >= 0 && cut < tail.length - 1 ? tail.slice(cut + 1) : tail}`;
+}
+
 // ponytail: a tool_result image over this is skipped whole (no id consumed); serve oversized reads from a file route if they appear.
 const RESULT_MAX = 8_000_000; // base64 characters, about 6 MB decoded
 
@@ -308,6 +336,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       }
       if (block.type === 'tool_result') {
         const tool = typeof block.tool_use_id === 'string' ? toolUses.get(block.tool_use_id) : undefined;
+        attachResult(tool, block.content, block.is_error);
         if (tool?.name === 'Artifact' && tool.link === undefined) {
           const url = resultText(block.content).match(ARTIFACT_URL)?.[0];
           if (url) {
@@ -384,6 +413,7 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     const role = record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : undefined;
     if (!role) {
       if (record.role !== 'toolResult' || !Array.isArray(record.content)) continue;
+      attachResult(typeof record.toolCallId === 'string' ? toolUses.get(record.toolCallId) : undefined, record.content, record.isError);
       for (const item of record.content) {
         if (!item || typeof item !== 'object' || Array.isArray(item) || (item as Block).type !== 'image') continue;
         const block = item as Block;

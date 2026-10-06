@@ -102,6 +102,50 @@ function Stamp({ at }: { at?: number }) {
 
 
 const ROW = 'min-w-0 rounded-chip bg-surface';
+const count = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+// A shell's last lines are what matter, so its open output starts scrolled to the end.
+const SHELL = /^bash$/i;
+
+/** What the tool returned: a header with its size, Copy, and the text in its own scroll box. */
+function ToolResult({ tool }: { tool: Tool }) {
+  const result = tool.result!;
+  const total = tool.resultLines ?? result.split('\n').length;
+  const capped = result.startsWith('…\n');
+  const size = capped ? `last ${result.split('\n').length - 1} of ${count(total, 'line')}` : count(total, 'line');
+  return (
+    <section aria-label={`${tool.name} ${tool.isError ? 'error' : 'output'}`} className="border-t border-border p-2">
+      <div className="mb-1.5 flex min-h-8 items-center gap-2 pl-1">
+        <span className={`min-w-0 flex-1 truncate text-[11px] ${tool.isError ? 'font-semibold text-danger' : 'text-muted'}`}>
+          {tool.isError ? 'Error' : 'Output'} · {size}
+        </span>
+        <CopyButton text={result} className="min-h-8 shrink-0 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg" />
+      </div>
+      <pre
+        data-tail={SHELL.test(tool.name) || undefined}
+        tabIndex={0}
+        className={`max-h-64 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded-[6px] border bg-bg px-2 py-1.5 font-mono text-caption text-fg ${
+          tool.isError ? 'border-danger/40' : 'border-border'
+        }`}
+      >
+        {result}
+      </pre>
+    </section>
+  );
+}
+
+/** The closed row's hint: a red dot for a failure, else how long the output is. */
+function ResultHint({ tool }: { tool: Tool }) {
+  if (tool.isError) {
+    return (
+      <span title="The tool reported an error" className="flex items-center">
+        <span aria-hidden className="size-2 rounded-full bg-danger" />
+        <span className="sr-only">, failed</span>
+      </span>
+    );
+  }
+  if (tool.result === undefined) return null;
+  return <span className="shrink-0 text-[10px] tabular-nums text-muted">{count(tool.resultLines ?? 1, 'line')}</span>;
+}
 const SUMMARY = 'cursor-pointer list-none rounded-chip [&::-webkit-details-marker]:hidden';
 
 /** The open part of a tool row: the image, the page preview, the input, and the output. */
@@ -129,6 +173,10 @@ function ToolBody({ tool, image, preview }: { tool: Tool; image?: ReturnType<typ
           className="absolute right-1.5 top-1.5 min-h-8 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg"
         />
       </div>
+      {tool.result !== undefined && <ToolResult tool={tool} />}
+      {tool.result === undefined && tool.isError && (
+        <p className="border-t border-border px-3 py-1.5 text-[11px] font-semibold text-danger">Error, no output</p>
+      )}
       {tool.output !== undefined && (
         <section aria-label={`${tool.name} output`} className="border-t border-border">
           <div className="max-h-96 overflow-auto overscroll-contain px-3 py-2.5 text-caption [&_h1]:text-body [&_h2]:text-body">
@@ -173,7 +221,13 @@ function ToolRow({
 
   return (
     <li className={ROW}>
-      <details className="group">
+      <details
+        className="group"
+        onToggle={(event) => {
+          const tail = event.currentTarget.open && event.currentTarget.querySelector<HTMLElement>('[data-tail]');
+          if (tail) tail.scrollTop = tail.scrollHeight;
+        }}
+      >
         {card ? (
           <summary className={`${SUMMARY} flex min-h-14 items-center gap-3 py-2 pr-2 pl-3 lg:min-h-12`}>
             <span className="min-w-0 flex-1">
@@ -208,7 +262,10 @@ function ToolRow({
               {image && <Thumb src={image.src} />}
               <span title={brief} className={`truncate ${subagent ? 'font-sans text-fg' : 'text-muted'}`}>{brief}</span>
             </span>
-            {at ? <Stamp at={at} /> : <span />}
+            <span className="flex items-center gap-2">
+              <ResultHint tool={tool} />
+              <Stamp at={at} />
+            </span>
             <ChevronRight className="text-muted transition-transform group-open:rotate-90" />
           </summary>
         )}

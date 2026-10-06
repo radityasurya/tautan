@@ -573,6 +573,14 @@ function swatch(n: number): string {
 const mockSent: Turn[] = [];
 const MOCK_LOG_MS = 3000;
 
+/** A test run over the parser's 4 000-character cap, kept the way the parser keeps it: the tail, whole lines. */
+function longOutput(): { result: string; resultLines: number } {
+  const lines = Array.from({ length: 1_240 }, (_, n) => `✓ slides > deck ${String(n + 1).padStart(4, '0')} renders its outline [${((n % 7) / 10 + 0.1).toFixed(1)}ms]`);
+  lines.push('', ' 1238 pass, 0 fail, 3714 expect() calls', 'Ran 1238 tests across 41 files. [4.82s]');
+  const tail = lines.join('\n').slice(-3_998);
+  return { result: `…\n${tail.slice(tail.indexOf('\n') + 1)}`, resultLines: lines.length };
+}
+
 /** Claude Code's subagents for the transcript below; `a3` was started by `a2`. */
 const MOCK_SUBAGENTS: Subagent[] = [
   { id: 'a1', type: 'Explore', description: 'Find where SSE events are routed', toolUseId: 'toolu_a1', at: ago(5) },
@@ -585,7 +593,7 @@ const SUBAGENT_TURNS: Record<string, Turn[]> = {
   a1: [
     { role: 'user', at: ago(5), tools: [], text: 'Find every place the Hub routes an SSE event, and list the event names.' },
     { role: 'assistant', at: ago(5), text: 'Searching the server for the event stream.', tools: [
-      { name: 'Grep', brief: 'events.push', detail: 'events.push\nin server' },
+      { name: 'Grep', brief: 'events.push', detail: 'events.push\nin server', result: 'server/events.ts\nserver/http.ts', resultLines: 2 },
       { name: 'Read', brief: 'server/events.ts', detail: '/home/dev/projects/tautan/server/events.ts' },
     ] },
     { role: 'assistant', at: ago(4.8), tools: [], text: 'Two routes push events: `server/events.ts` (`state`, `screen`) and `server/http.ts` (`hello`). Nothing else writes to the stream.' },
@@ -648,7 +656,10 @@ const mockChat = (agent?: string): ChatResponse => agent ? {
     {
       role: 'assistant', at: ago(6), tools: [
         { name: 'Edit', brief: 'shared/ansi.ts', detail: '/home/dev/projects/tautan/shared/ansi.ts\n\n- case 22: style.bold = false; break;\n+ case 22: // normal intensity\n+   style.bold = false;\n+   style.dim = false;\n+   break;' },
-        { name: 'Bash', brief: 'bun test test/ansi.test.ts', detail: '# Run the ANSI parser tests\nbun test test/ansi.test.ts' },
+        {
+          name: 'Bash', brief: 'bun test test/ansi.test.ts', detail: '# Run the ANSI parser tests\nbun test test/ansi.test.ts', resultLines: 7,
+          result: 'bun test v1.3.2 (b131639c)\n\ntest/ansi.test.ts:\n✓ parseAnsi > SGR 22 clears dim [0.21ms]\n✓ parseAnsi > 256 colours [0.08ms]\n\n 41 pass, 0 fail, 112 expect() calls',
+        },
       ],
       text: [
         '## Root cause',
@@ -712,6 +723,10 @@ const mockChat = (agent?: string): ChatResponse => agent ? {
       name: 'Bash',
       brief: 'cd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/ge…',
       detail: '# Commit the slides generator\ncd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/generate-deck.ts \\\n  .claude/skills/slides/SKILL.md \\\n  && git commit -m "slides: generate the deck from the outline" \\\n  && pnpm test',
+      ...longOutput(),
+    }, {
+      name: 'Bash', brief: 'gh pr create --fill', detail: '# Open the PR\ngh pr create --fill', isError: true, resultLines: 3,
+      result: 'Exit code 1\nmust be on a branch named differently than "main"\naborted: you must first push the current branch to a remote, or use the --head flag',
     }], at: ago(1) },
     {
       // Six pasted screenshots: a grid of four tiles, the last one "+2".

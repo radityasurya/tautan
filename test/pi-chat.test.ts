@@ -14,7 +14,7 @@ const entry = (id: string, parentId: string | null, body: Record<string, unknown
 const jsonl = (entries: Record<string, unknown>[]) => entries.map(item => JSON.stringify(item)).join('\n');
 
 describe('parsePiTranscript', () => {
-  test('keeps display turns, drops thinking and tool results, renders tool rows', () => {
+  test('keeps display turns, drops thinking, renders tool rows with their results', () => {
     const source = jsonl([
       { type: 'session', version: 3, id: piSession, timestamp: '2026-10-05T21:16:32.763Z', cwd: '/home/tama/projects/taut' },
       entry('m1', null, { type: 'model_change', provider: 'zai', modelId: 'glm-5.3' }),
@@ -34,12 +34,29 @@ describe('parsePiTranscript', () => {
     expect(parsePiTranscript(source)).toEqual([
       { role: 'user', text: 'Check the failing test.', tools: [], at: Date.parse('2026-10-05T21:16:32.763Z') },
       { role: 'assistant', text: 'I will inspect it.\n\nIt passes now.', at: Date.parse('2026-10-05T21:16:32.763Z'), tools: [
-        { name: 'bash', brief: 'bun test chat', detail: 'bun test chat' },
+        { name: 'bash', brief: 'bun test chat', detail: 'bun test chat', result: 'test output', resultLines: 1 },
         { name: 'read', brief: 'shared/chat.ts', detail: 'shared/chat.ts' },
         { name: 'edit', brief: 'server/chat.ts', detail: 'server/chat.ts\n\n- one\n- two\n+ three' },
         { name: 'grep', brief: 'TODO', detail: 'TODO\nin web' },
       ] },
     ]);
+  });
+
+  test('pairs a toolResult with its toolCall by id, with isError and stripped ANSI', () => {
+    const source = jsonl([
+      entry('u1', null, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Run it.' }] } }),
+      entry('a1', 'u1', { type: 'message', message: { role: 'assistant', content: [
+        { type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'false' } },
+        { type: 'toolCall', id: 'call_2', name: 'bash', arguments: { command: 'ls' } },
+      ] } }),
+      // Results arrive out of call order; the id pairs them.
+      entry('t2', 'a1', { type: 'message', message: { role: 'toolResult', toolCallId: 'call_2', content: [{ type: 'text', text: '\x1b[34mweb\x1b[0m\nshared\n' }], isError: false } }),
+      entry('t1', 't2', { type: 'message', message: { role: 'toolResult', toolCallId: 'call_1', content: [{ type: 'text', text: 'exit 1' }], isError: true } }),
+    ]);
+    const [first, second] = parsePiTranscript(source)[1]!.tools;
+    expect(first).toMatchObject({ result: 'exit 1', isError: true });
+    expect(second).toMatchObject({ result: 'web\nshared', resultLines: 2 });
+    expect(second!.isError).toBeUndefined();
   });
 
   test('a read of an image links its tool result image out of band', () => {
