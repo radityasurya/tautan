@@ -342,7 +342,7 @@ export function Hosts({ state }: { state: State | null }) {
   const [add, setAdd] = useState(() => opensWith('add-host') || opensWith('addhost'));
   const [note, setNote] = useState('');
   const hosts = prefs.hosts ?? [];
-  useEffect(() => scrollTo(0, 0), []);
+  useEffect(() => { scrollTo(0, 0); }, []);
 
   const remove = (entry: HostConfig) => {
     setNote('');
@@ -441,7 +441,7 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
   const [editing, setEditing] = useState<HostConfig | null>(null);
   const [note, setNote] = useState('');
   const pal = usePal();
-  useEffect(() => scrollTo(0, 0), [hostId]);
+  useEffect(() => { scrollTo(0, 0); }, [hostId]);
 
   const host = state?.hosts.find((h) => h.id === hostId);
   const retryIn = useRetryIn(host);
