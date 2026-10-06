@@ -13,7 +13,7 @@ means seen. The urgent list ("Needs you") and a "Running" list are pinned above 
 groups. A Pane is a
 full-screen push with the multiplexer's own rendered grid, a sticky blocked card built from
 herdr's detection, a key bar ordered by real use, and a composer labelled with the agent's
-glyph. A floating tab bar carries the three root destinations and hides while you type.
+glyph. A floating tab bar carries the two root destinations, Panes and Settings, and hides while you type.
 
 ## Screens
 
@@ -31,11 +31,11 @@ glyph. A floating tab bar carries the three root destinations and hides while yo
 ## Pane top bar and bottom dock
 
 The Pane screen is one column: two bars, a grid between them, and the dock. Everything on the
-screen shares that column's width, so nothing stretches to the window.
+screen shares that column's width.
 
 | Bar | Contents | Behaviour |
 |---|---|---|
-| Column | One wrapper for the whole screen. From `lg` up its width is `clamp(420px, <grid width + 34px>, 100vw)`, where the grid width is the widest `<pre>` measured in this Workspace; below `lg` it is the window | The header, the Tab strip, the grid, the blocked card and the dock all sit in it and are centred together. Every Pane of a Workspace shares the width, so a Tab or Pane switch never moves the column; entering another Workspace eases `max-width` over 180 ms |
+| Column | One wrapper for the whole screen. It fills the space it is given: the window below 1024 px, the space beside the sidebar from 1024 px up | The header, the Tab strip, the grid, the blocked card and the dock all sit in it. It measures its own width with a `ResizeObserver`, so Fit and Wrap follow a sidebar toggle |
 | Top bar | Home's `TopBar` in its `compact` size: the same 56 px row + safe area, 16 px sides, 44 px icon targets, `--bg` at 90 % with blur. Home's grammar: title left, muted meta and actions right. Left: back chevron (accent) · title. Right: the status chip "● status · agent ⌄" (12 px muted, the Status word in its colour; the whole chip opens Switch) · read aloud (agent Panes) · ⋯. The title is 17 px, Home's compact size, not the 26 px rest size, because a Pane title is a sentence and has to share the row. The chip keeps its own width up to 45 % of the row, then its agent name truncates; the title takes the rest and truncates. No scroll shrink: the grid scrolls in its own box | The bar carries no setting of its own: ⋯ holds the theme chips, then Wrap, Fit to width (hinted with the grid size), Theme colors, Diff, Rename, Close Pane |
 | Tab strip | One section of two rows under the top bar. Row 1: **+** for a new Tab (herdr only), then one tab per Tab of the Workspace with status dot, label and Pane count when the Tab holds several; the active tab is underlined in accent on the section's hairline. Row 2: the Panes of the open Tab, as pills, only when it holds several; it hangs on that same hairline and starts where the Tab labels do, not under the + | Tap switches Tab; swipe on the strip too |
 | Blocked card | floats above the dock, `--elevated`, 1 px hairline | Only while Status is `blocked` |
@@ -66,14 +66,13 @@ in `navigate()`), in both directions. Pane → Pane from the Tab strip, a Pane p
 drawer or a swipe, and Diff ↔ Pane, swap the content in place with no transition: the top bar,
 the Tab strip, the pills and the dock stay mounted and still, and only their contents change.
 The grid keeps the last Pane's Screen until the new Pane's first `screen` event replaces it, and
-shows the skeleton only when nothing arrives within 800 ms. Reduced motion turns off the push
-and the column's width easing alike.
+shows the skeleton only when nothing arrives within 800 ms. Reduced motion turns off the push.
 
 ## Terminal width on a phone
 
 The grid is what the multiplexer rendered at the server's size. Four answers, in order:
 
-0. **Give the grid the column** (v1): from `lg` up the column is the grid's own measured width plus the scroller's padding, centred, so a desktop shows the whole grid and scales nothing. A phone is narrower than any grid, so the next two answers are for the phone.
+0. **Give the grid the space** (v1): from 1024 px up the Pane fills the space beside the sidebar and measures its own width with a `ResizeObserver`, so a desktop shows the whole grid and scales nothing, and the grid follows a sidebar toggle or a window resize. The earlier content-sized, centred column is gone. A phone is narrower than any grid, so the next two answers are for the phone.
 1. **Wrap** (v1): the same grid text reflowed to the phone width, client-side. Reading mode for agent output. Replaces the earlier Screen/Recent idea: Claude Code runs on the alternate screen, so herdr's "recent" returns the same rows as the visible grid.
 2. **Fit** (v1): scale the grid to the phone width with exact metrics; the toggle label shows the grid size.
 3. **Resize to phone is not possible today:** herdr 0.9 exposes rendered Screen reads and shared split-ratio resizing, but no API for exact columns/rows or a separately sized client surface; a client viewing the same Tab can change the desktop's Pane sizes. Keep Wrap and Fit. A future Resize action must be explicit, warn that it changes the shared desktop layout, record the old geometry, and restore it on leaving.
@@ -88,13 +87,13 @@ The grid is what the multiplexer rendered at the server's size. Four answers, in
 | Right column | time since the last Status change, 12 px, tabular numerals |
 | Dot | 8 px; filled = unseen, 1.5 px ring = seen; `--warn` blocked, `--ok` done, `--accent` working, `--muted` idle, `--danger` offline |
 | Section label | 11 px, 600, +0.08 em, uppercase, `--muted`; 24 px above, 4 px below |
-| Tab bar | Agents · Hosts · Settings; 52 px + safe area, inset 12 px, 14 px radius, `--elevated` at 88 %, blur, hairline; badge = unseen blocked count |
+| Tab bar | Panes · Settings (phone only; Hosts is Settings' first section); 52 px + safe area, inset 12 px, 14 px radius, `--elevated` at 88 %, blur, hairline; badge = unseen blocked count |
 | Surfaces | `--bg` page · `--surface` inset controls (composer, key caps, chips) · `--elevated` raised (tab bar, blocked card, drawers) |
 | Accent | primary button, current chip or tab, `working`, focus ring. Nothing else |
 | Radius | 8 px chips, buttons and key caps; 10 px composer; 12 px cards and the blocked card; 14 px tab bar; 16 px drawer top. Dots stay circles. No pills. The Pane column itself is never rounded and carries no border, at any width |
 | Type | caption 12/1.35 · body 15/1.45 · title 17/1.25 600 · mono 12/1.35 |
 | Grid | Wrap for agent Panes by default, scrolled for shell Panes (an 80-column grid at a readable size does not fit a phone); right-edge fade while it overflows. The three reading options live in ⋯: Wrap reflows, Fit scales the `<pre>`, Theme colors snaps every 256-colour and truecolour span to the nearest of the theme's own 16 |
-| Key bar | agent: `esc ▲ ▼ tab shift+tab enter ctrl+c`, inline `esc ▲ ▼ enter` · shell: `esc tab ▲ ▼ ◀ ▶ enter ctrl+c ctrl+d ctrl+l ctrl+r`, inline `esc tab enter`. One glyph map (`web/keys.ts`) spells a key for the caps and the pills alike: `▲ ▼ ◀ ▶`, `↵`, `⇥`, `⇧⇥`, `^d` |
+| Key bar | agent: `esc ▲ ▼ tab shift+tab enter ctrl+c`, inline `esc ^C` · shell: `esc tab ▲ ▼ ◀ ▶ enter ctrl+c ctrl+d ctrl+l ctrl+r`, inline `esc tab ▲ ^C`. One glyph map (`web/keys.ts`) spells a key for the caps and the pills alike: `▲ ▼ ◀ ▶`, `↵`, `⇥`, `⇧⇥`, `^d` |
 | Composer | the agent's glyph inside the field, placeholder in the agent's voice, mic replaces send while empty |
 | Blocked card | sticky above the key bar, `--elevated`, title + rule id, one-line detection excerpt, Yes/No preset then hint keys |
 | Chrome left blank | status bar area (54 px) and the keyboard; the OS draws both |
@@ -121,3 +120,7 @@ The grid is what the multiplexer rendered at the server's size. Four answers, in
 Edit the files under `docs/design/src/`, then ask Claude to re-save the canvas, or edit the
 canvas directly in the browser and press Save. Re-export the PNGs into `docs/design/` after
 either.
+
+The Wave 10 desktop boards live on a second canvas:
+**[tautan screens](https://claude.ai/artifact/CKCZc8dyzhzzeKkisc3LjW)**. It holds several
+variants per part. Build only the variants marked recommended.

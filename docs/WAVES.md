@@ -582,6 +582,13 @@ SSE stream carries a set of watched Panes, or the extra Panes render the last sn
 the state stream with no live poll. Only then build it. Until this lane lands, desktop
 shows the Pane chips row, the same as the phone. Ship Phases 19–22 without it.
 
+**Decision (2026-10-06): defer.** The state stream carries only `lastLine`, so extra Panes
+cannot render a live grid from it (option B is not possible). A watched-Pane set on the SSE
+stream (option A) costs about 300 lines over five files plus a protocol change, and adds a
+poll loop and a transcript stat per extra Pane. Desktop keeps the Pane chips row. Revisit
+when a real desktop flow needs it: build A with a cap of three watched Panes, and decide
+Seen for visible but unfocused Panes.
+
 **10.9 brief.** Drive the built app at 390 × 844 and at 1440 × 900 with `chrome-devtools-axi`
 on a throwaway herdr, never the live socket. Check each board against the canvas: same
 radii, tokens, row heights, and the Status colours. Take a screenshot per screen per
@@ -608,8 +615,10 @@ below 1024 px: the sidebar goes away and the phone layout takes over with no rel
 ## End-to-end
 
 `pnpm e2e` builds the app and drives the real stack — a throwaway herdr and the Hub with the
-built web — through nine flows in headless Chromium at 390 px: funnel refusal, home open,
+built web — through 13 flows in headless Chromium: funnel refusal, home open,
 wrap guard, the blocked card's 409 and Re-read, the alert card, held messages, the file
-viewer long-press, the Phone-width lease, and the chat lens fallback. It resolves
+viewer long-press, the Phone-width lease, the chat lens fallback, the desktop header's 409
+guard with ⌘2, the desktop composer (`/` types only, the mode chip follows the Screen),
+the Needs you card answering from the Pane list, and Settings with Hosts. It resolves
 playwright-core from `PLAYWRIGHT_CORE` or the local npx cache and never touches the live
 socket or port 7700.

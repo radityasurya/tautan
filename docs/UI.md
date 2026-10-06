@@ -69,6 +69,20 @@ collapses (persisted in `localStorage`), long-press (500 ms, cancelled by 10 px 
 or the ⋯ button opens the group menu. Collapsed, it summarises the most urgent Status of
 *all* its Panes, for example `2 blocked`.
 
+**Needs you card.** A blocked Pane in Needs you is a card, not a row: `Needs you · <Agent>`
+with its Workspace and Tab, the command from Explain, and three buttons.
+
+- **Phone.** **Yes**, **No** and **Open**. Yes and No send the Pane's own plain yes/no keys,
+  from `yesNoKeys()`, through `sendBlocked()` and its stale-prompt guard. Open goes to the
+  Pane.
+- **Desktop sidebar.** A 36 px line with **Yes** only. **No** stays in the Pane; the row itself
+  opens it.
+
+Explain loads once per card, so only blocked Panes cost a fetch. The card refetches after
+the Pane's revision has been still for 2 s, drops a response that arrives late, and locks
+after you send an answer. A 409 shows **Re-read** in place of the buttons. A prompt with an
+Always option, or no plain yes/no, shows **Open** only.
+
 A **search field** sits under the title, always. It matches the agent, the title and the
 Workspace label — the same rule the Switch drawer uses — and filters every section; an
 empty section hides, except an unreachable Host, which stays. **Collapse all** folds the
@@ -92,18 +106,29 @@ label carries the fact. An offline Host adds a red row linking to Hosts. While
 
 ## Pane (`#/pane/<key>`) — `web/pane.tsx`
 
-Top bar: Home's `TopBar` (`web/header.tsx`) with `size="compact"` and a
-`leading` back chevron, so its row is Home's exactly — 56 px, 16 px sides, 44 px
-icon targets, the same blur and hairline — without the scroll shrink, since the
-grid scrolls in its own box. Left: back · title (17 px, truncates). Right, in
-order: the status chip, **Read aloud** (agent Panes only) and **More**. The chip
-is 12 px muted: Dot, the Status word in its colour (`aria-live="polite"`), the
-Agent (`shell` when there is none) and the ⌄, and the whole of it is the one
-button that opens the Switch drawer. It keeps its own width up to 45 % of the
-row (`max-w-[45cqw]` against the row's `@container`), past which the Agent name
-truncates; the title takes what is left. The Workspace name is not in the bar:
-the Tab strip and the Switch drawer carry it. No setting lives in the bar: Wrap,
-Fit and Theme colors are rows in the ⋯ sheet, and + belongs to the Tab strip.
+The Pane screen is `PaneHeader` (`web/header.tsx`), then the Tabs, then the grid, the blocked
+card and the composer. One component draws the header at both widths.
+
+**Header, phone.** Row of back chevron, then the title (16 px, truncates) over one Status
+line: Dot, the Status word, the Agent (`shell` when there is none) and the Tab, then ⌄. The
+two lines are one button that opens the Switch drawer. The Status word never truncates;
+the Agent and the Tab give way first. On the right: the lens as two icons (Chat and Screen;
+agent Panes only), then ⋯. **Read aloud** is a row in the ⋯ sheet. Wrap, Fit and Theme colors are
+rows there too; no setting lives in the header.
+
+**Header, desktop.** A 64 px row: back, then the `host / workspace / tab` path over the
+title, then the Status chip (`● status · agent ⌄`, tinted with its Status colour, one button
+that opens Switch), then the lens as a labelled control, **Read aloud** and ⋯. The Status
+word for `blocked` reads `needs you`.
+
+**Blocked.** A 2 px `--warn` line draws under the header while Status is `blocked`. The
+phone swaps the lens for **Review**, which scrolls to the blocked card and stays disabled
+until Explain has loaded. The desktop replaces the lens and Read aloud with the command, from
+Explain, and **Yes** and **No** buttons, each with the key it sends. The buttons come from
+`yesNoKeys()` in `shared/blocked.ts`, so they appear only for a plain yes/no prompt and
+never for an Always option. They use the card's own send path, so a 409 shows **The prompt
+changed.** and **Re-read** in the header and in the card together. While an answer is in
+flight both buttons are disabled.
 
 Switching Pane inside the screen — a Tab, a Pane pill, a Switch drawer row, a
 swipe — calls `navigate()` without the View Transition, which plays only when
@@ -112,18 +137,26 @@ the grid holds the last Pane's Screen until a `screen` event whose `key` is the
 new Pane arrives, and falls back to the skeleton after 800 ms. A held Screen is
 never measured, marked Seen, read aloud or given Affordances.
 
-Under the top bar the **Tab strip** is one section of two rows. Row 1 is **+**
-for a new Tab (herdr Muxes only) and then that Workspace's Tabs, each with a
-6 px Dot rolled up from its Panes, its label, and its Pane count when it holds
-several; the row carries the hairline the accent underline slides along. Row 2
-lists the Panes of the open Tab as pills, and appears only when the Tab holds
-more than one; it hangs on that same hairline (`border-t`, pulled up by the one
-pixel the row above draws) and is indented to where the Tab labels start, so the
-two rows read as one bordered section. A horizontal **touch** swipe on the strip moves between Tabs:
-Chromium gives a horizontal drag to the nearest scroller and fires
-`pointercancel`, so the gesture reads `touchend`, and it is ignored when the
-strip itself scrolled, which is what a drag means once there are more Tabs than
-fit.
+**Tabs.** Under the header, the Workspace's Tabs, each with a 6 px Dot rolled up from its
+Panes, its label, and its Pane count when it holds several. A **+** for a new Tab (herdr
+Muxes only) comes after the Tabs. Close keeps the Phase 14 confirm: a Tab whose close would
+stop work asks first, and any other Tab closes at once.
+
+- **Phone.** An underline strip: one accent bar slides along the hairline under the open
+  Tab. Past five Tabs the strip becomes one picker button that shows the open Tab, its
+  position and a dot per Tab, and opens Switch at Tab level; long-press opens the Tab's
+  menu. A horizontal **touch** swipe on the strip moves between Tabs. Chromium gives a
+  horizontal drag to the nearest scroller and fires `pointercancel`, so the gesture reads
+  `touchend`, and it is ignored when the strip itself scrolled.
+- **Desktop.** Browser tabs: the open Tab takes the Pane's background and a 2 px accent
+  top edge. Close (×) shows on hover and always on the open Tab. Right-click opens the Tab's
+  menu. Press ⌘1–⌘9 to open Tab *n* and ⌘T for New Tab. Both are **Meta only**: Ctrl+T and
+  Ctrl+digits belong to the browser and the terminal, so there is no Ctrl fallback, and the
+  hint beside the strip shows only on a Mac. The shortcuts read `code`, so an AZERTY row
+  still counts as digits.
+- **Pane chips.** When the open Tab holds more than one Pane, a row of Pane chips sits
+  under the Tabs, at both widths. Side-by-side Panes on desktop are deferred; see lane 10.8
+  in [WAVES.md](./WAVES.md).
 
 The grid renders the `visible` screen as styled ANSI spans, pinned to the
 bottom until you scroll up, when a **New output** pill appears. Content wider
@@ -131,39 +164,30 @@ than the phone fades at the right edge instead of showing a scrollbar. There is
 no Screen/Recent switch: tautan only ever shows the visible grid, and Wrap (in
 More) reflows it client-side.
 
-**Width.** The screen is one column: `mx-auto w-full` with, from `lg` up,
-`max-width: clamp(420px, <grid width + 34px>, 100vw)`. The grid width is the
-`<pre>`'s own `scrollWidth`, measured after every screen update, after a resize
-and once `document.fonts.ready` resolves, because the mono subset swaps in after
-first paint. The widest grid measured in the Workspace wins and keeps winning
-(a module-level map by Workspace key), so the column does not resize on every
-frame of agent output nor on a Tab or Pane switch, and a new Pane reads the
-width on its first frame. A Workspace not measured yet keeps the width already
-on screen; once it measures, `max-width` eases over 180 ms. A font swap makes
-the next measurement replace the widest instead of adding to it. 34 px is the scroller's 16 + 16 px of padding plus 2 px for
-the fraction `scrollWidth` rounds away. Before the first measurement, and while
-Wrap is on — where the `<pre>` takes the column's own width and measuring it
-would feed back — the column falls back to 672 px, which is the right width for
-reflowed prose anyway. Below `lg` the column is simply the window.
+**Width.** The Pane fills the space it is given. Below 1024 px that is the window. From
+1024 px up it is the space beside the sidebar, or the whole window while ⌘B has hidden
+the sidebar. The Pane's root element carries a `ResizeObserver` that reads its own
+`clientWidth` and measures the grid again, so Fit and Wrap follow a sidebar toggle and a
+window resize with no reload. The grid width is the `<pre>`'s `scrollWidth`, measured after
+every screen update and once `document.fonts.ready` resolves, because the mono subset swaps
+in after first paint. There is no centred, content-sized column any more, and no per-Workspace
+width memory.
 
-The header, the Tab strip, the grid, the blocked card and the dock all live in
-that column, so a 2560 px window centres a content-sized Pane and nothing
-stretches. A 120-column grid is 867 px at 12 px, so a desktop shows it whole and
-Fit stays for the phone, where the window is narrower than the grid: it scales
-the `<pre>` to the room the scroller leaves after its own padding, is **off**
-until you ask for it in ⋯, and the row there is hinted with the grid size.
-
-Wrap reflows the same text to the column, never wider than the Pane's own
-`cols`. It needs `w-full`: `w-max` is `max-content`, which never wraps.
+The header, the Tab strip, the grid, the blocked card and the composer all fill that width.
+A 120-column grid is 867 px at 12 px, so a desktop shows it whole. Fit stays for
+the phone, where the window is narrower than the grid: it scales the `<pre>` to the room
+the scroller leaves after its own padding, is **off** until you ask for it in ⋯, and the
+row there is hinted with the grid size.
 
 | Setting | Default | Key |
 |---|---|---|
 | Fit | off | `tautan.fit` = `on` \| `off` |
 | Theme colors | on | `tautan.themedColors` = `on` \| `off` |
-| Key bar, agent Panes | collapsed | `tautan.keys.agent` = `on` \| `off` |
-| Key bar, shell Panes | open | `tautan.keys.shell` = `on` \| `off` |
+| Key grid, agent Panes | closed | `tautan.keys.agent` = `on` \| `off` |
+| Key grid, shell Panes | closed | `tautan.keys.shell` = `on` \| `off` |
 | Wrap, agent Panes | on | `tautan.wrap.agent` = `on` \| `off` |
 | Wrap, shell Panes | off | `tautan.wrap.shell` = `on` \| `off` |
+| Sidebar, desktop | open | `tautan.sidebar` = `open` \| `closed` |
 | Smart replies | off | `tautan.smart` = `on` \| `off` |
 | Mouse taps | the App profile | `tautan.mouse.<paneKey>` = `on` \| `off` |
 
@@ -222,10 +246,15 @@ profile.
 `Copied` chip above the token for 1.5 s, counter-scaled so it reads at its
 own size under Fit. No toast: the chip stays where your thumb is.
 
-When Status is `blocked`, `web/blocked.tsx` draws a card above the dock: the
-detection's first line as a heading, the rule id, up to two excerpt lines in
-the agent's colours, and one button per offered key plus ↑/↓. It rises into
-place over 200 ms and fades 150 ms after the Status clears.
+When Status is `blocked`, `web/blocked.tsx` draws a card in the place the quick replies
+take: the detection's first line as a heading, the rule id, up to two excerpt lines in the
+agent's colours, and one button per offered key plus ↑/↓. On the phone each option is a 44
+px row; on desktop the options sit on one line. A button shows the key it sends, spelled
+by `keyGlyph()` (`↵`, `esc`), and not `1 2 3`, because tautan's order is not the Agent's own
+numbering. The card rises into place over 200 ms and fades 150 ms after the Status clears.
+Every answer, from the card, the header or the Pane list, goes through `sendBlocked()`
+and its stale-prompt guard: if the Hub answers 409, the prompt has moved on, and **Re-read**
+replaces the buttons.
 
 `shared/blocked.ts` decides which keys the card offers, and the Hub applies the
 same function on the way out, so `GET /api/panes/:key/explain` already carries
@@ -235,28 +264,34 @@ offers Yes / Allow / Accept as its first option, leads with the preset
 duplicates, because the footer's `esc to cancel` and `enter to confirm` are the
 preset under another name. The id alone is not enough: a real Claude Code
 permission box matches `live_blocked_form`, never `bash_permission_prompt`.
+`yesNoKeys()` returns the Yes and No keys only for a plain yes/no prompt, never for one
+with an Always option. The desktop header and the Pane list use it for their Yes and No.
 
-The dock is the only place with input, and it is one bar plus what it opens:
+The composer is the only place with input, and it is one bar plus what it opens:
 
 | Row | Agent Pane | Shell Pane |
 |---|---|---|
-| 1 | the keys toggle, then `esc` `▲` `▼` `enter`, then a hairline, then the pills | the toggle, then `esc` `tab` `enter`, then the Hint pills the Screen printed |
-| 2 | the whole preset, while the toggle is on | the same, open by default |
-| 3 | the composer | — |
+| 1 | the keys toggle, then `esc` `^C`, then a hairline, then the pills | the toggle, then `esc` `tab` `▲` `^C`, then the Hint pills the Screen printed |
+| 2 | the whole preset, while the toggle is on | the same |
+| 3 | the input | the input, behind the `$` prompt |
+
+The open preset is a fixed six-column grid, one cap per key the App profile carries
+(`grid-cols-6`: 40 px caps on the phone, 32 px on desktop). It is the only place the
+arrows, `tab` and `⇧tab` live for an agent Pane.
 
 The toggle leads the row it opens, filled with `--surface` and the hairline so
 it reads as a control among the caps, and accent while the preset is open. The
 pills scroll at the right of the row behind the same right-edge fade the
 grid uses (`FADE`). The toggle carries `aria-expanded` and remembers its state
 per kind (`tautan.keys.agent`, `tautan.keys.shell`), and the row it opens rises
-into place with `.rise`, which reduced motion turns off. Which caps the row holds
+into place with `.rise`, which reduced motion turns off. Which caps the grid holds
 is the App profile's call (`web/profiles.ts`): an agent Pane gets the agent set,
 htop and less also get `F1`…`F10`, because their own footer offers them.
 
-An agent Pane starts collapsed, because there the keyboard should meet the
-composer; a shell Pane starts open, because keys are all it has.
+Both kinds start **closed**. The resting row already carries the keys a hand reaches
+for, and opening the grid hides the replies.
 
-**Quick replies** (`web/replies.ts`, a pure function; `web/pane.tsx` renders
+**Quick replies** (`web/replies.ts`, a pure function; `web/composer.tsx` renders
 them) scroll horizontally in one row, 8 px radius, 13 px:
 
 | Pill | Looks like | A tap |
@@ -275,7 +310,7 @@ text stays in the accessible name.
 
 The order is: the keys `shared/blocked.ts` offers for the blocked prompt
 (`Yes ↵`, `No esc`, then the Mux's own hint keys); then the Hints the Screen
-itself printed — the arrows live in the dock's own inline keys, so a numbered
+itself printed — the arrows live in the open key grid, so a numbered
 list adds no arrow pills; then up to three drafts from
 `StatePane.suggestions`; then the static set for the Agent — Claude Code gets
 Continue · Run the tests · Commit and push · Explain the diff · Stop here, Pi
@@ -299,13 +334,30 @@ the span renders exactly what the agent sent. A palette with no orange, such as
 the Catppuccin sixteen, sends a peach 256-colour to its pink slot; that is the
 rule working, and the toggle is there for when you want the agent's own colours.
 
-The composer has the agent's glyph inside the field, before the placeholder,
-dictation into the field, an attach button, and Send. Enter
-sends; Shift+Enter inserts a newline. The mic replaces Send only while the
-field is empty **and** the browser has `webkitSpeechRecognition`; with no
-engine the disabled Send button keeps its place rather than offering a mic that
-does nothing. A transcript lands in the field for review and is never sent on
-its own.
+**Composer.** `web/composer.tsx` draws the one composer at both widths. Enter sends;
+Shift+Enter inserts a newline. The mic is the Send button's alternative: on the phone the
+mic becomes **Send** as soon as the field holds text, and with no `webkitSpeechRecognition`
+the disabled Send button keeps its place. A transcript lands in the field for review and
+is never sent on its own.
+
+- **Phone.** One row: the keys toggle, the inline keys, the quick replies, then the input
+  with the agent's glyph before the placeholder. The open key grid sits above the input.
+- **Desktop.** Suggestion chips above a bordered box. The box has a two-line textarea and a
+  toolbar: attach, `/`, `@`, the mode chip, the inline keys, then context left, model, mic
+  and Send. `/` and `@` only type that character into the field; the Agent then shows its
+  own command or file list. The mode chip sends `shift+tab`, and the next Screen says which
+  mode the Agent landed in.
+- **Mode, model and context** come only from this Pane's Screen, through
+  `toolbarFromScreen()` in `web/profiles.ts`. The Claude Code recogniser reads the last 15
+  lines: the `⏵⏵` or `⏸` mode line, a literal model name on that line, and a context
+  figure that says `left`. A value the Screen does not state is hidden, never guessed, so
+  default mode shows no chip. A held Screen from the previous Pane states nothing. Profiles
+  without a recogniser show none of the three.
+- **Shell Panes** get a mono `$` prompt in place of the agent's glyph, and the chips are
+  the recent commands sent from this device (eight at most). A line typed while the last
+  non-empty Screen line asks for a password, passphrase, PIN, token or secret is not
+  stored. That keyword match is a guess; a prompt that does not use those words is not
+  caught.
 
 Attach opens the photo library, never the camera: the hidden input has
 `accept="image/*,video/*"`, `multiple`, and no `capture`. Each file goes out on
@@ -332,7 +384,7 @@ convert a JPEG or PNG pick *to* HEIC, renamed `tempImage….heic`
 ([Apple Developer Forums](https://developer.apple.com/forums/thread/743049)).
 So `image/*,video/*` stays. A photo that reached the phone through Files,
 AirDrop or Dropbox skips that path and can still arrive as HEIC; the Hub stores
-it unchanged. Unverified here: no real iPhone was in this session, and the
+it unchanged. Unverified here: no real iPhone was used for this check, and the
 camera's **Formats** setting (High Efficiency or Most Compatible) was not tried.
 
 ## Diff (`#/diff/<workspaceKey>`) — `web/diff.tsx`
@@ -383,13 +435,14 @@ stays as it is. A failure turns the button into **Try again**.
 
 ## Hosts (`#/hosts`) — `web/hosts.tsx`
 
-One card per Host, in the order `GET /api/state` sends them: this machine, then
-the discovered Hosts, then the ones in `hosts.json`. Each card is an online Dot,
-the label, the SSH target in mono (or `this machine`), the Pane count, and a
-line per Mux with its kind, label and Pane count. An offline Host replaces the
-Mux lines with its error — the Hub's last ssh stderr line, `unreachable` when
-there is none — and never shows a Pane count, because it has none to show. The
-last card is a dashed **Add Host** button.
+Hosts is the first section of Settings, so `#/hosts` opens Settings on it. On the phone
+each Host is a row: an online Dot, the label, the SSH target in mono (or `this machine`),
+the Workspace count, and the Mux kinds with their versions. An offline Host replaces those
+with its error — the Hub's last ssh stderr line, `unreachable` when there is none — and the
+time of the next retry, and never shows a Pane count, because it has none to show. From
+1024 px up, each Host is a card with a Mux × Workspace table that scrolls sideways when
+narrow. Order is the one `GET /api/state` sends: this machine, then the discovered Hosts,
+then the ones in `hosts.json`. The last item is a dashed **Add Host** button.
 
 The actions under a card follow `StateHost.source`, so the screen never offers
 a write that the Hub would refuse:
@@ -405,6 +458,15 @@ until the Hub answers; the SSE `state` event repaints the card. **Remove** PUTs
 `/api/settings` with the same `hosts` array minus that entry, and has no confirm
 dialog: it deletes one line of configuration, not a running Pane, and **Add
 Host** puts it back. A failed write prints one `--danger` line under the list.
+
+### Host detail (`#/hosts/<id>`)
+
+Tap a Host row to open its detail. The screen lists each Mux with its kind and version,
+its socket path, and its Workspaces with their Tab and Pane counts and their Status. A Host
+that is down shows its error and the time of the next retry, and keeps **Retry now**. A
+hash with an id that does not decode, or a Host the Hub does not list, falls back to the
+Hosts section instead of an error screen. The Hub supplies the data: `StateMux` carries
+`socket` and `version` (tmux's `-V`, probed once per Mux), and `StateHost` carries `retryAt`.
 
 ### Add Host sheet
 
@@ -452,11 +514,18 @@ The forwarder flags and the socket paths are in
 
 ## Settings (`#/settings`) — `web/settings.tsx`
 
-Theme picker (`ThemePicker`: a native `<select>` of System plus six themes — iOS opens
-its own picker wheel — with the current theme's `--bg` as the swatch beside it; the Pane's
-⋯ sheet shows the same picker), a push toggle, a Haptics toggle on
-Android only, the iOS install hint, a **Smart replies** toggle, and the **Access**
-rows. Hosts live on their own tab, not here.
+**Hosts is the first section.** Settings has six sections, each at `#/settings/<id>`:
+Hosts, Appearance, Notifications, Replies, Access and About. `#/settings` and `#/hosts`
+both open Hosts. On the phone the sections scroll as one screen, and the bottom bar has two
+tabs, **Panes** and **Settings**. From 1024 px up, a 240 px section nav on the left lists
+the sections and shows `N down` beside Hosts while a Host is offline. The nav marks the
+section from the route, not from scroll position.
+
+The Hosts section is described under Hosts below. The other
+sections hold the theme picker (`ThemePicker`: a native `<select>` of System plus six
+themes — iOS opens its own picker wheel — with the current theme's `--bg` as the swatch
+beside it; the Pane's ⋯ sheet shows the same picker), a push toggle, a Haptics toggle on
+Android only, the iOS install hint, a **Smart replies** toggle, and the **Access** rows.
 
 **Smart replies** reads `GET /api/settings`. With a provider configured the hint
 is `provider · model` (`zai · glm-5.2`); with none it reads `not configured ·
@@ -556,14 +625,33 @@ the new Tab, Pane and Workspace appear in the list, a rename shows, and a closed
 Pane leaves (with its Tab, when it was the last one). A label of `fail` answers
 502 `agent_not_ready`, which is how to reach the error line.
 
-## Chrome — `web/app.tsx`
+## Frame — `web/app.tsx`
 
-Hash routes pushed with `history.pushState`, so the iOS edge swipe and the
-Android back button work, wrapped in a View Transition. One `EventSource` for
-the whole app; it reopens when the watched Pane changes, and a hairline
-`Reconnecting` bar shows while it is down. The floating bottom tab bar
-(Agents · Hosts · Settings) badges unseen `blocked` Panes and hides itself
-whenever a text field has focus, so the keyboard never covers the composer.
+One breakpoint decides the layout: Tailwind `lg`, 1024 px. `useDesktop()` follows a
+window resize, so a window dragged across 1024 px changes layout with no reload. Below
+1024 px the app is the phone app. From 1024 px up it has a frame.
+
+| Part | Phone, below 1024 px | Desktop, 1024 px and up |
+|---|---|---|
+| Pane list | the `#/` screen | a 300 px sidebar beside the route; `#/` shows `Pick a Pane from the list.` |
+| Root navigation | the floating tab bar, **Panes** and **Settings** | the sidebar footer, **Settings** and **Hosts** links |
+| Settings and Host detail | one scrolling screen | a 240 px section nav replaces the sidebar |
+| Pane | one column, the window wide | fills the space beside the sidebar |
+
+The sidebar is the same `Home` list in its `compact` form: 36 px rows with no preview, and
+a Yes-only Needs you card. Press ⌘B to hide or show it. Press Ctrl+B for the same, except
+inside an input, a textarea or an editable field, so the tmux prefix still reaches the
+terminal. The state is remembered in `tautan.sidebar` (`open` or `closed`). With the sidebar
+hidden, `#/` shows the full Pane list.
+
+The sidebar footer holds two links. **Settings** opens `#/settings`. **Hosts** opens
+`#/hosts`, which lands on the Hosts section of Settings.
+
+Hash routes use `history.pushState`, so the iOS edge swipe and the Android back button
+work, wrapped in a View Transition. There is one `EventSource` for the whole app. It
+reopens when the watched Pane changes, and a hairline `Reconnecting` bar shows while it is
+down. The floating tab bar badges unseen `blocked` Panes and hides itself whenever a text
+field has focus, so the keyboard never covers the composer.
 
 The **app badge** on the installed icon counts more than the tab badge does:
 unseen `blocked` plus unseen `done`, the same set the **Needs you** section
