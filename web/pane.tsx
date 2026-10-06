@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
-import { boxInner, classify, type LineKind } from '../shared/layout.ts';
+import { boxInner, classify, continues, fillOf, hangOf, splitAt, tuiScreen, type LineKind } from '../shared/layout.ts';
 import type {
   NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
@@ -126,18 +126,48 @@ const CHROME: Partial<Record<LineKind, string>> = {
   'box-bottom': 'mb-[0.5lh] min-h-[0.5lh] rounded-b-chip border-x border-b px-[1ch]',
 };
 
+const textOf = (spans: Span[]) => spans.map((sp) => sp.text).join('');
+/** A line's spans without its trailing pad (Pi pads every row to the Pane's width). An
+ *  inverse cell is the agent's cursor, so it stays even when it is a space. */
+const trimmed = (spans: Span[], from = 0) => {
+  let end = textOf(spans).trimEnd().length;
+  let at = 0;
+  for (const sp of spans) {
+    at += sp.text.length;
+    if (sp.inverse) end = Math.max(end, at);
+  }
+  return sliceSpans(spans, from, end);
+};
+
 /**
  * One Screen line in Wrap. Prose reflows. A rule or a box around prose is drawn at the
  * column's width by CSS, in the glyphs' own colour, and the words inside reflow — Claude
  * Code draws these at the desktop's full width, which pinned the whole column at 1000+ px.
+ * A split status line keeps its halves apart, the right one at the edge, as the agent drew it.
  */
-function WrapLine({ spans, kind }: { spans: Span[]; kind: LineKind }) {
+function WrapLine({ spans, kind, hang = 0 }: { spans: Span[]; kind: LineKind; hang?: number }) {
+  if (kind === 'split') {
+    const text = textOf(spans);
+    const [leftEnd, rightStart] = splitAt(text) ?? [text.length, text.length];
+    return (
+      <span className="flex min-h-[1lh] flex-wrap justify-between gap-x-[2ch]">
+        <span className="break-words whitespace-pre-wrap">{runs(sliceSpans(spans, 0, leftEnd))}</span>
+        <span className="break-words whitespace-pre-wrap">{runs(trimmed(spans, rightStart))}</span>
+      </span>
+    );
+  }
   const chrome = CHROME[kind];
-  if (!chrome) return <span className="block min-h-[1lh] break-words whitespace-pre-wrap">{runs(spans)}</span>;
+  // Prose hangs: a reflowed line continues under its own text, as the agent indented it.
+  if (!chrome) {
+    // Past eight columns the indent is layout (a right-aligned hint), not a hang: it would
+    // push the text off a phone.
+    const style = hang > 0 && hang <= 8 ? { paddingLeft: `${hang}ch`, textIndent: `-${hang}ch` } : undefined;
+    return <span className="block min-h-[1lh] break-words whitespace-pre-wrap" style={style}>{runs(spans)}</span>;
+  }
   const glyph = spans.find((sp) => /\S/.test(sp.text));
   const style = { borderColor: (glyph && spanStyle(glyph).color) || 'currentColor' };
   if (kind === 'rule') return <span aria-hidden className={`block ${chrome}`} style={style} />;
-  const [start, end] = boxInner(spans.map((sp) => sp.text).join(''), kind);
+  const [start, end] = boxInner(textOf(spans), kind);
   return (
     <span className={`block break-words whitespace-pre-wrap ${chrome}`} style={style}>
       {runs(sliceSpans(spans, start, end))}
@@ -145,26 +175,88 @@ function WrapLine({ spans, kind }: { spans: Span[]; kind: LineKind }) {
   );
 }
 
-/** Wrapped lines; a run of structure lines shares one sideways scroller so its columns stay in step. */
-function Wrapped({ lines, kinds }: { lines: Span[][]; kinds: LineKind[] }) {
+/**
+ * Wrapped lines. A run of structure lines shares one sideways scroller so its columns stay
+ * in step; a run of rows filled with one background (Pi's tool blocks, Claude Code's echoed
+ * prompt) becomes one panel; a paragraph the agent hard-wrapped at its own width is joined
+ * back into one line, so it reflows at the column's width instead of breaking twice.
+ */
+function Wrapped({ lines, kinds, joins, fills }: {
+  lines: Span[][];
+  kinds: LineKind[];
+  joins: boolean[];
+  fills: (number | string | undefined)[];
+}) {
   const out = [];
   for (let i = 0; i < lines.length; i++) {
-    if (kinds[i] !== 'structure') {
-      out.push(<WrapLine key={i} spans={lines[i]!} kind={kinds[i] ?? 'prose'} />);
+    const from = i;
+    const fill = fills[i];
+    if (fill !== undefined) {
+      while (i + 1 < lines.length && fills[i + 1] === fill) i++;
+      const to = i + 1;
+      const rows = lines.slice(from, to);
+      // Pi indents every row by one space; the panel's own padding replaces it.
+      const shift = rows.every((r) => !textOf(r).trim() || textOf(r).startsWith(' ')) ? 1 : 0;
+      out.push(
+        <span key={from} className="my-[0.25lh] block rounded-chip px-[1ch]" style={{ background: spanStyle({ text: '', bg: fill }).background }}>
+          <Wrapped
+            lines={rows.map((r) => sliceSpans(r, shift, Infinity))}
+            kinds={kinds.slice(from, to)}
+            joins={[false, ...joins.slice(from + 1, to)]}
+            fills={[]}
+          />
+        </span>,
+      );
       continue;
     }
-    const from = i;
-    while (kinds[i + 1] === 'structure') i++;
+    if (kinds[i] === 'structure') {
+      while (kinds[i + 1] === 'structure' && fills[i + 1] === undefined) i++;
+      out.push(
+        <span key={from} className="block overflow-x-auto">
+          {lines.slice(from, i + 1).map((spans, j) => (
+            <span key={j} className="block min-h-[1lh] w-max whitespace-pre">{runs(trimmed(spans))}</span>
+          ))}
+        </span>,
+      );
+      continue;
+    }
+    if (kinds[i] === 'prose' && joins[i + 1] && fills[i + 1] === undefined) {
+      // The first line keeps its indent; each continuation drops its own and joins on a space.
+      const parts = [trimmed(lines[i]!)];
+      const hang = textOf(lines[i + 1]!).search(/\S/);
+      while (joins[i + 1] && fills[i + 1] === undefined) {
+        i++;
+        const spans = lines[i]!;
+        parts.push([{ text: ' ' }, ...trimmed(spans, textOf(spans).search(/\S/))]);
+      }
+      out.push(<WrapLine key={from} spans={parts.flat()} kind="prose" hang={hang} />);
+      continue;
+    }
+    const prose = kinds[i] === 'prose';
     out.push(
-      <span key={from} className="block overflow-x-auto">
-        {lines.slice(from, i + 1).map((spans, j) => (
-          <span key={j} className="block min-h-[1lh] w-max whitespace-pre">{runs(spans)}</span>
-        ))}
-      </span>,
+      <WrapLine
+        key={i}
+        spans={prose ? trimmed(lines[i]!) : lines[i]!}
+        kind={kinds[i] ?? 'prose'}
+        hang={prose ? hangOf(textOf(lines[i]!)) : 0}
+      />,
     );
   }
   return <>{out}</>;
 }
+
+/**
+ * The grid's spans. A painted background is a cell-tall block, so a run of filled rows
+ * (a tool block, an echoed prompt) reads as one band instead of stripes split by the leading.
+ */
+const gridRuns = (spans: Span[]) => spans.map((sp, j) => (
+  <span
+    key={j}
+    style={sp.bg !== undefined || sp.inverse ? { ...spanStyle(sp), display: 'inline-block', height: '1lh', verticalAlign: 'top' } : spanStyle(sp)}
+  >
+    {sp.text}
+  </span>
+));
 
 /** Styled ANSI text. Shared by the grid and the blocked card's detection excerpt. */
 export function Ansi({ text }: { text: string }) {
@@ -421,6 +513,10 @@ const HOLD_MS = 800;
 
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
 
+type WrapChoice = 'on' | 'off' | 'auto';
+/** The widest Wrap reflows to, in columns: a terminal's common wide width, still readable. */
+const WRAP_MEASURE = 120;
+
 
 /** The last block the agent printed, for read-aloud. */
 function lastBlock(text?: string): string {
@@ -453,16 +549,21 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const shown = current ?? held;
   const lines = useMemo(() => (shown ? parseAnsi(shown.text) : []), [shown]);
 
-  // Wrap is the default reading mode for an agent and never for a shell, where the columns
-  // are the layout (htop, logs). Remembered per kind, not per Pane.
+  // Wrap is the default reading mode for an agent. A shell defaults to auto: line output
+  // wraps, a full-screen program (htop, k9s, vim) keeps the grid, where the columns are the
+  // layout. An explicit on or off wins over auto. Remembered per kind, not per Pane.
   const kind = pane?.agent ? 'agent' : 'shell';
-  const [wraps, setWraps] = useState(() => ({
-    agent: localStorage.getItem('tautan.wrap.agent') !== 'off',
-    shell: localStorage.getItem('tautan.wrap.shell') === 'on',
-  }));
-  const wrap = wraps[kind];
-  const setWrap = (v: boolean) => {
-    localStorage.setItem(`tautan.wrap.${kind}`, v ? 'on' : 'off');
+  const [wraps, setWraps] = useState(() => {
+    const shell = localStorage.getItem('tautan.wrap.shell');
+    return {
+      agent: localStorage.getItem('tautan.wrap.agent') === 'off' ? 'off' : 'on',
+      shell: shell === 'on' || shell === 'off' ? shell : 'auto',
+    } as Record<'agent' | 'shell', WrapChoice>;
+  });
+  const wrapChoice = wraps[kind];
+  const setWrap = (v: WrapChoice) => {
+    if (v === 'auto') localStorage.removeItem(`tautan.wrap.${kind}`);
+    else localStorage.setItem(`tautan.wrap.${kind}`, v);
     setWraps((w) => ({ ...w, [kind]: v }));
   };
   // Fit is off until the user asks for it: the column grows to the grid's own width on a
@@ -575,12 +676,20 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const potentialRoom = Math.max(room, (viewportW || 0) - 32);
   const gridWidth = pane?.cols ? pane.cols * cell.cw + 34 : 0;
   const fits = !!gridWidth && !!potentialRoom && gridWidth <= potentialRoom + 34;
+  const screenText = useMemo(() => lines.map(textOf).join('\n'), [lines]);
+  // Auto reads the App profile first (a program tautan forwards the mouse to is full-screen),
+  // then the Screen itself, so an unknown TUI still keeps its grid.
+  const wrap = wrapChoice === 'auto' ? !profile.mouse && !tuiScreen(screenText, pane?.cols) : wrapChoice === 'on';
   const effectiveWrap = wrap && !fits;
   const kinds = useMemo(
     () => effectiveWrap
-      ? classify(lines.map((spans) => spans.map((span) => span.text).join('')).join('\n'), pane?.cols)
+      ? {
+          kinds: classify(screenText, pane?.cols),
+          joins: continues(screenText, pane?.cols),
+          fills: lines.map((spans) => fillOf(spans, pane?.cols)),
+        }
       : null,
-    [effectiveWrap, lines, pane?.cols],
+    [effectiveWrap, screenText, lines, pane?.cols],
   );
   /** Bumped by the ⋯ switch, so the per-Pane override is re-read without a second store. */
   const [override, setOverride] = useState(0);
@@ -976,7 +1085,9 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         >
           <pre
             ref={pre}
-            className={`relative text-caption lg:mx-auto ${
+            // Left-aligned on the header's gutter at every width: a grid narrower than the
+            // Pane's column starts where the Tabs do, not as a centred island.
+            className={`relative text-caption ${
               // Wrapped text takes the column; unwrapped text keeps the grid's own width.
               // `w-max` would be max-content, which never wraps, so Wrap needs `w-full`.
               effectiveWrap ? 'w-full break-words whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre lg:min-w-0'
@@ -985,17 +1096,19 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
             // everything else falls through to Geist Mono.
             style={{
               fontFamily: '"tautan-box", "Geist Mono", ui-monospace, monospace',
-              // Never reflow wider than the Pane itself: the agent wrote for `cols` columns.
-              maxWidth: effectiveWrap && pane?.cols ? `${pane.cols}ch` : undefined,
+              // Never reflow wider than the Pane itself (the agent wrote for `cols` columns),
+              // nor past a reading measure: a 244-column Pane on a wide desktop is ~150
+              // characters a line, too long to read.
+              maxWidth: effectiveWrap ? `min(${pane?.cols ?? WRAP_MEASURE}ch, ${WRAP_MEASURE}ch)` : undefined,
               ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left' } : null),
             }}
           >
             {effectiveWrap && kinds ? (
-              <Wrapped lines={lines} kinds={kinds} />
+              <Wrapped lines={lines} kinds={kinds.kinds} joins={kinds.joins} fills={kinds.fills} />
             ) : (
               lines.map((spans, i) => (
                 <Fragment key={i}>
-                  {runs(spans)}
+                  {gridRuns(spans)}
                   {'\n'}
                 </Fragment>
               ))
@@ -1132,7 +1245,14 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         items={[
           // The phone header has no room for it; at `lg` it sits in the header.
           ...(agent && !desktop ? [{ label: 'Read aloud', onClick: speak }] : []),
-          { label: wrap ? 'Wrap: on' : 'Wrap: off', onClick: () => setWrap(!wrap) },
+          kind === 'shell'
+            ? {
+                // Three states for a shell: auto, then the two explicit choices.
+                label: `Wrap: ${wrapChoice}`,
+                sub: wrapChoice === 'auto' ? (wrap ? 'on for this output' : 'off for a full-screen app') : undefined,
+                onClick: () => setWrap(wrapChoice === 'auto' ? 'on' : wrapChoice === 'on' ? 'off' : 'auto'),
+              }
+            : { label: `Wrap: ${wrapChoice}`, onClick: () => setWrap(wrapChoice === 'on' ? 'off' : 'on') },
           {
             // ADR 0004: a geometry lease makes the agent draw at this screen's columns; the
             // desktop's copy of the Pane narrows until it is released. Releasing on leave is
