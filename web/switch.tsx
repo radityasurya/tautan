@@ -1,9 +1,14 @@
 import { useState, type ReactNode } from 'react';
 import type { State, StatePane } from '../shared/types.ts';
-import { Sheet } from './sheets.tsx';
+import { FLUSH_BODY, Sheet } from './sheets.tsx';
 import { navigate } from './app.tsx';
 import { Dot, matchPane, timeAgo, unseen } from './home.tsx';
 import { Chip, SearchInput } from './halaska-kit';
+
+/** A Switch row runs edge to edge; the inset is its own padding, so the scroller has none. */
+export const SWITCH_ROW = 'flex min-h-11 w-full items-center gap-2.5 px-6 text-left';
+/** A Switch section heading, inset like the rows. */
+export const SWITCH_HEADING = 'label-caps px-6 pt-3.5 pb-1';
 
 /** One Pane row, shared by every section: dot, agent, title, and how long ago it changed. */
 function PaneRow({ pane, currentKey, onPick }: { pane: StatePane; currentKey: string; onPick: () => void }) {
@@ -16,9 +21,7 @@ function PaneRow({ pane, currentKey, onPick }: { pane: StatePane; currentKey: st
           onPick();
         }}
         aria-current={pane.key === currentKey ? 'true' : undefined}
-        className={`flex min-h-11 w-full items-center gap-2.5 rounded-chip px-3 text-left ${
-          pane.key === currentKey ? 'bg-muted/20' : 'active:bg-bg'
-        }`}
+        className={`${SWITCH_ROW} ${pane.key === currentKey ? 'bg-muted/20' : 'hover:bg-bg active:bg-bg'}`}
       >
         <Dot status={pane.status} seen={!unseen(pane)} />
         <span className="shrink-0 text-body text-muted">{pane.agent ?? 'shell'}</span>
@@ -82,23 +85,28 @@ export function SwitchDrawer({
     })
     .filter((g) => g.panes.length > 0);
   return (
-    <Sheet open={open} title={title} onClose={onClose}>
-      <SearchInput value={q} onChange={setQ} placeholder="Switch to…" shortcut={null} style={{ width: '100%' }} />
+    <Sheet open={open} title={title} onClose={onClose} flush>
+      {/* The search and the Host chips stay put; only the list under them scrolls. The
+          gutter is reserved, so a scrollbar that comes and goes never moves the rows. */}
+      <div className="flex flex-col" style={FLUSH_BODY}>
+        <div className="shrink-0 border-b border-border px-6 pb-3">
+          <SearchInput value={q} onChange={setQ} placeholder="Switch to…" shortcut={null} style={{ width: '100%' }} />
 
-      <div role="group" aria-label="Filter by Host" className="hscroll mt-3 flex shrink-0 gap-2">
-        {[{ id: null, label: 'All', online: true }, ...(state?.hosts ?? [])].map((h) => (
-          <Chip key={h.id ?? 'all'} selected={host === h.id} onToggle={() => setHost(h.id)}>
-            {h.label}
-          </Chip>
-        ))}
-      </div>
+          <div role="group" aria-label="Filter by Host" className="hscroll mt-3 flex shrink-0 gap-2">
+            {[{ id: null, label: 'All', online: true }, ...(state?.hosts ?? [])].map((h) => (
+              <Chip key={h.id ?? 'all'} selected={host === h.id} onToggle={() => setHost(h.id)}>
+                {h.label}
+              </Chip>
+            ))}
+          </div>
+        </div>
 
-        <div className="mt-2 overflow-y-auto overscroll-contain pb-2" style={{ maxHeight: "calc(100dvh - 240px)" }}>
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-6" style={{ scrollbarGutter: 'stable' }}>
           {head && !needle && head}
-          {matches.length === 0 && <p className="px-3 py-6 text-body text-muted">Nothing matches “{q}”.</p>}
+          {matches.length === 0 && <p className="px-6 py-6 text-body text-muted">Nothing matches “{q}”.</p>}
           {needsYou.length > 0 && (
             <section>
-              <h3 className="label-caps px-3 pt-3.5 pb-1">Needs you</h3>
+              <h3 className={SWITCH_HEADING}>Needs you</h3>
               <ul>
                 {needsYou.map((p) => (
                   <PaneRow key={p.key} pane={p} currentKey={currentKey} onPick={pick} />
@@ -108,7 +116,7 @@ export function SwitchDrawer({
           )}
           {running.length > 0 && (
             <section>
-              <h3 className="label-caps px-3 pt-3.5 pb-1">Running</h3>
+              <h3 className={SWITCH_HEADING}>Running</h3>
               <ul>
                 {running.map((p) => (
                   <PaneRow key={p.key} pane={p} currentKey={currentKey} onPick={pick} />
@@ -118,9 +126,9 @@ export function SwitchDrawer({
           )}
           {groups.map(({ w, mux, host: h, panes }) => (
             <section key={w.key}>
-              <h3 className="label-caps flex px-3 pt-3.5 pb-1">
-                {w.label}
-                <span className="ml-1.5 font-medium tracking-normal normal-case text-muted">
+              <h3 className={`${SWITCH_HEADING} flex`}>
+                <span className="min-w-0 truncate">{w.label}</span>
+                <span className="ml-1.5 shrink-0 font-medium tracking-normal normal-case text-muted">
                   · {h?.label}
                   {mux?.kind === 'tmux' && ' · tmux'}
                 </span>
@@ -133,6 +141,7 @@ export function SwitchDrawer({
             </section>
           ))}
         </div>
+      </div>
     </Sheet>
   );
 }

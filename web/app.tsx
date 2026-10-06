@@ -518,7 +518,8 @@ export function App() {
           ) : (
             sidebar && (
               <aside aria-label="All panes" className="sticky top-0 flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface">
-                <div className="min-h-0 flex-1 overflow-y-auto">
+                {/* Home scrolls its own list, under a top that stays put. */}
+                <div className="min-h-0 flex-1">
                   <Home state={state} compact />
                 </div>
                 <nav aria-label="Sections" className="flex shrink-0 gap-1 border-t border-border p-2">

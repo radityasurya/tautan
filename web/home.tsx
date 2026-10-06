@@ -497,7 +497,7 @@ function GroupHeader({
           type="button"
           aria-label={`${label} actions`}
           onClick={onMenu}
-          className="press -mr-1 mb-0.5 flex size-11 shrink-0 items-center justify-center text-muted"
+          className="press mb-0.5 flex size-11 shrink-0 items-center justify-center text-muted"
         >
           <More size={18} />
         </button>
@@ -678,8 +678,24 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const rowActions = (p: StatePane): RowActions | undefined =>
     writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
-  return (
-    <div className={compact ? 'pb-4' : 'mx-auto max-w-2xl pb-28'}>
+  const listed = state && (needsYou.length > 0 || running.length > 0 || groups.length > 0);
+  const groupToggle = (
+    <div role="group" aria-label="Group panes by" className={`flex justify-end px-4 ${compact ? 'pt-1.5 pb-2.5' : 'pt-3'}`}>
+      <div className="w-52">
+        <SegmentedControl
+          options={['Workspace', 'Folder']}
+          value={grouping === 'workspace' ? 'Workspace' : 'Folder'}
+          onChange={(value: string) => groupBy(value === 'Folder' ? 'folder' : 'workspace')}
+        />
+      </div>
+    </div>
+  );
+
+  // The top: title, search, Host chips. In the sidebar it holds the grouping too, and stays
+  // put while only the list under it scrolls; on the phone the window scrolls and the
+  // TopBar is sticky, so neither part may be wrapped there.
+  const top = (
+    <>
       <TopBar
         title="tautan"
         right={
@@ -728,7 +744,12 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
           ))}
         </div>
       )}
+      {compact && listed && groupToggle}
+    </>
+  );
 
+  const list = (
+    <>
       {!state ? (
         <ul aria-busy className="pt-6">
           {[0, 1, 2].map((i) => (
@@ -741,7 +762,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
             </li>
           ))}
         </ul>
-      ) : needsYou.length === 0 && running.length === 0 && groups.length === 0 ? (
+      ) : !listed ? (
         <div className="pt-6">
           {needle ? (
             <EmptyState title={`Nothing matches “${q.trim()}”`} description="Try an agent, a title or a Workspace label." />
@@ -796,15 +817,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
             </section>
           )}
 
-          <div role="group" aria-label="Group panes by" className="flex justify-end px-4 pt-3">
-            <div className="w-52">
-              <SegmentedControl
-                options={['Workspace', 'Folder']}
-                value={grouping === 'workspace' ? 'Workspace' : 'Folder'}
-                onChange={(value: string) => groupBy(value === 'Folder' ? 'folder' : 'workspace')}
-              />
-            </div>
-          </div>
+          {!compact && groupToggle}
 
           {grouping === 'workspace'
             ? groups.map(({ w, host: h, panes, all }) => {
@@ -875,6 +888,17 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                 );
               })}
         </>
+      )}
+    </>
+  );
+
+  return (
+    <div className={compact ? 'flex h-full min-h-0 flex-col' : 'mx-auto max-w-2xl pb-28'}>
+      {compact ? <div className="shrink-0 border-b border-border">{top}</div> : top}
+      {compact ? (
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-4">{list}</div>
+      ) : (
+        list
       )}
 
       <NewWorkspaceSheet

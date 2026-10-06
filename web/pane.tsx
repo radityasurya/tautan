@@ -20,7 +20,7 @@ import { ChevronDown, Down, Plus } from './icons.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
-import { SwitchDrawer } from './switch.tsx';
+import { SWITCH_HEADING, SWITCH_ROW, SwitchDrawer } from './switch.tsx';
 
 // ---- themed terminal colours ----
 // A 256-colour or truecolour span carries the palette the agent picked, which is nobody's
@@ -1063,7 +1063,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
         title={switchTabs ? 'Switch Tab' : 'Switch Pane'}
         head={switchTabs && (
           <section>
-            <h3 className="label-caps px-3 pt-3.5 pb-1">Tabs in {ws?.label ?? 'this Workspace'}</h3>
+            <h3 className={SWITCH_HEADING}>Tabs in {ws?.label ?? 'this Workspace'}</h3>
             <ul>
               {tabs.map((t, i) => (
                 <li key={t.id}>
@@ -1074,9 +1074,7 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
                       setShowSwitch(false);
                       openTab(t.id);
                     }}
-                    className={`flex min-h-11 w-full items-center gap-2.5 rounded-chip px-3 text-left ${
-                      t.id === pane?.tabId ? 'bg-muted/20' : 'active:bg-bg'
-                    }`}
+                    className={`${SWITCH_ROW} ${t.id === pane?.tabId ? 'bg-muted/20' : 'hover:bg-bg active:bg-bg'}`}
                   >
                     <Dot status={t.status} seen={t.status === 'idle' || t.status === 'unknown'} />
                     <span className="min-w-0 flex-1 truncate text-body">{t.label}</span>

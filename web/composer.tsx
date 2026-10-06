@@ -800,11 +800,11 @@ export function Composer({
 
   const box = desktop && agent ? (
     <div className="flex flex-col rounded-card border border-border bg-bg focus-within:border-accent/60">
-      <div className="flex gap-2.5 px-4 pt-3.5 pb-1.5">
+      <div className="flex gap-2.5 px-3 pt-3 pb-1.5">
         {glyph}
         {textarea}
       </div>
-      <div role="toolbar" aria-label="Composer" className="flex flex-wrap items-center gap-1.5 pt-1.5 pr-2 pb-2 pl-2.5">
+      <div role="toolbar" aria-label="Composer" className="flex flex-wrap items-center gap-1.5 px-2 pt-1.5 pb-2">
         {keysToggle}
         {attachButton}
         <button
@@ -900,11 +900,11 @@ export function Composer({
     <div
       className={`flex shrink-0 flex-col ${
         desktop
-          ? 'border-t border-border bg-elevated px-6 pt-4 pb-5'
+          ? 'border-t border-border bg-elevated px-4 pt-3 pb-4'
           : 'rounded-t-drawer bg-elevated pt-3 pb-[max(env(safe-area-inset-bottom),12px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]'
       }`}
     >
-      <div className={`flex flex-col gap-2.5 ${desktop ? 'mx-auto w-full max-w-4xl' : ''}`}>
+      <div className={`flex flex-col gap-2.5 ${desktop ? 'mx-auto w-full max-w-5xl' : ''}`}>
         {/* The blocked card takes the replies' place. The live region must exist before the
             card does, or a screen reader announces nothing: it stays mounted at zero height
             while no prompt asks. */}

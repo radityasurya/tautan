@@ -63,18 +63,22 @@ export function useWrite<T>(open: boolean, run: Submit<T>, onClose: () => void) 
  * (the "in tautan · mbp" context) under the title where the kit's header row leaves room.
  * The kit keeps a closed panel mounted and focusable off-screen, so the wrapper mounts
  * on open and unmounts once the slide-out has played; content unmounts immediately.
+ * `flush` hands the body to the child: no scroll wrapper, so it can bleed to the panel's
+ * edges (`FLUSH_BODY`) and pin its own top over its own scroller.
  */
 export function Sheet({
   open,
   title,
   meta,
   onClose,
+  flush,
   children,
 }: {
   open: boolean;
   title: string;
   meta?: ReactNode;
   onClose: () => void;
+  flush?: boolean;
   children: ReactNode;
 }) {
   const [mounted, setMounted] = useState(open);
@@ -95,12 +99,23 @@ export function Sheet({
               <Caption>{meta}</Caption>
             </div>
           )}
-          <div style={{ maxHeight: 'calc(100dvh - 120px)', overflowY: 'auto', overscrollBehavior: 'contain' }}>{children}</div>
+          {flush ? (
+            children
+          ) : (
+            <div style={{ maxHeight: 'calc(100dvh - 120px)', overflowY: 'auto', overscrollBehavior: 'contain' }}>{children}</div>
+          )}
         </>
       )}
     </KitSheet>
   );
 }
+
+/**
+ * A `flush` body: undoes the kit panel's 24 px padding on the sides and the bottom, and
+ * fills the height under the kit's title row (24 padding + 32 row + 20 gap = 76 px).
+ * ponytail: tied to the kit's Sheet metrics; measure the title row if the kit changes them.
+ */
+export const FLUSH_BODY = { margin: '0 -24px -24px', height: 'calc(100dvh - 76px)' } as const;
 
 /** The error codes the Hub sends, in words. Anything else is shown with its code. */
 const WHY: Record<string, string> = {
