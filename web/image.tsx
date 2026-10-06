@@ -18,8 +18,10 @@ export function safeImage(src: string): string | undefined {
 
 /** The Hub file route for a path the Agent read; the Hub keeps it inside the Pane cwd. */
 export const fileImage = (paneKey: string, path: string) => `/api/panes/${encodeURIComponent(paneKey)}/file?path=${encodeURIComponent(path)}`;
-/** The image a Read returned, as the Hub keeps it from the transcript: any path, even outside the cwd. */
-export const chatImage = (paneKey: string, imageId: number) => `/api/panes/${encodeURIComponent(paneKey)}/chat/image/${imageId}`;
+/** The image a Read returned, as the Hub keeps it from the transcript: any path, even outside the cwd.
+ *  `agent` reads it from that subagent's transcript. */
+export const chatImage = (paneKey: string, imageId: number, agent?: string) =>
+  `/api/panes/${encodeURIComponent(paneKey)}/chat/image/${imageId}${agent ? `?agent=${encodeURIComponent(agent)}` : ''}`;
 /** The full-screen file viewer for the same path. */
 export const fileView = (paneKey: string, path: string) => `#/file/${encodeURIComponent(paneKey)}?path=${encodeURIComponent(path)}`;
 

@@ -112,3 +112,36 @@ describe('toolbar from Screen', () => {
     expect(CYCLE_MODE_KEYS).toEqual(['shift+tab']);
   });
 });
+
+describe('Claude spinner line', () => {
+  const claude = PROFILES.claude!;
+  const rule = '─'.repeat(60);
+  // Recorded 2026-10-06 from the live herdr (pane.read, visible): the spinner sits above the
+  // input box, with the subagent list under the footer.
+  const working = [
+    '● Finding useEffect calls in Hosts',
+    '',
+    '* Razzle-dazzling… (9s · ↓ 277 tokens · thinking)',
+    '                                        ✔ Update installed · Restart to update',
+    rule, '❯', rule,
+    '  [PONYTAIL]',
+    '  ⏵⏵ auto mode on · 1 shell · ⧉ 2 · ← 2 agents',
+    '',
+    '  ● main',
+    '  ◯ frontend  Reading theme.css animations and icons.tsx      1m 59s · ↓ 99.0k tokens',
+    '  ◯ frontend  Reading LensSwitch in chat.tsx                  1m 59s · ↓ 69.5k tokens',
+  ];
+
+  test('reads the verb and the elapsed time', () => {
+    expect(toolbarFromScreen(claude, working).spinner).toEqual({ verb: 'Razzle-dazzling', elapsed: '9s' });
+    expect(toolbarFromScreen(claude, ['✢ Tempering… (1m 55s · ↓ 10.0k tokens · esc to interrupt)']).spinner)
+      .toEqual({ verb: 'Tempering', elapsed: '1m 55s' });
+    expect(toolbarFromScreen(claude, ['✻ Thinking… (esc to interrupt)']).spinner).toEqual({ verb: 'Thinking', elapsed: undefined });
+  });
+
+  test('a finished turn or the banner is not a spinner', () => {
+    expect(toolbarFromScreen(claude, ['✻ Brewed for 48s · done 8:01 PM', rule, '❯']).spinner).toBeUndefined();
+    expect(toolbarFromScreen(claude, ['✻ Claude Code v2.1.4  ~/projects/tautan']).spinner).toBeUndefined();
+    expect(toolbarFromScreen(PROFILES.pi!, working).spinner).toBeUndefined();
+  });
+});

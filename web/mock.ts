@@ -6,7 +6,7 @@ import type {
   Explain, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
   ScreenMode, SeenBody, Settings, SettingsBody, State, StatePane, Status, SuggestSettingBody,
 } from '../shared/types.ts';
-import type { Turn } from '../shared/chat.ts';
+import type { ChatResponse, Subagent, Turn } from '../shared/chat.ts';
 
 // ---- fixtures ----
 
@@ -60,6 +60,18 @@ const CLAUDE_VISIBLE = [
   HINT_LINE,
   // Claude Code's own status footer: two Affordances, `shift+tab` and `/tasks`.
   `${DIM}⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent${RESET}`,
+].join('\r\n');
+
+/** A Claude Pane at work: the spinner line sits above the input box, as recorded live. */
+const CLAUDE_WORKING = [
+  `${BLUE}●${RESET} ${BOLD}Read${RESET} ${DIM}server/events.ts${RESET}`,
+  `  ${GREEN}⎿${RESET}  ${DIM}Read 212 lines${RESET}`,
+  '',
+  `${CLAUDE}*${RESET} ${CLAUDE}Razzle-dazzling…${RESET} ${DIM}(1m 12s · ↓ 3.4k tokens · thinking)${RESET}`,
+  `${DIM}${'─'.repeat(78)}${RESET}`,
+  '❯ ',
+  `${DIM}${'─'.repeat(78)}${RESET}`,
+  `${DIM}  ⏵⏵ auto mode on · ← 3 agents${RESET}`,
 ].join('\r\n');
 
 /** The same Pane in `recent` mode: reflowed, no styling. */
@@ -296,6 +308,8 @@ export const mockScreens: Record<string, Record<ScreenMode, Screen>> = Object.fr
     p.key,
     p.key === 'mbp/herdr/p1'
       ? pair(p.revision, CLAUDE_VISIBLE, CLAUDE_RECENT)
+      : p.key === 'mbp/herdr/p2'
+        ? pair(p.revision, CLAUDE_WORKING, strip(CLAUDE_WORKING))
       : p.key === 'mbp/tmux/p0'
         ? pair(p.revision, HTOP, strip(HTOP))
         : p.key === 'mbp/tmux/p2'
@@ -528,6 +542,9 @@ export function assertMockInvariants(): void {
     Object.values(MOCK_DIFFS).some((d) => d.working?.truncated) || 'a cut diff',
     Object.values(MOCK_DIFFS).some((d) => d.staged?.files.length === 0) || 'an empty diff scope',
     Object.keys(MOCK_DIFFS).every((key) => mockState.workspaces.some((w) => w.key === key)) || 'a Workspace per diff',
+    /… \(\d/.test(strip(CLAUDE_WORKING)) || 'a Claude spinner line',
+    MOCK_SUBAGENTS.some((a) => a.parentId) || 'a nested subagent',
+    mockChat().turns.some((t) => t.tools.some((tool) => tool.link && tool.previewId !== undefined)) || 'an Artifact card with a preview',
   ].filter((p) => p !== true);
   if (problems.length) throw new Error(`mock fixtures lost ${problems.join(', ')}`);
 }
@@ -556,8 +573,57 @@ function swatch(n: number): string {
 const mockSent: Turn[] = [];
 const MOCK_LOG_MS = 3000;
 
+/** Claude Code's subagents for the transcript below; `a3` was started by `a2`. */
+const MOCK_SUBAGENTS: Subagent[] = [
+  { id: 'a1', type: 'Explore', description: 'Find where SSE events are routed', toolUseId: 'toolu_a1', at: ago(5) },
+  { id: 'a2', type: 'general-purpose', description: 'Write the SGR 22 regression test', toolUseId: 'toolu_a2', at: ago(4.5) },
+  { id: 'a3', type: 'Explore', description: 'Read the old ANSI fixtures', toolUseId: 'toolu_a3', parentId: 'a2', at: ago(4) },
+];
+
+/** Each subagent's own turns, as `?agent=<id>` returns them. */
+const SUBAGENT_TURNS: Record<string, Turn[]> = {
+  a1: [
+    { role: 'user', at: ago(5), tools: [], text: 'Find every place the Hub routes an SSE event, and list the event names.' },
+    { role: 'assistant', at: ago(5), text: 'Searching the server for the event stream.', tools: [
+      { name: 'Grep', brief: 'events.push', detail: 'events.push\nin server' },
+      { name: 'Read', brief: 'server/events.ts', detail: '/home/dev/projects/tautan/server/events.ts' },
+    ] },
+    { role: 'assistant', at: ago(4.8), tools: [], text: 'Two routes push events: `server/events.ts` (`state`, `screen`) and `server/http.ts` (`hello`). Nothing else writes to the stream.' },
+  ],
+  a2: [
+    { role: 'user', at: ago(4.5), tools: [], text: 'Add a regression test for `ESC[2m … ESC[22m` in test/ansi.test.ts.' },
+    { role: 'assistant', at: ago(4.4), text: 'I will check the existing fixtures first.', tools: [
+      { name: 'Task', brief: 'Read the old ANSI fixtures', detail: '{\n  "subagent_type": "Explore",\n  "description": "Read the old ANSI fixtures"\n}', subagentId: 'a3' },
+    ] },
+    { role: 'assistant', at: ago(3.8), tools: [
+      { name: 'Edit', brief: 'test/ansi.test.ts', detail: '/home/dev/projects/tautan/test/ansi.test.ts\n\n+ test(\'SGR 22 clears dim\', () => {…});' },
+    ], text: 'Added `SGR 22 clears dim`. It fails on the old parser and passes on the fix.' },
+  ],
+  a3: [
+    { role: 'user', at: ago(4), tools: [], text: 'List the fixtures in test/ansi.test.ts that use SGR 2 or 22.' },
+    { role: 'assistant', at: ago(3.9), tools: [], text: 'Three fixtures use `ESC[2m`; none closes it with `ESC[22m`.' },
+  ],
+};
+
+/** The HTML a preview id stands for. Served as a data URL in the mock; the Hub sends it sandboxed. */
+const PREVIEW_HTML = [
+  '<!doctype html><meta charset="utf-8"><title>ANSI palette</title>',
+  '<style>body{font:16px/1.5 system-ui,sans-serif;margin:48px;color:#1d1d1f}h1{font-size:40px;margin:0 0 8px}',
+  'p{color:#6e6e73;margin:0 0 32px}.g{display:grid;grid-template-columns:repeat(8,1fr);gap:12px}',
+  '.s{height:120px;border-radius:12px;display:flex;align-items:end;padding:10px;font:12px ui-monospace,monospace;color:#fff}</style>',
+  '<h1>ANSI palette reference</h1><p>The sixteen colours tautan maps onto the kit palette, light theme.</p><div class="g">',
+  ...['#1d1f21', '#cc6666', '#5aa65a', '#d9a440', '#4f84c4', '#9a6cc4', '#3ea6b0', '#9aa0a6',
+    '#5c6370', '#e06c75', '#98c379', '#e5c07b', '#61afef', '#c678dd', '#56b6c2', '#c8ccd4']
+    .map((c, n) => `<div class="s" style="background:${c}">${n}</div>`),
+  '</div><script>document.body.style.background="red"</script>',
+].join('');
+
 /** A Claude transcript as `GET /api/panes/:key/chat` returns it, with the Markdown Claude writes. */
-const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
+const mockChat = (agent?: string): ChatResponse => agent ? {
+  sessionId: '11111111-1111-1111-1111-111111111111', at: Date.now(), agent,
+  turns: SUBAGENT_TURNS[agent] ?? [], subagents: MOCK_SUBAGENTS,
+} : ({
+  subagents: MOCK_SUBAGENTS,
   sessionId: '11111111-1111-1111-1111-111111111111',
   at: Date.now(),
   turns: ([
@@ -621,6 +687,25 @@ const mockChat = (): { sessionId: string; at: number; turns: Turn[] } => ({
         '',
         'All **41** tests pass. See [the ANSI notes](https://github.com/radityasurya/tautan/blob/main/docs/UI.md) for the palette rules. A `<script>` tag in the transcript stays text.',
       ].join('\n'),
+    },
+    {
+      // Two subagents, started side by side.
+      role: 'assistant', at: ago(5), text: 'I will map the event routes and write the regression test in parallel.',
+      tools: [
+        { name: 'Task', brief: 'Find where SSE events are routed', detail: '{\n  "subagent_type": "Explore",\n  "description": "Find where SSE events are routed"\n}', subagentId: 'a1' },
+        { name: 'Task', brief: 'Write the SGR 22 regression test', detail: '{\n  "subagent_type": "general-purpose",\n  "description": "Write the SGR 22 regression test"\n}', subagentId: 'a2' },
+      ],
+    },
+    {
+      // A published Artifact (a link card with a preview of its source) and a plain HTML Write.
+      role: 'assistant', at: ago(3), text: 'I published the palette as a page, and wrote the report next to it.',
+      tools: [
+        { name: 'Write', brief: '/home/dev/projects/tautan/docs/report.html', detail: '/home/dev/projects/tautan/docs/report.html', previewId: 2 },
+        {
+          name: 'Artifact', brief: 'docs/ansi-palette.html', detail: '{\n  "file": "docs/ansi-palette.html",\n  "title": "ANSI palette reference"\n}',
+          link: { url: 'https://claude.ai/public/artifacts/6f1c2a9e-ansi-palette', title: 'ANSI palette reference' }, previewId: 1,
+        },
+      ],
     },
     { role: 'user', text: 'Nice. Run the full suite and then:\n- commit\n- open a PR', tools: [], at: ago(2) },
     { role: 'assistant', text: 'Running `pnpm test` now.', tools: [{
@@ -1022,7 +1107,11 @@ function route(s: Store, url: URL, method: string, body: unknown): Response | un
     return json(s.screens[key]![mode]);
   }
   // Claude Panes only, like the Hub: any other Agent answers 404 and the lens falls back to Screen.
-  if (method === 'GET' && match[2] === 'chat') return pane.agent === 'claude' ? json(mockChat()) : json({ error: 'no-transcript' }, 404);
+  if (method === 'GET' && match[2] === 'chat') {
+    if (pane.agent !== 'claude') return json({ error: 'no-transcript' }, 404);
+    const agent = url.searchParams.get('agent') ?? undefined;
+    return agent && !SUBAGENT_TURNS[agent] ? json({ error: 'no-subagent' }, 404) : json(mockChat(agent));
+  }
   if (method === 'GET' && match[2] === 'explain') return json(mockExplains[key] ?? null);
   if (method === 'POST' && match[2] === 'input') {
     input(s, key, (body ?? {}) as InputBody);
@@ -1121,9 +1210,16 @@ export function installMock(): void {
   // `/api/panes/:key/chat/image/:id` loads the app icon. React sets `src` as a property in
   // some builds and with setAttribute in others, so both are wrapped.
   // ponytail: mock only, one stand-in picture; a per-id fixture when a screenshot needs two.
-  const stand = (value: string) => /^\/api\/panes\/[^/]+\/chat\/image\/\d+$/.test(value) ? '/icon-512.png' : value;
-  const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!;
-  Object.defineProperty(HTMLImageElement.prototype, 'src', { ...src, set(value: string) { src.set!.call(this, stand(String(value))); } });
+  // A preview iframe gets the fixture page as a data URL, which the sandbox keeps inert.
+  const page = `data:text/html;charset=utf-8,${encodeURIComponent(PREVIEW_HTML)}`;
+  const stand = (value: string) =>
+    /^\/api\/panes\/[^/]+\/chat\/image\/\d+(?:\?|$)/.test(value) ? '/icon-512.png'
+      : /^\/api\/panes\/[^/]+\/chat\/preview\/\d+(?:\?|$)/.test(value) ? page
+      : value;
+  for (const proto of [HTMLImageElement.prototype, HTMLIFrameElement.prototype]) {
+    const src = Object.getOwnPropertyDescriptor(proto, 'src')!;
+    Object.defineProperty(proto, 'src', { ...src, set(value: string) { src.set!.call(this, stand(String(value))); } });
+  }
   const setAttribute = Element.prototype.setAttribute;
   Element.prototype.setAttribute = function (name: string, value: string) {
     setAttribute.call(this, name, name === 'src' ? stand(value) : value);
