@@ -275,6 +275,118 @@ Verified in an emulated phone (390×844, touch): a tap on a real htop through a 
 moved the highlighted row, read back from `GET /api/panes/:key/screen`; the k9s and Claude
 Code fixtures underline their Hints and list them as dock pills.
 
+## Phase 11 — trust the answer
+
+Wave 1. Design: [ADR 0001](./adr/0001-render-mux-snapshots-not-a-pty.md) still holds; the
+prompt id is a snapshot-side check.
+
+- [ ] `promptId()`: salted hash of detection + visible Screen, the ticking Claude working
+      line normalised to literal placeholders — `shared/blocked.ts`, `test/prompt-id.test.ts`
+      (match, mismatch, ticking line, restart, twin shapes)
+- [ ] Explain carries the id; input with a stale id answers `409 prompt_changed` before
+      anything is sent — `server/http.ts`, `test/write.test.ts`, `test/blocked.contract.test.ts`
+- [ ] The blocked card as flat rows docked above the composer, mounted aria-live region,
+      Re-read on refusal — `web/blocked.tsx`, `web/pane.tsx`
+
+Verify: on the phone, trigger a permission box, let Claude move on, tap Send — the card says
+the prompt changed; answer a live box and watch the Status move to `working`.
+
+## Phase 12 — know you are needed
+
+Wave 2.
+
+- [ ] The top-edge alert card: one at a time, 3.6 s leave that pauses under a finger,
+      flick-up dismiss on `touchend`, tap opens the Pane — `web/alert.tsx`
+- [ ] Wake lock while a Pane is open (stale-request guarded); reconnect region always
+      mounted as `role="status"`; `document.title` follows the Pane — `web/app.tsx`
+- [ ] SSE delivery survives Bun's early `req.signal` abort (cleanup on enqueue failure;
+      the emit loop survives a dead subscriber) — `server/http.ts`, `server/mux.ts`
+
+Verify: open tautan on a Pane, make a second Pane ask a question — the card drops in and
+the tap opens it; the screen does not sleep while you watch an Agent work.
+
+## Phase 13 — reach what the Agent made
+
+Wave 3.
+
+- [ ] `GET /api/panes/:key/file?path=`: realpath containment local and remote, caps, media
+      types; the review's five findings fixed (SVG as text + `nosniff`, bounded reads,
+      finite caps, root cwd, BSD `stat`, no service-worker caching) — `server/http.ts`,
+      `test/write.test.ts`, `docs/SECURITY.md` “File viewer”
+- [ ] The viewer at `#/file/:key?path=` (image inline, text in Diff gutter conventions)
+      and the long-press Affordance that opens it — `web/file.tsx`, `web/affordances.tsx`
+
+Verify: let an Agent write a chart, long-press its path on the phone — the chart opens.
+
+## Phase 14 — fewer taps on a phone
+
+Wave 4.
+
+- [ ] Held messages above the composer with an ordered **Send now** once the Status leaves
+      `working`; folded to its caption while the card asks — `web/pane.tsx`
+- [ ] Tab rename and close from the strip (confirm only when it costs more than the Tab);
+      branch prefill in herdr's `worktree/<adj>-<noun>-<hex>` shape — `web/pane.tsx`,
+      `web/sheets.tsx`
+- [ ] One-shot `ctrl` on the shell preset; the recording pill (Cancel/Done, live levels,
+      4 Hz bar under reduced motion) — `web/keys.ts`, `web/pane.tsx`
+
+Verify: type while an Agent works then send the queue; rename a Tab; create a worktree
+without typing a branch; send `ctrl+r` with two taps; dictate with the pill showing.
+
+## Phase 15 — install on a phone
+
+Wave 5.
+
+- [ ] `herdr-plugin.toml` + `scripts/plugin.ts`: build/startup/actions and the zoomed Phone
+      setup pane; start refuses a busy port and verifies its child serves — `herdr-plugin.toml`,
+      `scripts/plugin.ts`, `server/plugin-start.ts`
+- [ ] The dependency-free QR (byte mode, ECC M, v1–5, half blocks) validated by a jsQR
+      round-trip — `shared/qr.ts`, `test/qr.test.ts`
+- [ ] README install section around one command — `README.md`
+
+Verify: `herdr plugin install radityasurya/tautan` on this machine, open Phone setup, scan
+the QR with the phone, add tautan to the Home Screen.
+
+## Phase 16 — read the wide grid
+
+Wave 7.
+
+- [ ] The wrap guard: wrap engages only when the grid does not fit, measured against the
+      room the scroller could take — `web/pane.tsx` (`effectiveWrap`, `potentialRoom`)
+- [ ] The line classifier and the mixed grid: structure lines pin as scrollable blocks,
+      prose reflows — `shared/layout.ts`, `test/layout.test.ts`, `web/pane.tsx`
+
+Verify: on the phone, an agent Pane holds a permission box — prose fills the width, the box
+stays square and pans; on the desktop browser the same Pane renders whole, unwrapped.
+
+## Phase 17 — phone width
+
+Wave 8. Design: [ADR 0004](./adr/0004-phone-width-geometry-lease.md).
+
+- [ ] The geometry lease: a herdr terminal attach held in a `Bun.Terminal` purely to size
+      the Pane's pty — explicit resize after start, restore with a settle beat, watch-loss
+      reaper, `409` slot-held, tmux `501` — `server/lease.ts`, `test/lease.contract.test.ts`
+- [ ] The Phone width toggle beside Wrap and Fit; while leased, `pane.cols` shrinks and the
+      wrap guard disengages on its own — `web/pane.tsx`
+
+Verify: toggle Phone width on a blocked agent Pane — the box redraws at your columns with
+no wrap and no drag; leave the Pane and the desktop's width comes back.
+
+## Phase 18 — the chat lens
+
+Wave 9. Design: [ADR 0005](./adr/0005-chat-lens-second-view.md).
+
+- [ ] Transcript parsing (turns, tool rows, noise and sidechain filtering) and the cached,
+      settle-then-poll reader — `shared/chat.ts`, `server/chat.ts`, `test/chat.test.ts`
+- [ ] Resolution only from `agent_session` or a `claude --resume` descriptor, never the
+      newest session with a cwd; `GET /api/panes/:key/chat` — `server/chat.ts`,
+      `server/herdr.ts`
+- [ ] The per-Pane Chat/Screen switch with silent Screen fallback — `web/chat.tsx`,
+      `web/pane.tsx`
+
+Verify: on a Host running herdr 0.9.3+, open an agent Pane, switch to Chat — the turns
+render; on 0.9.2 the switch falls back to the Screen with no error surface.
+
 ## Later (explicitly out of v1)
 
 - Split / move / layout editing

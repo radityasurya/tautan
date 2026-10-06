@@ -20,6 +20,9 @@ run on 2026-10-05. Behaviour claims about that project come from its own `DESIGN
 4. Every GLM and Codex brief ends with the same return contract: what changed, files
    modified, validation run, remaining risks or decisions.
 5. Run the wave's **Verify** step on a real phone before you tick anything.
+6. Commit the wave once its verify passes. Waves interleave inside `web/pane.tsx` and
+   `server/http.tsx`; a retrospective split of several waves cannot keep the intermediate
+   commits compiling, so the per-wave history only exists if each wave lands as itself.
 
 Run one wave at a time. Lanes inside a wave may run in parallel where the table says so.
 
