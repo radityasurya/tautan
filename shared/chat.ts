@@ -13,6 +13,37 @@ export interface Tool {
   /** The image a Read returned, kept in the transcript: served by
    *  `GET /api/panes/:key/chat/image/:imageId`, never inlined in the chat JSON. */
   imageId?: number;
+  /** A published page the tool returned (the Artifact tool's claude.ai URL), for a link card. */
+  link?: { url: string; title?: string };
+  /** HTML the Agent wrote (Write of a .html file, or the source an Artifact publish names),
+   *  kept in the transcript: served by `GET /api/panes/:key/chat/preview/:previewId` as
+   *  text/html under a sandbox CSP, for a sandboxed preview. Never inlined in the chat JSON. */
+  previewId?: number;
+  /** The subagent this tool started (Task/Agent): its turns come from
+   *  `GET /api/panes/:key/chat?agent=<subagentId>`. */
+  subagentId?: string;
+}
+
+/** A subagent of the conversation, from Claude Code's `<session>/subagents/agent-<id>.meta.json`. */
+export interface Subagent {
+  id: string;
+  type?: string;
+  description?: string;
+  /** The tool_use that started it, which carries `subagentId` in the parent's turns. */
+  toolUseId?: string;
+  /** The subagent that started this one, when nested; absent for the main conversation's. */
+  parentId?: string;
+  at?: number;
+}
+
+/** `GET /api/panes/:key/chat[?agent=<id>]`. `subagents` lists the whole tree, on both forms. */
+export interface ChatResponse {
+  sessionId: string;
+  turns: Turn[];
+  at: number;
+  subagents?: Subagent[];
+  /** Set when the response is a subagent's own conversation. */
+  agent?: string;
 }
 
 /** An image pasted into a user turn, as a data URL; no `src` when it is over the cap. */
@@ -161,6 +192,17 @@ function liftZai(text: string, pending: Tool[]): { text: string; tools: Tool[] }
 
 // The Hub's file route serves these four as images; anything else would arrive as text.
 const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp)$/i;
+const HTML_FILE = /\.html?$/i;
+// ponytail: a preview source over this is skipped whole; serve oversized sources from a file route if they appear.
+const PREVIEW_MAX = 2_000_000;
+const ARTIFACT_URL = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/;
+const TITLE_TAG = /<title[^>]*>\s*([^<]*?)\s*<\/title>/i;
+
+/** A tool_result's text, whether Claude Code wrote it as one string or as text blocks. */
+const resultText = (content: unknown): string =>
+  typeof content === 'string' ? content : Array.isArray(content)
+    ? content.map(item => item && typeof item === 'object' && !Array.isArray(item) && (item as Block).type === 'text' && typeof (item as Block).text === 'string' ? (item as Block).text : '').join('')
+    : '';
 const PASTED_TYPE = /^image\/(?:png|jpeg|gif|webp)$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 // ponytail: pasted images ride inside the chat JSON, which is refetched on every revision. Caps:
@@ -171,6 +213,16 @@ const PASTED_TOTAL = 5_700_000; // four full-size images and their data: prefixe
 
 /** An image a tool returned, handed back out of band so no base64 rides inside the turns. */
 export interface TranscriptImage { mediaType: string; data: string }
+
+export interface ParseOpts {
+  images?: TranscriptImage[];
+  /** HTML sources the Agent wrote, numbered as their `previewId`s. */
+  previews?: string[];
+  /** tool_use id → subagent id: a Task/Agent call whose id is in it gets `subagentId`. */
+  subagentIds?: Map<string, string>;
+  /** Keep isSidechain entries; every entry of a subagent's own file carries the flag. */
+  sidechain?: boolean;
+}
 // ponytail: a tool_result image over this is skipped whole (no id consumed); serve oversized reads from a file route if they appear.
 const RESULT_MAX = 8_000_000; // base64 characters, about 6 MB decoded
 
@@ -188,12 +240,16 @@ function pasted(source: unknown): Pasted {
 }
 
 /** Parse Claude Code's JSONL into display-safe turns; raw transcript lines never leave this module.
- *  `opts.images`, when given, collects the images tool_results returned, numbered as their `imageId`s. */
-export function parseTranscript(jsonl: string, opts?: { images?: TranscriptImage[] }): Turn[] {
+ *  `opts.images` and `opts.previews`, when given, collect what tool_results returned and the Agent
+ *  wrote, numbered as their `imageId`s and `previewId`s. */
+export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   const turns: Turn[] = [];
   const pending: Tool[] = [];
   const toolUses = new Map<string, Tool>();
   let resultImages = 0;
+  let previewCount = 0;
+  const written = new Map<string, { previewId: number; html: string }>(); // file_path → its preview slot
+  const artifactHtml = new Map<string, string>(); // Artifact tool_use id → the source its file_path matched
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line) continue;
     let entry: Record<string, unknown>;
@@ -202,7 +258,7 @@ export function parseTranscript(jsonl: string, opts?: { images?: TranscriptImage
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
       entry = value as Record<string, unknown>;
     } catch { continue; }
-    if (entry.isSidechain || (entry.type !== 'user' && entry.type !== 'assistant')) continue;
+    if ((!opts?.sidechain && entry.isSidechain) || (entry.type !== 'user' && entry.type !== 'assistant')) continue;
     const message = entry.message;
     if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
     const content = (message as Record<string, unknown>).content;
@@ -222,18 +278,50 @@ export function parseTranscript(jsonl: string, opts?: { images?: TranscriptImage
       if (block.type === 'tool_use' && typeof block.name === 'string') {
         const image = block.name === 'Read' ? readImage(block.input) : undefined;
         const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(image ? { image } : {}) };
+        const input = block.input && typeof block.input === 'object' && !Array.isArray(block.input) ? block.input as Record<string, unknown> : {};
+        if (block.name === 'Write') {
+          const filePath = str(input.file_path);
+          const content = typeof input.content === 'string' ? input.content : undefined;
+          // ponytail: an Edit of an .html file gives no preview — its input holds only the changed
+          // spans, not the full source; read the file from the Pane's Host when an edited page needs one.
+          if (filePath && HTML_FILE.test(filePath) && content && content.length <= PREVIEW_MAX) {
+            let slot = written.get(filePath);
+            if (!slot) { slot = { previewId: previewCount++, html: content }; written.set(filePath, slot); }
+            else slot.html = content; // a later Write of the same path reuses its slot with the newest source
+            if (opts?.previews) opts.previews[slot.previewId] = content;
+            tool.previewId = slot.previewId;
+          }
+        }
+        if (block.name === 'Artifact') {
+          const slot = str(input.file_path) ? written.get(str(input.file_path)!) : undefined;
+          if (slot) {
+            tool.previewId = slot.previewId;
+            if (typeof block.id === 'string') artifactHtml.set(block.id, slot.html);
+          }
+        }
+        if ((block.name === 'Task' || block.name === 'Agent') && typeof block.id === 'string') {
+          const subagent = opts?.subagentIds?.get(block.id);
+          if (subagent) tool.subagentId = subagent;
+        }
         if (typeof block.id === 'string') toolUses.set(block.id, tool);
         tools.push(tool);
       }
-      if (block.type === 'tool_result' && Array.isArray(block.content)) {
-        for (const item of block.content) {
+      if (block.type === 'tool_result') {
+        const tool = typeof block.tool_use_id === 'string' ? toolUses.get(block.tool_use_id) : undefined;
+        if (tool?.name === 'Artifact' && tool.link === undefined) {
+          const url = resultText(block.content).match(ARTIFACT_URL)?.[0];
+          if (url) {
+            const title = (typeof block.tool_use_id === 'string' ? artifactHtml.get(block.tool_use_id) : undefined)?.match(TITLE_TAG)?.[1];
+            tool.link = title ? { url, title } : { url };
+          }
+        }
+        if (Array.isArray(block.content)) for (const item of block.content) {
           if (!item || typeof item !== 'object' || Array.isArray(item) || (item as Block).type !== 'image') continue;
           const source = (item as Block).source;
           const { type, media_type: media, data } = source && typeof source === 'object' ? source as Record<string, unknown> : {};
           if (type !== 'base64' || typeof media !== 'string' || !PASTED_TYPE.test(media) || typeof data !== 'string' || data.length > RESULT_MAX || !BASE64.test(data)) continue;
           const imageId = resultImages++;
           opts?.images?.push({ mediaType: media, data });
-          const tool = typeof block.tool_use_id === 'string' ? toolUses.get(block.tool_use_id) : undefined;
           if (tool && tool.imageId === undefined) tool.imageId = imageId; // the first image only when a result carries several
         }
       }
@@ -266,7 +354,7 @@ export function parseTranscript(jsonl: string, opts?: { images?: TranscriptImage
  *  appends a fork's new leaf after the branch it replaces. */
 // ponytail: user-pasted images are unhandled — no pi transcript on this machine carries one;
 // map {type:'image'} blocks in user content through `pasted()` when they appear.
-export function parsePiTranscript(jsonl: string, opts?: { images?: TranscriptImage[] }): Turn[] {
+export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   const entries: Record<string, unknown>[] = [];
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line) continue;

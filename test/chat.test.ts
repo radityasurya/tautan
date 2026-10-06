@@ -185,6 +185,55 @@ describe('parseTranscript', () => {
       expect(images).toEqual([{ mediaType: 'image/png', data: 'BBBB' }]);
     });
   });
+
+  describe('previews, links and subagents', () => {
+    const page = '<html><head><title>Deck</title></head><body><p>one</p></body></html>';
+    const use = (id: string, name: string, input: Record<string, unknown>) => ({ type: 'tool_use', id, name, input });
+    const result = (id: string, content: unknown) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content }] } });
+
+    test('a Write of an .html file gets a previewId; the Artifact of the same path reuses it and links with the title', () => {
+      const jsonl = [
+        { type: 'assistant', message: { content: [
+          use('toolu_w', 'Write', { file_path: '/tmp/deck.html', content: page }),
+          use('toolu_a', 'Artifact', { file_path: '/tmp/deck.html', action: 'publish' }),
+          use('toolu_e', 'Edit', { file_path: '/tmp/deck.html', old_string: 'one', new_string: 'two' }),
+        ] } },
+        result('toolu_a', [{ type: 'text', text: 'Published /tmp/deck.html at https://claude.ai/code/artifact/ee67305a-ece1 (Version 1)' }]),
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const previews: string[] = [];
+      const turns = parseTranscript(jsonl, { previews });
+      const [write, artifact, edit] = turns[0]!.tools;
+      expect(write!.previewId).toBe(0);
+      expect(artifact!.previewId).toBe(0); // the same path reuses the Write's number
+      expect(artifact!.link).toEqual({ url: 'https://claude.ai/code/artifact/ee67305a-ece1', title: 'Deck' });
+      expect(edit!.previewId).toBeUndefined(); // an Edit's input is not the full source
+      expect(previews).toEqual([page]);
+      expect(JSON.stringify(turns)).not.toContain('<title>'); // the source never rides in the JSON
+    });
+
+    test('an Artifact result as a plain string links without a title when no source matched', () => {
+      const jsonl = [
+        { type: 'assistant', message: { content: [use('toolu_a', 'Artifact', { url: 'https://claude.ai/artifact/CKCZc8', file_path: '/tmp/canvas/canvas.json' })] } },
+        result('toolu_a', 'Published /tmp/canvas/Tabs.dc.html at https://claude.ai/artifact/4AMZUkdtNKG9dPiTrohCsu (Version 1)'),
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const [artifact] = parseTranscript(jsonl, { previews: [] })[0]!.tools;
+      expect(artifact!.link).toEqual({ url: 'https://claude.ai/artifact/4AMZUkdtNKG9dPiTrohCsu' });
+      expect(artifact!.previewId).toBeUndefined();
+    });
+
+    test('a Task or Agent call linked by toolUseId carries subagentId; sidechain entries parse for a subagent file', () => {
+      const jsonl = [
+        { type: 'assistant', message: { content: [use('toolu_t', 'Task', { prompt: 'Draft it.' })] } },
+        { type: 'user', isSidechain: true, message: { content: [{ type: 'text', text: 'subagent prompt' }] } },
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const subagentIds = new Map([['toolu_t', 'a0545184616cb692f']]);
+      expect(parseTranscript(jsonl, { subagentIds })[0]!.tools[0]!.subagentId).toBe('a0545184616cb692f');
+      expect(parseTranscript(jsonl)).toHaveLength(1); // sidechain entries stay hidden in the main conversation
+      const subagent = parseTranscript(jsonl, { subagentIds, sidechain: true });
+      expect(subagent).toHaveLength(2);
+      expect(subagent[1]!.text).toBe('subagent prompt');
+    });
+  });
 });
 
 test('uses Claude Code project path munging', () => {

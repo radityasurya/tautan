@@ -36,6 +36,16 @@ const fileType = (path: string) => ({
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
 }[extname(path).toLowerCase()] ?? 'text/plain; charset=utf-8');
 const fileHeaders = (path: string) => ({ 'content-type': fileType(path), 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' });
+const agentId = /^[A-Za-z0-9_-]{1,64}$/;
+// A preview of HTML the Agent wrote: `sandbox` without allow-scripts or allow-same-origin, so
+// scripts never run and the page cannot reach the Hub's origin even when opened directly.
+const previewHeaders = {
+  'content-type': 'text/html; charset=utf-8',
+  'content-security-policy': "sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; media-src data: https:",
+  'x-content-type-options': 'nosniff',
+  'cache-control': 'private, max-age=86400',
+  'referrer-policy': 'no-referrer',
+};
 const inside = (root: string, path: string) => {
   const pathFromRoot = relative(root, path);
   return pathFromRoot === '' || !isAbsolute(pathFromRoot) && !pathFromRoot.startsWith('..');
@@ -322,7 +332,13 @@ export function startHttp(hub: Hub, opts: {
           try { key = decodeURIComponent(chatMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
           if (hub.resolvePane(key)?.entry.mux.kind !== 'herdr') return json({ error: 'unsupported' }, 501);
-          const chat = await chats.query(key);
+          const agent = url.searchParams.get('agent') ?? undefined;
+          if (agent !== undefined && !agentId.test(agent)) return json({ error: 'no-agent' }, 404);
+          if (agent !== undefined) {
+            const list = await chats.subagentList(key);
+            if (list && !list.some(item => item.id === agent)) return json({ error: 'no-agent' }, 404);
+          }
+          const chat = await chats.query(key, agent);
           return chat ? json(chat) : json({ error: 'no-session' }, 404);
         }
         const chatImageMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat\/image\/([^/]+)$/);
@@ -331,10 +347,25 @@ export function startHttp(hub: Hub, opts: {
           try { key = decodeURIComponent(chatImageMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           if (!/^\d+$/.test(chatImageMatch[2]!)) return json({ error: 'id' }, 400);
           if (!await hub.hasPane(key)) return json({ error: 'no-session' }, 404);
-          const found = await chats.image(key, Number(chatImageMatch[2]!));
+          const agent = url.searchParams.get('agent') ?? undefined;
+          if (agent !== undefined && (!agentId.test(agent) || !(await chats.subagentList(key))?.some(item => item.id === agent))) return json({ error: 'no-agent' }, 404);
+          const found = await chats.image(key, Number(chatImageMatch[2]!), agent);
           if (!found) return json({ error: 'no-session' }, 404);
           if (!found.image) return json({ error: 'no-image' }, 404);
           return new Response(found.image.bytes, { headers: { 'content-type': found.image.mediaType, 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
+        }
+        const chatPreviewMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat\/preview\/([^/]+)$/);
+        if (req.method === 'GET' && chatPreviewMatch) {
+          let key: string;
+          try { key = decodeURIComponent(chatPreviewMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          if (!/^\d+$/.test(chatPreviewMatch[2]!)) return json({ error: 'id' }, 400);
+          if (!await hub.hasPane(key)) return json({ error: 'no-session' }, 404);
+          const agent = url.searchParams.get('agent') ?? undefined;
+          if (agent !== undefined && (!agentId.test(agent) || !(await chats.subagentList(key))?.some(item => item.id === agent))) return json({ error: 'no-agent' }, 404);
+          const found = await chats.preview(key, Number(chatPreviewMatch[2]!), agent);
+          if (!found) return json({ error: 'no-session' }, 404);
+          if (found.html === undefined) return json({ error: 'no-preview' }, 404);
+          return new Response(found.html, { headers: previewHeaders });
         }
         const fileMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/file$/);
         if (req.method === 'GET' && fileMatch) {
