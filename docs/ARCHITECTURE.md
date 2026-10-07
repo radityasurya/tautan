@@ -69,7 +69,7 @@ sequenceDiagram
     H->>M: pane.read {source: visible, format: ansi}
     M-->>H: rendered grid
     H-->>P: event: screen
-    Note over M,H: pane.updated fires on the title, the cwd and the Status only.<br/>herdr sends no event for raw output, so the Hub polls every watched Pane.
+    Note over M,H: pane.updated fires on the title, the cwd and the Status only.<br/>herdr sends no event for raw output, so the Hub polls every watched Pane<br/>(one blank for over 2 s backs off like a quiet one).
     loop one timer per watched Pane
         H->>M: pane.read {source: visible, format: ansi}
         M-->>H: rendered grid
@@ -102,7 +102,16 @@ sequenceDiagram
 - `agent.explain` returns the matched detection rule (`matched_rule.id`) and evidence;
   `pane.read` with `source: detection` returns the region herdr classified, footer hints
   included. tautan builds tap-to-answer buttons from these; it has no per-agent grammars.
-- tmux: `list-panes -a -F`, `capture-pane -e -p`, `send-keys -l`. No events; tautan polls.
+- tmux: `list-panes -a -F`, `capture-pane -e -p`, `send-keys -l`. Output does arrive as
+  events: the Hub keeps one `tmux -C attach -E -r` control client per Workspace with a
+  Pane watched in the last 30 s, feeds `%output` notifications into a dirty set and sweeps
+  one capture per screen interval; with no control client (a remote Host spawns none) a
+  fallback poll runs at five times the interval. A read is one process:
+  `display-message -p '#{alternate_on}'` chained with `capture-pane` by `;`, so the
+  alternate-screen flag and the grid come from the same instant. A control client that
+  dies is probed with `list-clients` and restarts on a 1 s → 30 s backoff.
+- herdr's Workspace snapshot carries no `cwd`. The Hub takes `worktree.checkout_path`
+  when the Workspace is a worktree (herdr 0.9) and falls back to the first Pane's cwd.
 
 ### Status and Seen
 
@@ -168,8 +177,14 @@ capability flags: the UI hides write actions when `kind === 'tmux'`.
 - A Status **transition** into `blocked` sends one push per subscription. A Pane that is
   already `blocked` sends nothing, and `done` never pushes — it is a badge.
 - Each SSE client may watch up to 4 Panes (ADR 0006): every watched Pane is polled on its
-  own backoff, 250 ms after a change, ×1.5 while quiet, at most 2 s. A changed Screen goes
-  out as one SSE `screen` event, which names its Pane by `key`.
+  own backoff, 250 ms after a change, ×1.5 while quiet, at most 2 s. A Screen blank for
+  over 2 s backs off the same way, so an empty Pane stops costing four reads a second,
+  and a `pane.updated` re-reads at once whatever the backoff. A changed Screen goes out as
+  one SSE `screen` event, which names its Pane by `key`. tmux Panes are swept by the
+  control client instead of polled one by one.
+- A transcript that moves sends one SSE `chat` event, and only to the streams watching
+  that Pane ([ADR 0007](./adr/0007-chat-deltas.md)); the Chat view then asks
+  `/chat?since=` for what changed, so the history never rides the event.
 - **Seen** is `{paneKey: revision}` persisted in `state.json`; unseen = `revision > seen`.
 - `StatePane.command` is the Pane's foreground command name, which picks the App profile on
   the phone: tmux reads `pane_current_command`, herdr answers `pane.process_info` through
@@ -182,7 +197,7 @@ capability flags: the UI hides write actions when `kind === 'tmux'`.
 | Route | Purpose |
 |---|---|
 | `GET /api/state` | hosts, muxes, workspaces, panes (with status, revision, seenRevision, preview, and the cell origin `x`/`y` in cells relative to the Tab — omitted for every Pane of a zoomed Tab) |
-| `GET /api/events?pane=<key>&pane=<key>…` | SSE: `hello {stream}` first, then `state`, `screen`; comment ping every 25 s. `pane=` repeats, de-duplicated, up to 4 watched Panes ([ADR 0006](./adr/0006-split-panes-mirror-mux-geometry.md)); a fifth key is 400 `{error: 'too-many-panes'}`, a key that resolves to no Pane drops, and none resolving is 404 `{error: 'pane not found'}`. Each watched Pane is polled on its own backoff (250 ms after a change, ×1.5 while quiet, at most 2 s). The `screen` event is unchanged: it names its Pane by `key` |
+| `GET /api/events?pane=<key>&pane=<key>…` | SSE: `hello {stream}` first, then `state`, `screen`, `chat`; comment ping every 25 s. `pane=` repeats, de-duplicated, up to 4 watched Panes ([ADR 0006](./adr/0006-split-panes-mirror-mux-geometry.md)); a fifth key is 400 `{error: 'too-many-panes'}`, a key that resolves to no Pane drops, and none resolving is 404 `{error: 'pane not found'}`. Each watched Pane is polled on its own backoff (250 ms after a change, ×1.5 while quiet, at most 2 s). The `screen` event is unchanged: it names its Pane by `key`; a `chat` event wakes the Chat view of a watched Pane whose transcript moved ([ADR 0007](./adr/0007-chat-deltas.md)) |
 | `GET /api/panes/:key/screen?mode=visible\|recent` | one Screen |
 | `POST /api/panes/:key/input` `{text?, keys?, raw?}` | text first, then keys, then `raw` — bytes written to the pty untouched |
 | `POST /api/panes/:key/mouse` `{kind, col, row, allow}` | `kind` is `click\|right\|double\|wheelUp\|wheelDown`, `col`/`row` are 1-based cells; the Hub builds the SGR press and release (`mouseBytes`) and sends them as `raw` → 204. 400 `{error: 'body'}` on an unknown kind or a coordinate outside 1…9999, 409 `{error: 'mouse-off'}` unless `allow` is true |
@@ -192,11 +207,25 @@ capability flags: the UI hides write actions when `kind === 'tmux'`.
 | `GET /api/panes/:key/explain` | Explain or null |
 | `POST /api/panes/:key/attach` (raw body, `X-Name: <filename>`) | write the file on the Pane's Host → `{path, bytes, display}`; 413 over `TAUTAN_MAX_ATTACHMENT_MB` |
 | `GET /api/workspaces/:key/diff?scope=working\|staged\|base[&file=<path>]` | run `git diff --no-color -U3` in the Workspace cwd, local or over SSH, and parse it with `shared/diff.ts` → `DiffResult`. `base` resolves `review.base` → upstream → `origin/HEAD` → main/master. Over 64 KB the file list is cut and `truncated` is true; `file=` returns that one file uncapped. 400 `{error: 'scope'}`, 404 `{error: 'unknown-workspace'}`, 409 `{error: 'not-a-repo'}`, 502 `{error: <git error>}` |
+| `GET /api/panes/:key/chat[?agent=<subagent>]` | the parsed transcript → `ChatResponse`, ETag/304 and gzip; herdr only (501 on tmux). Resolution never guesses: herdr's `agent_session`, or the Pane's own `claude --resume` / Codex thread / `pi --session <uuid>` descriptor, the pi id resolved by a cached directory scan; anything unresolved is 404 `{error: 'no-session'}` and the Pane keeps its Screen ([ADR 0005](./adr/0005-chat-lens-second-view.md)) |
+| `GET /api/panes/:key/chat?since=<cursor>[&limit=1–500][&after=<nativeId>]` | what changed since the cursor → `chats.delta` (`{cursor, reset, upserts}`), always 200 ([ADR 0007](./adr/0007-chat-deltas.md)): `limit` windows a reset to the newest turns, `after` names the client's oldest held Turn. `?before=<nativeId>&limit=` answers the earlier page in the same shape. `limit` without `since`/`before` is 400 `{error: 'limit'}`, `since` with `before` is 400, an id that is not a native turn id is 400 |
+| `GET /api/panes/:key/chat/image/:id` | one pasted or Read image by numeric id → the bytes with the media type the transcript carried |
+| `GET /api/panes/:key/chat/output/:toolId?part=result\|detail` | a tool's whole output (`result`) or whole input (`detail`) past the slice the turns carry; `toolId` is the tool's native id, `..` rejected |
+| `GET /api/panes/:key/chat/preview/:id` | HTML the Agent wrote, served from disk behind realpath containment; the frame is `sandbox`ed without `allow-scripts` or `allow-same-origin`, and a source past the inline limit serves by id |
+| `GET /api/panes/:key/file?path=` | one file read inside the Pane cwd (realpath containment): an image or UTF-8 text to `TAUTAN_MAX_FILE_MB` (5 MB), for the file viewer |
+| `GET /api/files/list?host=&path=[&pane=][&q=][&hidden=1]` | a folder listing for the browser and the pickers, directories first; remote Hosts over the existing ssh path |
+| `GET /api/files/raw?host=&path=[&pane=][&download=1]` | stream a file with `Range` support, `content-type` by extension, `content-disposition: attachment` when asked |
+| `GET /api/panes/:key/complete?kind=slash\|file\|model&q=[&limit=]` | completion items for the composer: the Agent's commands (built-ins, `.claude/commands` and skills for Claude Code; pi its own list), files under the Pane cwd (git-ignored excluded), or models (`pi --list-models`, cached) |
+| `GET /api/settings/quota` | the `quota-axi --json` report behind the usage meters, cached 5 min |
 | `POST /api/muxes/:key/tabs` `{workspaceId, cwd?, label?, agent?}` | new Tab with one Pane, agent started when asked → 201 `{paneKey}` |
 | `POST /api/muxes/:key/workspaces` `{cwd?, label?, branch?}` | new Workspace; `branch` makes it a git worktree → 201 `{workspaceKey}` |
 | `POST /api/rename` `{muxKey, label, workspaceId\|tabId\|paneId}` | rename one of the three → 204 |
 | `POST /api/panes/:key/close` | close the Pane → 204 |
 | `POST /api/panes/:key/zoom` | `{zoomed}`: `true` zooms this Pane to fill its Tab, `false` unzooms its Tab → 204; herdr and tmux; the zoomed Pane carries `zoomed: true` in state |
+| `POST /api/panes/:key/split` `{direction, ratio?, cwd?}` | split the Pane right or down at `ratio` (the new Pane's share) → 201 `{paneKey}` ([ADR 0008](./adr/0008-layout-editing.md)) |
+| `POST /api/panes/:key/swap` `{target}` | trade places with another Pane of the same Tab → 204 |
+| `POST /api/panes/:key/move` `{tab? \| newTab? \| newWorkspace?, split?}` | move the Pane; exactly one of the three destinations → 201 `{paneKey, workspaceKey?}` |
+| `POST /api/panes/:key/resize` `{direction, amount}` | grow the Pane by `amount` cells (1–500) → 204 |
 | `GET /api/push/vapid` | the Hub's VAPID public key, base64url |
 | `POST /api/push/subscribe` (a `PushSubscription` as JSON) | store the subscription |
 | `DELETE /api/push/subscribe` `{endpoint}` | forget it |
@@ -207,9 +236,10 @@ capability flags: the UI hides write actions when `kind === 'tmux'`.
 | `POST /api/settings/suggest` `{enabled}` | turn Smart replies on or off on the Hub; the Hub persists the flag |
 | `POST /api/panes/:key/suggest` | draft Smart replies for this Pane now → the StatePane; needs `TAUTAN_SUGGEST`; no-op while the Hub flag is off or a request for that revision is already in flight |
 
-The four write routes answer `{error}` with 400 (empty or over-80-character label, `cwd`
+The write routes answer `{error}` with 400 (empty or over-80-character label, `cwd`
 not absolute), 403 (Origin), 404 (unknown Mux, Workspace or Pane), 501 `unsupported`
-(tmux cannot create, rename or close) and 502 with herdr's own error code, for example
+(tmux cannot create, rename or close; herdr before 0.9 answers it for the layout writes)
+and 502 with herdr's own error code, for example
 `agent_not_ready`. The Hub refreshes State after a write, so the SSE `state` event is the
 receipt.
 
@@ -227,12 +257,17 @@ somebody else's identity.
 ## Web app (`web/`)
 
 Hash router, one `EventSource`, no state library. Screens: **Home** (flat Pane list grouped
-by Workspace, unseen `blocked` first), **Pane** (grid of spans from `shared/ansi.ts`, recent
-mode, key bar, composer with mic and attach), **Settings**. `web/push.ts` owns the
-subscription and the app badge; `web/public/sw.js` shows the notification, routes the tap
-and caches the shell, and `vite.config.ts` stamps the built file list into it. Themes are
-`data-theme` values on `<html>`; each defines chrome tokens and sixteen ANSI colors as CSS
-variables.
+by Workspace, unseen `blocked` first), **Pane** (grid of spans from `shared/ansi.ts`, key
+bar, composer with mic, attach and completion), the **Chat lens** and the **file viewer**
+on their own routes, **Settings**. `web/push.ts` owns the subscription and the app badge;
+`web/public/sw.js` shows the notification, routes the tap and caches the shell, and
+`vite.config.ts` stamps the built file list into it. The mock fixtures load as their own
+chunk behind `?mock`, so the real bundle never carries them. Themes are `data-theme`
+values on `<html>`: System, Light, Dark and the named palettes in `web/palettes.ts`, each
+laid over the Halaska Kit tokens by `applyTheme()` with the palette's own 16 ANSI colours
+inline. Every read and write of local state goes through `web/store.tsx`, the one door to
+`localStorage`; a blocked store falls back to memory for the page's life and raises one
+notice.
 
 ## Files on the Hub
 
@@ -272,6 +307,7 @@ is replaced, not reused.
 | `TAUTAN_PORT` | `7700` | the port the Hub listens on |
 | `TAUTAN_BIND` | `127.0.0.1` | the interface it binds; leave it on loopback |
 | `TAUTAN_MAX_ATTACHMENT_MB` | `200` | the cap on one upload |
+| `TAUTAN_MAX_FILE_MB` | `5` | the cap on one file the viewer reads through `/api/panes/:key/file` |
 | `TAUTAN_SUGGEST` | `off` | Smart replies provider: `off`, `zai` or `anthropic` |
 | `TAUTAN_SUGGEST_KEY` | — | the provider key. Without it, `zai` reads `ZAI_API_KEY` then `~/.config/zai/api-key`, and `anthropic` reads `ANTHROPIC_API_KEY` |
 | `TAUTAN_SUGGEST_MODEL` | `glm-5.2` for `zai`, `claude-haiku-4-5-20251001` for `anthropic` | the model that drafts the replies |

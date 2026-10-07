@@ -43,10 +43,14 @@ Four movements, all in `web/theme.css`, all off under
 | Blocked card | `.rise`: `translateY(10px)` and opacity over 200 ms, same curve as the push |
 | Press | `.press`: `scale(0.97)` while `:active`, 120 ms ease-out, on rows, chips, tabs and key caps |
 
-Colours come from `data-theme` on `<html>`: seven themes, each defining the
-chrome tokens plus 16 ANSI colours (`web/theme.css`). shadcn's variable names
-are aliased onto tautan's tokens in the same file; `--border` is deliberately not
-aliased, because tautan already owns that name and the alias would be a cycle.
+Colours come from `data-theme` on `<html>`: System, Light, Dark and five named
+palettes — Catppuccin Latte, Frappé, Macchiato, Mocha, and Gruvbox Dark
+(`web/palettes.ts`). `applyTheme()` in `web/app.tsx` lays the palette over the
+Halaska Kit tokens and points tautan's CSS variables at the kit, so every kit
+component follows the palette with no kit edit. A named palette becomes its own
+`data-theme` and carries its 16 ANSI colours (`--ansi-0` … `--ansi-15`) inline
+from the palette's published values; plain light and dark keep the two ANSI
+palettes that `web/theme.css` defines.
 
 Mono text uses `web/public/tautan-box.woff2`: 8,976 bytes, 372 glyphs, subset
 from DejaVu Sans Mono with `pyftsubset` (no Nerd Font on this machine). Its
@@ -68,6 +72,13 @@ lifted keeps its header, so its menu stays reachable. A group header is a button
 collapses (persisted in `localStorage`), long-press (500 ms, cancelled by 10 px of movement)
 or the ⋯ button opens the group menu. Collapsed, it summarises the most urgent Status of
 *all* its Panes, for example `2 blocked`.
+
+**Workspace order.** The group order in the list is tautan's own: herdr has no
+Workspace reorder, so the order lives on this device (`tautan.workspaceOrder`,
+per Mux) and is never written to a Mux. On desktop, drag a group header; a drop
+mark shows above or below the group you cross. On the phone, the group menu's
+**Move up** and **Move down** do the same one step at a time, disabled at the
+ends. Renaming a Workspace changes its id, so a rename resets its place.
 
 **Needs you card.** A blocked Pane in Needs you is a card, not a row: `Needs you · <Agent>`
 with its Workspace and Tab, the command from Explain, and three buttons.
@@ -126,19 +137,20 @@ Status word reads `needs you`. That is all the header does: the lens stays, and 
 offers no answer. The answer lives in the blocked card, which is always on screen: the
 composer's card in the Screen view, the approval row in the Chat view.
 
-**Approval row (Chat view).** While the Pane is blocked, the last tool row of the final
-assistant turn that has no result yet (`pendingTool()` in `shared/chat.ts`) becomes the
+**Approval rows (Chat view).** While the Pane is blocked, every pending tool of the final
+assistant turn (`pendingTools()` in `shared/chat.ts`), oldest first, becomes its own
 approval row: a `--warn` border and an 8 % `--warn` fill, the tool name, **Needs your
 approval**, the tool's input open in mono, and the blocked card's choices under it (the
 card component with `bare`, so the same pick-then-Send rows on the phone and one-click
-buttons on desktop, the same `sendBlocked()` and 409 guard). With no matching tool row (a
-question, not a tool), the whole card is the last item of the transcript instead. The
-composer drops its own card in the Chat view and keeps its text box. When the row appears
-the view scrolls to it; if the user reads further up, a **Needs your approval ↓** pill
-appears instead and scrolls to the row and focuses its first choice. After an answer the
-row says **Sent · waiting for Claude** until the Status moves on, then turns back into a
-normal tool row when the result arrives. The choices come back after 10 s if the Status
-never moves.
+buttons on desktop, the same `sendBlocked()` and 409 guard). The first row is the one the
+on-screen prompt asks about; the rows behind it read **Also needs your approval** and wait
+their turn. With no matching tool row (a question, not a tool), the whole card is the last
+item of the transcript instead. The composer drops its own card in the Chat view and keeps
+its text box. When the first row appears the view scrolls to it; if the user reads further
+up, a **Needs your approval ↓** pill appears instead and scrolls to the row and focuses
+its first choice. After an answer each answered row says **Sent · waiting for Claude**
+until the Status moves on, then turns back into a normal tool row when the result arrives.
+The choices come back after 10 s if the Status never moves.
 
 Switching Pane inside the screen — a Tab, a Pane pill, a Switch drawer row, a
 swipe — calls `navigate()` without the View Transition, which plays only when
@@ -176,8 +188,11 @@ underline, like the open Tab; the other cells' titles are muted and their conten
 inside the row. Each cell renders its Pane's Screen by the single Pane's Wrap rules, measured
 against the cell's own width: an agent Pane wraps, a shell wraps line output at the normal
 font size and keeps the grid for a full-screen program, and the Wrap and Fit settings still
-win. A grid wider than its cell scales down to fit, never below 0.75 (`SPLIT_FLOOR`); past
-that the cell scrolls sideways inside itself, never the page. In the Chat lens the focused cell shows the Chat view and the other cells keep
+win. A grid wider than its cell scales down to fit, never below
+`splitFloor(devicePixelRatio)` (`web/split-floor.ts`): 0.75 at 1×, falling with the square
+root of the ratio — 0.53 at 2× — and clamped at 0.45, because legibility follows device
+pixels but a finer pixel is also a harder glyph to read. Past the floor the cell scrolls
+sideways inside itself, never the page. In the Chat lens the focused cell shows the Chat view and the other cells keep
 their Screen; switching the lens keeps the split. The chips row takes over when the Tab is
 zoomed — a zoomed Tab reports no cell origins — when this view holds a Phone width lease, or
 when a cell would measure under 420×180 px in the space the composer leaves. **Split view** in ⋯ turns it off; it is on by default (`tautan.split`).
@@ -186,6 +201,14 @@ Focus is the route. A click on a cell, or Enter on its title, navigates with `re
 sends nothing to the program, so the stream stays open. The other cells are view-only: no
 Affordances, no mouse forwarding, no Chat lens, no composer. A view-only cell marks its
 Pane Seen after its Screen has stayed on display for 3 s while the page is visible.
+
+**Layout editing.** The ⋯ sheet's **Layout** group (hidden while the Tab is zoomed) holds
+**Split right**, **Split down**, **Swap with…** (the Tab's other Panes), **Move to…** (a
+new Tab in this Workspace, a new Workspace, or a place below any Tab's Panes) and
+**Resize…** (a pad of Grow buttons — left, right, up, down — 5 cells a step, which stays
+open for more than one step). On desktop, dragging a split divider is CSS-only while you
+drag and sends one `/resize` on release. A herdr older than 0.9 answers 501 and the sheet
+says so.
 
 The grid renders the `visible` screen as styled ANSI spans, pinned to the
 bottom until you scroll up, when a **New output** pill appears. Content wider
@@ -222,7 +245,11 @@ row there is hinted with the grid size.
 | Mouse taps | the App profile | `tautan.mouse.<paneKey>` = `on` \| `off` |
 
 Wrap is remembered per kind, not per Pane: agent output is prose and wants
-reflowing, a shell Pane is htop and logs, where the columns are the layout.
+reflowing, a shell Pane is htop and logs, where the columns are the layout. What
+counts as a full-screen program — the thing that keeps its grid — comes from a real
+signal, not a guess: mouse forwarding on, then the alternate screen when the Mux reports
+it, then a drawn share of at least 40 % of the grid. The wrap width itself is the text's
+own widest prose line, so one long code row no longer locks the whole reflow wide.
 
 **Affordances** (`shared/affordances.ts` finds them, `web/affordances.tsx`
 places them) are the tappable tokens tautan reads off the Screen: a Hint
@@ -374,9 +401,8 @@ is never sent on its own.
   with the agent's glyph before the placeholder. The open key grid sits above the input.
 - **Desktop.** Suggestion chips above a bordered box. The box has a two-line textarea and a
   toolbar: attach, `/`, `@`, the mode chip, the inline keys, then context left, model, mic
-  and Send. `/` and `@` only type that character into the field; the Agent then shows its
-  own command or file list. The mode chip sends `shift+tab`, and the next Screen says which
-  mode the Agent landed in.
+  and Send. The mode chip sends `shift+tab`, and the next Screen says which mode the Agent
+  landed in.
 - **Mode, model and context** come only from this Pane's Screen, through
   `toolbarFromScreen()` in `web/profiles.ts`. The Claude Code recogniser reads the last 15
   lines: the `⏵⏵` or `⏸` mode line, a literal model name on that line, and a context
@@ -388,6 +414,30 @@ is never sent on its own.
   non-empty Screen line asks for a password, passphrase, PIN, token or secret is not
   stored. That keyword match is a guess; a prompt that does not use those words is not
   caught.
+
+**Completion** (`web/complete.tsx`). Typing `/` at the start of the field opens the
+Agent's own commands; `@` after a space or at the start opens files from the Pane's cwd;
+`/model ` followed by a word opens the models the Agent offers. The list filters as you
+type (a 120 ms debounce, 50 items at most), moves with ↑/↓, picks with Enter and closes
+with Esc — and stays closed until the text changes again. On the phone it sits in the
+flow above the input; on desktop it pops above the field. Picking a command or a file
+inserts its text and nothing sends; picking a directory inserts `/` and keeps the list
+open; picking a model sends `/model <name>` at once, and a bare `/model` sent by hand
+opens the list instead of sending. Sources: the Agent's built-ins plus `.claude/commands`
+and skills for Claude Code, the command list for pi, the Pane's files for `@` (git-ignored
+paths excluded; type a path to reach one anyway). Completion is an Agent Pane's — a shell
+has no picker. Models come from the Agent itself (`pi --list-models`; the models Claude
+Code offers).
+
+**Drafts.** A half-typed reply lives in `sessionStorage` per Pane
+(`tautan.draft.<paneKey>`), so it survives a reload and dies with the tab. Switching Panes
+brings back that Pane's own draft, and the 1024 px frame change — which remounts the
+composer — rides through it. Sending clears the draft with the field.
+
+**Edit keys.** The open key tray ends in an **Edit keys** button. It replaces the caps
+with one row per cap the App profile carries: a switch for whether it shows, its glyph and
+name, and ▲▼ to move it. Every change saves at once; **Reset** puts the profile's default
+order back, **Done** returns to the caps.
 
 Attach opens the photo library, never the camera: the hidden input has
 `accept="image/*,video/*"`, `multiple`, and no `capture`. Each file goes out on
@@ -417,6 +467,42 @@ AirDrop or Dropbox skips that path and can still arrive as HEIC; the Hub stores
 it unchanged. Unverified here: no real iPhone was used for this check, and the
 camera's **Formats** setting (High Efficiency or Most Compatible) was not tried.
 
+## Chat (the lens on a Pane) — `web/chat.tsx`
+
+The lens switches an agent Pane between its Screen and its transcript; a subagent
+transcript opens from a Task tool row and reads **Back to \<agent\>** to return, with the
+subagent bar (type, description, running or done) above it and the subagent Switcher under
+the transcript. The transcript renders for Claude, pi, Codex and omp Panes — a badge above
+it names which. Every other Agent falls back to the Screen with no error (ADR 0005: never
+guess a transcript).
+
+**Turns.** An assistant turn is a `--surface` card on the left; a user turn is an accent
+card on the right. Text renders as Markdown — reference links and task lists included —
+and pasted images load out of band from `/chat/image/:id`. The turn's time rides its last
+row. When the Agent works, a **Working** line with the Screen's own spinner sits at the
+bottom; a reply sent meanwhile appears at once as a pending turn marked **Held until the
+Agent is idle**, and is delivered when the Agent returns to a prompt.
+
+**Tool rows.** Each tool call is one collapsed row: a chip with the tool's name and a line
+of its input, a link card when the tool published one, or the subagent's name for a Task.
+Opening a row loads what was cut on the way in — the whole input (the head counts it:
+`Input · first 6 of 240 lines`) and a result's tail complement each fetch from
+`/chat/output/:id`, an image or an HTML preview the Agent wrote loads from its own route,
+and a preview over the inline limit serves by id. The output half renders as Markdown; an
+`Output cut short by …` line says who cut it.
+
+**Transport.** The view keeps a cursor and asks the Hub for what changed since it
+(`?since=`, [ADR 0007](./adr/0007-chat-deltas.md)); a `chat` event on the event stream
+wakes the ask, so a busy conversation costs its new turns, not its history. The first
+load is windowed to the last 100 turns, and **Load earlier turns** fetches the 100 before
+the oldest shown. A Hub that predates deltas answers the full Chat response and the view
+resets to it.
+
+**Scroll.** The transcript pins to the bottom; read further up and a **New messages** pill
+sits at the bottom until you tap it. While blocked and reading elsewhere, the
+**Needs your approval ↓** pill takes over instead. The approval rows themselves are
+described under Pane, above.
+
 ## Diff (`#/diff/<workspaceKey>`) — `web/diff.tsx`
 
 Open it from the Pane's ⋯ menu or from a long press on a Workspace heading on
@@ -440,7 +526,7 @@ A hunk renders as rows, not as text: two narrow tabular line-number columns
 (old, new) in `--muted`, a one-character marker column (`+`, `-`, space), then
 the line in mono 12 px. Added rows carry `--ok` at 12 %, removed rows
 `--danger` at 12 % (`diff-add` and `diff-del` in `web/theme.css`, one
-`color-mix` pair for all seven themes). The hunk header sits on `--surface` in
+`color-mix` pair for every theme). The hunk header sits on `--surface` in
 `--muted`; a `\ No newline at end of file` line is muted italic. There is **no
 syntax highlighting**: the colour in this screen means added or removed, and
 nothing else.
@@ -462,6 +548,29 @@ section with the same right-edge fade as the Pane grid (`FADE`, exported from
 **Show whole file** refetches that one file with `?file=<path>`, which the Hub
 answers uncapped, and replaces the file's hunks in place. The rest of the list
 stays as it is. A failure turns the button into **Try again**.
+
+## File (`#/file/<paneKey>?path=`) — `web/file.tsx`
+
+A clickable path in the Screen or a Chat tool row opens the viewer full screen. The header
+is Back (which follows `history.back()`), the file name over the Pane title and the Host
+label, then **Folder** and **Download**. **Download** streams the file from
+`/api/files/raw` as an attachment. **Folder** swaps the viewer for the folder browser one
+level up — the same browser the sheets use, files included — and picking a file there
+navigates to it.
+
+The viewer follows the file's extension (`viewerFor` in `web/folders-logic.ts`):
+
+| Kind | What you see |
+|---|---|
+| PDF | the browser's own viewer, in an unsandboxed frame — Chrome blanks a sandboxed one, and the Hub serves the PDF itself, never HTML |
+| Video | `<video>` streaming from `/api/files/raw`, so seeking works |
+| Audio | `<audio>` streaming the same way |
+| Image | the whole file as a blob, centred |
+| Text | mono lines with line numbers, 5 MB at most, no wrap — the view scrolls sideways |
+| Anything else | `Binary file` |
+
+Errors read `File not found`, `File is too large`, or `Could not read the file` with the
+Hub's code and a **Try again**.
 
 ## Hosts (`#/hosts`) — `web/hosts.tsx`
 
@@ -552,10 +661,21 @@ the sections and shows `N down` beside Hosts while a Host is offline. The nav ma
 section from the route, not from scroll position.
 
 The Hosts section is described under Hosts below. The other
-sections hold the theme picker (`ThemePicker`: a native `<select>` of System plus six
-themes — iOS opens its own picker wheel — with the current theme's `--bg` as the swatch
+sections hold the theme picker (`ThemePicker`: the Halaska Kit `Select`, offering System,
+Light, Dark and the five named palettes, with the chosen theme's colours as a swatch
 beside it; the Pane's ⋯ sheet shows the same picker), a push toggle, a Haptics toggle on
 Android only, the iOS install hint, a **Smart replies** toggle, and the **Access** rows.
+
+**About** also carries the usage meters (`web/usage.tsx`): one meter per provider and per
+window — a bar, the percent left, the reset time, and a pace line (`using quota fast`
+when the window is being spent faster than it refills, `on pace` otherwise). Under
+30 % the number and bar turn amber and read `running low`; under 15 % they turn red and
+read `low`; a projected runway adds `runs out in 2 h`. The report comes from the Hub's own
+`quota-axi` call, cached five minutes and shared by every meter on screen, so the meters
+say `Checking usage…` first and `Usage is not available.` when the Hub cannot say. On
+desktop the sidebar footer carries a strip of the same data — one line per provider whose
+lowest window is under 30 % or whose runway projects exhaustion, nothing at all otherwise
+— which opens About.
 
 **Smart replies** reads `GET /api/settings`. With a provider configured the hint
 is `provider · model` (`zai · glm-5.2`); with none it reads `not configured ·
@@ -608,16 +728,21 @@ title and the meta line.
 
 - **Switch** (`web/switch.tsx`): 85 dvh, search field, Host chips, then every
   Workspace with its Panes under the Tab they belong to. Two taps to any Pane.
-- **New Tab**: label, directory (mono), one Agent chip per known agent plus
-  `shell only`, as radio inputs.
-- **New Workspace**: directory, label, an **As git worktree** switch, and the
-  branch field it reveals.
+- **New Tab**: label, directory (mono) with a **Browse** button, one Agent chip per known
+  agent plus `shell only`, as radio inputs. **Browse** swaps the form for the folder
+  browser — a second sheet would sit inside the first one's transform — titled **Choose a
+  folder**, with ← Back to the form; picking a folder fills the directory and returns.
+- **New Workspace**: directory with the same **Browse**, label, an **As git worktree**
+  switch, and the branch field it reveals.
+- **Move to… / Swap with… / Resize…** (`web/layout.tsx`): the Layout sheets behind the ⋯
+  menu's group, described under Pane.
 - **Rename**: one field, for a Workspace, Tab or Pane.
 - **More**: the ⋯ menu — the theme picker (`ThemePicker` from `web/settings.tsx`,
-  the same dropdown the Settings screen shows), then Wrap, **Phone width** with
+  the same control the Settings screen shows), then Wrap, **Phone width** with
   `the pane draws at your columns` as its hint, **Fit to width** with the
   grid size as its hint, **Theme colors**, **Mouse taps**, Diff, Rename, Close Pane, and a
-  disabled `Resize to phone` marked `v2`.
+  disabled `Resize to phone` marked `v2`. Desktop adds **Split view: on/off**, zoom in and
+  out, and the **Layout** group.
 - **Close Pane** is a Dialog, not a drawer, so a destructive action cannot be
   swiped into by accident.
 
@@ -676,7 +801,8 @@ terminal. The state is remembered in `tautan.sidebar` (`open` or `closed`). With
 hidden, `#/` shows the full Pane list.
 
 The sidebar footer holds two links. **Settings** opens `#/settings`. **Hosts** opens
-`#/hosts`, which lands on the Hosts section of Settings.
+`#/hosts`, which lands on the Hosts section of Settings. Above them sits the usage strip
+described under Settings, whenever a provider runs low.
 
 Hash routes use `history.pushState`, so the iOS edge swipe and the Android back button
 work, wrapped in a View Transition. There is one `EventSource` for the whole app. It
@@ -689,6 +815,12 @@ The **app badge** on the installed icon counts more than the tab badge does:
 unseen `blocked` plus unseen `done`, the same set the **Needs you** section
 holds. `web/app.tsx` writes it on every `state` event through `setBadge()` in
 `web/push.ts`, which is a no-op where `navigator.setAppBadge` is missing.
+
+When the browser blocks `localStorage` — private mode, blocked site data — every choice
+falls back to memory for the page's life, and one notice says so:
+`Storage is unavailable, so your choices last until you reload.` (`web/store.tsx`, the
+one door to the store). It floats above the tab bar with an ×, once per page load, and a
+screen reader hears it without one.
 
 The **service worker** (`web/public/sw.js`) caches the shell it is built with:
 `vite.config.ts` stamps `index.html`, the manifest and every hashed asset into

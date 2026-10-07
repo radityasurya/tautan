@@ -1,7 +1,9 @@
 # Roadmap
 
-**Status (2026-09-12):** every phase is built; 0.1.1 is released. `[~]` marks work that is
-built and verified in an emulated phone but not yet on a real device.
+**Status (2026-09-12):** every phase through 23 is built; 0.1.1 is released. Phases 24–30,
+the [parity waves](./WAVES-PARITY.md), are built and await verification on a real device.
+`[~]` marks work that is built and verified in an emulated phone but not yet on a real
+device.
 
 Each phase is a tracer bullet: it ships something you can use from the phone, end to end.
 Tick a box when the verification step passes on a real device. Details of the design live
@@ -444,9 +446,140 @@ Design: [ADR 0008](./adr/0008-layout-editing.md).
 Verify: split a Pane from the phone and see the new shell; drag a split divider on desktop
 and see herdr follow; drag a Workspace up the list and see the order survive a reload.
 
+## Phase 24 — chat deltas
+
+Wave 11 ([WAVES-PARITY](./WAVES-PARITY.md#wave-11--send-only-what-changed-in-the-chat-view)).
+Design: [ADR 0007](./adr/0007-chat-deltas.md).
+
+- [ ] `GET /chat?since=<cursor>` answering `{cursor, reset, upserts}` with an idempotent
+      cursor and a shrink rule that survives a rewrite; the `chat` SSE event waking only the
+      streams that watch the Pane — `server/http.ts`, `server/mux.ts`
+- [ ] The windowed first load and the earlier page: `limit` 1–500 with `after`, `before=`
+      the same shape, 100 turns held client-side and **Load earlier turns** below —
+      `server/http.ts`, `web/chat.tsx`
+- [ ] Out-of-band bodies: a tool's whole input and result past their slices
+      (`/chat/output/:toolId`), pasted images (`/chat/image/:id`), HTML the Agent wrote
+      (`/chat/preview/:id` behind containment) — `server/http.ts`, `web/chat.tsx`
+
+Verify: with the desktop network tab open on the busiest Claude Pane, one new turn arrives
+as one small `?since=` fetch — its new turns, not the history; open a long Bash output from
+its row and read all of it; press **Load earlier turns** and see the page before. On the
+phone at 390 px, the same Pane scrolls and the **New messages** pill works.
+
+## Phase 25 — chat for Codex and omp
+
+Wave 12 ([WAVES-PARITY](./WAVES-PARITY.md#wave-12--chat-for-codex-then-omp-omo-and-gjc)).
+The per-agent decisions are the 12.1 tables in WAVES-PARITY.
+
+- [ ] Codex transcripts: the rollout JSONL under `CODEX_HOME` read into turns, with
+      `turn_id`-qualified identities; resolution only from herdr's `agent_session` or the
+      Pane's own descriptor — `server/chat.ts`, `shared/chat.ts`
+- [ ] omp transcripts through the pi-family parser, trusted only when herdr reports the
+      Pane's exact path (path-only trust) — `server/chat.ts`
+- [ ] The Agent badge above the transcript and per-agent tool labels; omo and gjc stay on
+      the Screen with no error — `web/chat.tsx`, `shared/chat.ts`
+
+Verify: on the phone at 390 px and on desktop, open a Codex Pane — the Chat lens shows its
+turns, tool rows and badge; an omp Pane does the same; an omo or gjc Pane falls back to the
+Screen quietly.
+
+## Phase 26 — completion
+
+Wave 13 ([WAVES-PARITY](./WAVES-PARITY.md#wave-13--slash-commands-file-mentions-and-a-model-card)).
+
+- [ ] `GET /api/panes/:key/complete?kind=slash|file|model`: the Agent's own commands
+      (built-ins, `.claude/commands` and skills for Claude Code; pi its own list), files
+      under the Pane cwd with git-ignored paths excluded, models from the Agent itself —
+      `server/complete.ts`, `server/http.ts`
+- [ ] The pickers: `/` at the start, `@` after a space or at the start, `/model ` after
+      its word; arrows, Enter, Esc, a 120 ms debounce, 50 items; picking a model sends
+      `/model <name>` at once — `web/complete.tsx`, `web/composer.tsx`
+- [ ] Drafts in `sessionStorage` per Pane, surviving a reload and dying with the tab; the
+      keys tray's **Edit keys** mode with show/hide, ▲▼ and **Reset** — `web/composer.tsx`
+
+Verify: on the phone at 390 px, type `/`, pick a command and see it sent; type `@`, pick a
+file and see its path in the field; pick a model from `/model ` and watch the Agent take
+it. Type half a reply, reload, and the draft is still there — phone and desktop.
+
+## Phase 27 — folder browser and file viewer
+
+Wave 14 ([WAVES-PARITY](./WAVES-PARITY.md#wave-14--folder-browser-and-a-fuller-file-viewer)).
+
+- [ ] `GET /api/files/list` and `GET /api/files/raw`: folder listings and streamed files
+      with `Range` support, realpath containment local and remote, `download=` —
+      `server/files.ts`, `server/http.ts`
+- [ ] The folder browser — breadcrumbs, filter, hidden files toggle — behind **Browse** in
+      New Tab and New Workspace — `web/folders.tsx`, `web/sheets.tsx`
+- [ ] The viewer at `#/file/<paneKey>?path=`: PDF, video, audio, image, text with line
+      numbers, and **Folder** / **Download** in its header — `web/file.tsx`,
+      `web/folders-logic.ts`
+
+Verify: on the phone at 390 px, create a Workspace from **Browse** without typing a path;
+open a PDF path from a Chat row and read it; play a short video an Agent produced. Do the
+same on desktop, plus a range seek in the video.
+
+## Phase 28 — usage meters and palettes
+
+Wave 16 ([WAVES-PARITY](./WAVES-PARITY.md#wave-16--usage-meters-and-more-palettes)).
+
+- [ ] The meters in Settings › About — a bar, percent left, reset time, pace and runway
+      over the Hub's cached `quota-axi` report — and the sidebar strip for a provider under
+      30 % or running out — `web/usage.tsx`, `web/settings.tsx`, `server/http.ts`
+- [ ] The five named palettes (Catppuccin Latte, Frappé, Macchiato, Mocha; Gruvbox Dark)
+      as `data-theme` values laid over the Halaska Kit tokens, each with its own 16 ANSI
+      colours — `web/palettes.ts`, `web/app.tsx`
+
+Verify: pick Catppuccin Mocha and see the sidebar, the composer and a Claude Screen in its
+colours, phone at 390 px and desktop; open Settings › About and read a provider's percent
+left and reset time; a provider under 30 % shows amber and `running low`.
+
+## Phase 29 — medium optimisations
+
+Wave 17 ([WAVES-PARITY](./WAVES-PARITY.md#wave-17--medium-impact-optimisations)).
+
+- [ ] tmux control mode: one `tmux -C attach -E -r` per Workspace with a Pane watched in
+      the last 30 s, `%output` into a dirty set swept per screen interval, a fallback poll
+      with no control client, and a 1 s → 30 s restart backoff — `server/tmux.ts`
+- [ ] The blank-Pane backoff on herdr: a Screen blank for over 2 s backs off like a quiet
+      one, and `pane.updated` re-reads at once — `server/mux.ts`
+- [ ] One event stream on the first visit to a split Tab (a focus move inside it never
+      reopens it); mouse moves batched into one POST per gesture; tap targets measured in
+      cells with `wcwidth` — `web/app.tsx`, `web/affordances.tsx`, `shared/affordances.ts`
+- [ ] The htop click contract test green with a shell that wraps, and a herdr 0.8
+      layout-write fallback test — `test/`
+
+Verify: on desktop, watch a tmux Pane in htop — its output moves with no visible gap; open
+a split Tab and the network tab shows one `/api/events`; on the phone at 390 px, a vertical
+drag over htop sends one mouse POST, not one per row.
+
+## Phase 30 — low-impact items
+
+Wave 18 ([WAVES-PARITY](./WAVES-PARITY.md#wave-18--low-impact-optimisations)).
+
+- [ ] Markdown reference links and task lists in chat cells — `web/markdown.tsx`
+- [ ] z.ai tool blocks parsed without their exact markers (case, spacing, an unclosed
+      Input fence) — `shared/chat.ts`
+- [ ] An HTML preview for an Edit of an `.html` file, resolved remotely and served from
+      disk; oversized sources serve by id — `shared/chat.ts`, `server/chat.ts`
+- [ ] Every pending tool of a blocked turn as its own approval row, the first asked and the
+      rest queued — `shared/chat.ts`, `web/chat.tsx`
+- [ ] Subagent start times read past the first 256 KB; `pi --session <uuid>` resolved by a
+      cached directory scan — `server/chat.ts`
+- [ ] A Workspace cwd from herdr's `worktree.checkout_path` — `server/herdr.ts`
+- [ ] The storage notice when the browser blocks `localStorage` — `web/store.tsx`
+- [ ] The split-cell scale floor by device pixel ratio — `web/split-floor.ts`, `web/pane.tsx`
+- [ ] Wrap width and full-screen detection from a real signal (mouse, alternate screen,
+      drawn share) — `shared/layout.ts`
+- [ ] The generated service-worker precache list; the mock fixtures behind `?mock` as
+      their own chunk — `vite.config.ts`, `web/main.tsx`
+
+Verify: one pass at 390 px and on desktop over what these touch — a turn with a task list
+and a reference link renders both; a turn with two pending tools shows two approval rows;
+an Edit of an `.html` file previews; a 2× screen keeps a split cell legible at its floor;
+private mode shows the storage notice once.
+
 ## Later (explicitly out of v1)
 
-- Split Panes side by side on desktop (Wave 10, lane 10.8) until the SSE stream can watch more than one Pane
 - Per-agent prompt grammars (native widgets for select lists)
 - Passcode or SSO in front of the Hub
 - Per-Workspace push muting; attachment pruning
