@@ -27,9 +27,11 @@ export interface Tool {
   imageId?: number;
   /** A published page the tool returned (the Artifact tool's claude.ai URL), for a link card. */
   link?: { url: string; title?: string };
-  /** HTML the Agent wrote (Write of a .html file, or the source an Artifact publish names),
-   *  kept in the transcript: served by `GET /api/panes/:key/chat/preview/:previewId` as
-   *  text/html under a sandbox CSP, for a sandboxed preview. Never inlined in the chat JSON. */
+  /** HTML the Agent wrote or edited, served by
+   *  `GET /api/panes/:key/chat/preview/:previewId` as text/html under a sandbox CSP, for a
+   *  sandboxed preview. Never inlined in the chat JSON. A Write's source (or an Artifact's)
+   *  rides the cached parse; an Edit's row, or a Write past PREVIEW_MAX, names the file on
+   *  disk, which the Hub reads at the Pane's cwd. */
   previewId?: number;
   /** The subagent this tool started (Task/Agent): its turns come from
    *  `GET /api/panes/:key/chat?agent=<subagentId>`. */
@@ -278,8 +280,10 @@ function liftZai(text: string, pending: Tool[]): { text: string; tools: Tool[] }
 // The Hub's file route serves these four as images; anything else would arrive as text.
 const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp)$/i;
 const HTML_FILE = /\.html?$/i;
-// ponytail: a preview source over this is skipped whole; serve oversized sources from a file route if they appear.
-const PREVIEW_MAX = 2_000_000;
+// The cap on one preview source: a Write's content over this never rides the cached parse,
+// and a disk read over this answers no preview. A request reads at most this much and
+// retains nothing, so the cap holds per request, not per cache.
+export const PREVIEW_MAX = 2_000_000;
 const ARTIFACT_URL = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/;
 const TITLE_TAG = /<title[^>]*>\s*([^<]*?)\s*<\/title>/i;
 
@@ -299,6 +303,9 @@ export interface ParseOpts {
   images?: TranscriptImage[];
   /** HTML sources the Agent wrote, numbered as their `previewId`s. */
   previews?: string[];
+  /** previewId → the .html file on disk that backs the row (an Edit's, or a Write past
+   *  PREVIEW_MAX): the Hub serves it from the Pane's cwd, so no large source rides the parse. */
+  previewFiles?: Map<number, string>;
   /** tool id → the tool's whole result text, kept only for results past the inline slice. */
   outputs?: Map<string, string>;
   /** tool id → the tool's whole detail text, kept only for details past the inline head. */
@@ -353,7 +360,9 @@ function attachResult(tool: Tool | undefined, content: unknown, isError: unknown
   if (tool.id !== undefined) outputs?.set(tool.id, text);
 }
 
-// ponytail: a tool_result image over this is skipped whole (no id consumed); serve oversized reads from a file route if they appear.
+// A tool_result image over this is skipped whole (no id consumed), and that stays: the result
+// is what the Agent saw, not a file at the Pane's cwd, so no disk route backs it, and serving
+// it would hold bytes past ADR 0007's per-image memory bound on every request.
 const RESULT_MAX = 8_000_000; // base64 characters, about 6 MB decoded
 
 function readImage(input: unknown): string | undefined {
@@ -381,6 +390,13 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   let imageSeq = 0; // result and pasted images number together, in file order
   let previewCount = 0;
   const written = new Map<string, { previewId: number; html: string }>(); // file_path → its preview slot
+  const edited = new Map<string, number>(); // file_path → its disk-backed preview slot
+  const diskSlot = (filePath: string): number => {
+    let slot = edited.get(filePath);
+    if (slot === undefined) { slot = previewCount++; edited.set(filePath, slot); }
+    opts?.previewFiles?.set(slot, filePath);
+    return slot;
+  };
   const artifactHtml = new Map<string, string>(); // Artifact tool_use id → the source its file_path matched
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line) continue;
@@ -411,18 +427,23 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         const image = block.name === 'Read' ? readImage(block.input) : undefined;
         const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
         const input = block.input && typeof block.input === 'object' && !Array.isArray(block.input) ? block.input as Record<string, unknown> : {};
-        if (block.name === 'Write') {
-          const filePath = str(input.file_path);
+        const filePath = str(input.file_path);
+        if (block.name === 'Write' && filePath && HTML_FILE.test(filePath)) {
           const content = typeof input.content === 'string' ? input.content : undefined;
-          // ponytail: an Edit of an .html file gives no preview — its input holds only the changed
-          // spans, not the full source; read the file from the Pane's Host when an edited page needs one.
-          if (filePath && HTML_FILE.test(filePath) && content && content.length <= PREVIEW_MAX) {
+          if (content && content.length <= PREVIEW_MAX) {
             let slot = written.get(filePath);
             if (!slot) { slot = { previewId: previewCount++, html: content }; written.set(filePath, slot); }
             else slot.html = content; // a later Write of the same path reuses its slot with the newest source
             if (opts?.previews) opts.previews[slot.previewId] = content;
             tool.previewId = slot.previewId;
+          } else if (content) {
+            tool.previewId = diskSlot(filePath); // past PREVIEW_MAX: the file on disk serves by id
           }
+        }
+        // An Edit's input holds only the changed spans, so the file on disk is its preview's
+        // source; the Hub reads it at the Pane's cwd when the route asks.
+        if ((block.name === 'Edit' || block.name === 'MultiEdit') && filePath && HTML_FILE.test(filePath)) {
+          tool.previewId = diskSlot(filePath);
         }
         if (block.name === 'Artifact') {
           const slot = str(input.file_path) ? written.get(str(input.file_path)!) : undefined;

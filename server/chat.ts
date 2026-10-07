@@ -1,7 +1,7 @@
-import { open, readFile, readdir, stat, type FileHandle } from 'node:fs/promises';
+import { open, readFile, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { CHAT_PAGE_TURNS, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { join, resolve } from 'node:path';
+import { CHAT_PAGE_TURNS, PREVIEW_MAX, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
 import { codexHome, resolveCodexPath } from './codex-chat.ts';
 import type { State, StateHost } from '../shared/types.ts';
 
@@ -374,7 +374,7 @@ export async function resolveSession(hub: SessionHub, paneKey: string, io?: Tran
 }
 
 type AgentKind = NonNullable<ChatResponse['agentKind']>;
-type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; outputs: Map<string, string>; details: Map<string, string>; subagents: Subagent[]; at: number };
+type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; previewFiles: Map<number, string>; outputs: Map<string, string>; details: Map<string, string>; subagents: Subagent[]; at: number };
 /** One remembered generation (ADR 0007): the cursor that names it, every Turn's fingerprint
  *  (none for an id-less transcript, which keeps its digest only), and the subagents digest
  *  at parse time. The lens keeps the newest eight per conversation. */
@@ -631,10 +631,38 @@ export class ChatLens {
     return value ? { image: found && { bytes: new Uint8Array(Buffer.from(found.data, 'base64')), mediaType: found.mediaType } } : undefined;
   }
 
-  /** Preview `id` (HTML the Agent wrote) from the same cached parse, under the same contract as `image`. */
+  /** Preview `id` (HTML the Agent wrote or edited) under the same contract as `image`: from
+   *  the cached parse when the source rides it, else from the file on disk the parse named. */
   async preview(paneKey: string, id: number, agent?: string): Promise<{ html?: string } | undefined> {
     const value = await this.value(paneKey, agent);
-    return value ? { html: value.previews[id] } : undefined;
+    if (!value) return undefined;
+    const inline = value.previews[id];
+    return inline !== undefined ? { html: inline } : { html: await this.diskPreview(paneKey, value.previewFiles.get(id)) };
+  }
+
+  /** A disk-backed preview (18.3): an Edit's .html, or a Write past PREVIEW_MAX. The path
+   *  must resolve inside the Pane's cwd — through symlinks too, on a local Host — and the
+   *  file caps at PREVIEW_MAX. Nothing is retained: every request reads it again, so the
+   *  cap bounds one request, never the cache. */
+  private async diskPreview(paneKey: string, file: string | undefined): Promise<string | undefined> {
+    if (!file) return undefined;
+    const cwd = (await this.hub.state()).panes.find(item => item.key === paneKey)?.cwd;
+    if (!cwd) return undefined;
+    const path = resolve(cwd, file);
+    if (path !== cwd && !path.startsWith(`${cwd}/`)) return undefined; // `..`, or an absolute path outside
+    const target = await this.target(paneKey);
+    if (!target) {
+      // A symlink that points outside the cwd must not serve, so compare real paths.
+      const [base, real] = await Promise.all([realpath(cwd), realpath(path)].map(promise => promise.catch(() => undefined)));
+      if (!base || !real || (real !== base && !real.startsWith(`${base}/`))) return undefined;
+    }
+    // ponytail: a remote Host's symlinks are not resolved (no realpath over the ssh io); the
+    //  string check above still bounds `..` and absolute paths. readlink -f over ssh if a
+    //  remote symlink escape ever matters.
+    try {
+      const info = await this.io.stat(path, target);
+      return info && info.size <= PREVIEW_MAX ? await this.io.read(path, target) : undefined;
+    } catch { return undefined; }
   }
 
   /** A tool's whole text from the cached parse, under the same contract as `image`: its
@@ -719,11 +747,12 @@ export class ChatLens {
     if (subagentDir && !agent) this.parents.set(paneKey, { sessionId: session, parent: parentFinished(jsonl) });
     const images: TranscriptImage[] = [];
     const previews: string[] = [];
+    const previewFiles = new Map<number, string>();
     const outputs = new Map<string, string>();
     const details = new Map<string, string>();
     const subagentIds = new Map<string, string>();
     for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
-    const opts: ParseOpts = { images, previews, outputs, details, subagentIds, ...(agent ? { sidechain: true } : {}) };
+    const opts: ParseOpts = { images, previews, previewFiles, outputs, details, subagentIds, ...(agent ? { sidechain: true } : {}) };
     if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
     const parsed = resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
       : (resolved.agent === 'pi' || resolved.agent === 'omp' ? parsePiTranscript : parseTranscript)(jsonl, opts);
@@ -740,7 +769,7 @@ export class ChatLens {
         delete tool.detailLines;
       }
     }
-    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, outputs, details, subagents: list, at: Date.now() };
+    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, previewFiles, outputs, details, subagents: list, at: Date.now() };
     this.cache.set(cacheKey, value);
     this.remember(paneKey, agent, cacheKey, value);
     return value;

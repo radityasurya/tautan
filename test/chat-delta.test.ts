@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatLens, type ChatHub, type TranscriptIo } from '../server/chat.ts';
-import { pendingTools, type ChatEvent } from '../shared/chat.ts';
+import { PREVIEW_MAX, pendingTools, type ChatEvent } from '../shared/chat.ts';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
 import type { Explain, Mux, Pane, Screen, ScreenMode, State, Tree, Workspace } from '../shared/types.ts';
@@ -260,6 +260,60 @@ describe('ChatLens deltas (ADR 0007)', () => {
     expect(grown!.reset).toBe(false);
     expect(grown!.upserts.map(turn => turn.id)).toEqual(['s2']);
     expect(grown!.subagents?.map(item => item.id)).toEqual(['sub1', 'sub2']); // the tree changed
+    lens.close();
+  });
+});
+
+// 18.3: an Edit's preview serves the file on disk at the Pane's cwd — bounded to that cwd,
+// through symlinks too — so the transcript never carries the source.
+describe('disk-backed previews', () => {
+  const html = '<html><body>edited page</body></html>';
+  const secret = '<html><body>outside the cwd</body></html>';
+  const big = `<p>${'x'.repeat(PREVIEW_MAX)}</p>`;
+  let root: string, cwd: string;
+  const files = new Map<string, string>();
+  const edit = (uuid: string, file_path: string) =>
+    line({ uuid, type: 'assistant', message: { content: [{ type: 'tool_use', id: `toolu_${uuid}`, name: 'Edit', input: { file_path, old_string: 'x', new_string: 'y' } }] } });
+  const hub = (): ChatHub => ({
+    resolvePane: () => ({ paneId: 'p1', entry: { mux: { kind: 'herdr' }, tree: { panes: [{ id: 'p1', agentSession: id }] } } }),
+    state: async () => ({ panes: [{ key: paneKey, cwd }] }) as State,
+    paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
+  });
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'tautan-preview-'));
+    cwd = join(root, 'proj');
+    mkdirSync(cwd);
+    writeFileSync(join(cwd, 'page.html'), html);
+    writeFileSync(join(root, 'secret.html'), secret); // one directory above the cwd, and the symlink's target
+    symlinkSync(join(root, 'secret.html'), join(cwd, 'link.html'));
+    writeFileSync(join(cwd, 'big.html'), big);
+    files.set(join(cwd, 'page.html'), html);
+    files.set(join(cwd, 'big.html'), big);
+  });
+  afterAll(() => { rmSync(root, { recursive: true, force: true }); });
+
+  test('serves the edited file; a path or symlink outside the cwd, or over the cap, answers none', async () => {
+    const main = [
+      edit('e1', 'page.html'),
+      edit('e2', join(cwd, 'page.html')), // the absolute spelling takes its own slot
+      edit('e3', '../secret.html'),
+      edit('e4', 'link.html'),
+      edit('e5', 'big.html'),
+    ].join('\n');
+    const io: TranscriptIo = {
+      stat: async path => { const value = files.get(path) ?? main; return { inode: '1', size: value.length, mtime: Bun.hash(value).toString(36) }; },
+      read: async path => files.get(path) ?? main,
+    };
+    const lens = new ChatLens(hub(), io, '/home/tama');
+    const chat = await lens.query(paneKey);
+    expect(chat!.turns[0]!.tools.map(tool => tool.previewId)).toEqual([0, 1, 2, 3, 4]);
+    expect((await lens.preview(paneKey, 0))?.html).toBe(html); // a relative name, inside the cwd
+    expect((await lens.preview(paneKey, 1))?.html).toBe(html); // an absolute name of the same file
+    expect((await lens.preview(paneKey, 2))?.html).toBeUndefined(); // `..` leaves the cwd, though the file exists
+    expect((await lens.preview(paneKey, 3))?.html).toBeUndefined(); // a symlink pointing outside the cwd
+    expect((await lens.preview(paneKey, 4))?.html).toBeUndefined(); // past PREVIEW_MAX
+    expect(await lens.preview(paneKey, 99)).toEqual({ html: undefined }); // an unknown id, as before
     lens.close();
   });
 });

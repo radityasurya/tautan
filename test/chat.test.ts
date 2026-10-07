@@ -298,9 +298,26 @@ describe('parseTranscript', () => {
       expect(write!.previewId).toBe(0);
       expect(artifact!.previewId).toBe(0); // the same path reuses the Write's number
       expect(artifact!.link).toEqual({ url: 'https://claude.ai/code/artifact/ee67305a-ece1', title: 'Deck' });
-      expect(edit!.previewId).toBeUndefined(); // an Edit's input is not the full source
+      expect(edit!.previewId).toBe(1); // its own disk-backed slot: the file on disk serves it
       expect(previews).toEqual([page]);
       expect(JSON.stringify(turns)).not.toContain('<title>'); // the source never rides in the JSON
+    });
+
+    test('an Edit or MultiEdit of an .html file, and a Write past the cap, preview from the file on disk', () => {
+      const jsonl = [
+        { type: 'assistant', message: { content: [
+          use('toolu_e', 'Edit', { file_path: 'page.html', old_string: 'one', new_string: 'two' }),
+          use('toolu_m', 'MultiEdit', { file_path: 'page.html', edits: [{ old_string: 'a', new_string: 'b' }] }),
+          use('toolu_w', 'Write', { file_path: 'big.html', content: '<p>'.repeat(700_000) }),
+          use('toolu_s', 'Edit', { file_path: 'style.css', old_string: 'a', new_string: 'b' }),
+        ] } },
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const previews: string[] = [];
+      const previewFiles = new Map<number, string>();
+      const [turn] = parseTranscript(jsonl, { previews, previewFiles });
+      expect(turn!.tools.map(tool => tool.previewId)).toEqual([0, 0, 1, undefined]);
+      expect(previewFiles).toEqual(new Map([[0, 'page.html'], [1, 'big.html']])); // both spellings of one file share its slot
+      expect(previews).toEqual([]); // no source rides the parse; disk serves by id
     });
 
     test('an Artifact result as a plain string links without a title when no source matched', () => {
