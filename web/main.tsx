@@ -6,7 +6,7 @@ import './theme.css';
 
 // The fixtures live in their own chunk, fetched only when the page asks for them. Awaited
 // so the fake Hub is in place before `App` or `startPush` makes the first `/api` call.
-if (location.search.includes('mock') || import.meta.env.VITE_MOCK === '1') {
+if (new URLSearchParams(location.search).has('mock') || import.meta.env.VITE_MOCK === '1') {
   const { installMock } = await import('./mock.ts');
   installMock();
 }

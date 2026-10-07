@@ -23,8 +23,14 @@ export function swPrecache(): Plugin {
     closeBundle() {
       const sw = join(outDir, 'sw.js');
       if (!existsSync(sw)) return;
-      const assets = existsSync(join(outDir, 'assets')) ? readdirSync(join(outDir, 'assets')) : [];
-      const files = ['/index.html', '/manifest.webmanifest', ...assets.map((f) => `/assets/${f}`)];
+      // Sorted, so the version hash is stable across rebuilds; readdirSync order is not.
+      const assets = (existsSync(join(outDir, 'assets')) ? readdirSync(join(outDir, 'assets')) : []).sort();
+      // `mock-<hash>.js` is fetched only behind the ?mock gate, never precached for everyone.
+      const files = [
+        '/index.html',
+        '/manifest.webmanifest',
+        ...assets.filter((f) => !f.startsWith('mock-')).map((f) => `/assets/${f}`),
+      ];
       // Asset names carry Vite's content hash, so hashing the names tracks the contents.
       const version = createHash('sha256').update(files.join('\n')).digest('hex').slice(0, 8);
       const header = `self.__VERSION=${JSON.stringify(version)};self.__PRECACHE=${JSON.stringify(files)};\n`;

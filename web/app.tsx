@@ -741,5 +741,5 @@ export async function api<T>(path: string, body?: unknown, method: 'GET' | 'POST
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
-/** `?mock&open=switch` lands a screenshot on an open drawer. Always false without `?mock`. */
+/** `?mock&open=switch` lands a screenshot on an open drawer; `?open=<name>` works without `?mock`. */
 export const opensWith = (name: string) => new URLSearchParams(location.search).get('open') === name;

@@ -1227,7 +1227,7 @@ function mockOpen(): string | null {
 /** Serve the Hub API from memory when the page is opened with `?mock`. */
 export function installMock(): void {
   if (installed) return;
-  if (!location.search.includes('mock') && meta('VITE_MOCK') !== '1') return;
+  if (!new URLSearchParams(location.search).has('mock') && meta('VITE_MOCK') !== '1') return;
   installed = true;
   if (meta('DEV') !== false) assertMockInvariants();
   // `?mock&open=diff` opens the Diff screen on the Workspace whose diff is cut short.

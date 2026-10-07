@@ -34,6 +34,19 @@ describe('swPrecache plugin', () => {
     expect(readFileSync(join(out, 'sw.js'), 'utf8')).toBe(once);
   });
 
+  test('excludes the mock chunk and sorts the asset list', () => {
+    const out = mkdtempSync(join(tmpdir(), 'swpre-'));
+    writeFileSync(join(out, 'sw.js'), '// worker\n');
+    mkdirSync(join(out, 'assets'));
+    writeFileSync(join(out, 'assets', 'mock-43f1de.js'), ''); // fixture chunk, gated behind ?mock
+    writeFileSync(join(out, 'assets', 'index-B0.js'), '');
+    writeFileSync(join(out, 'assets', 'index-A.js'), '');
+    stamp(out, '.');
+    expect(readFileSync(join(out, 'sw.js'), 'utf8')).toMatch(
+      /^self\.__VERSION="[0-9a-f]{8}";self\.__PRECACHE=\["\/index\.html","\/manifest\.webmanifest","\/assets\/index-A\.js","\/assets\/index-B0\.js"\];\n\/\/ worker\n$/,
+    );
+  });
+
   test('stamps the configured outDir only', () => {
     const root = mkdtempSync(join(tmpdir(), 'swpre-'));
     for (const dir of ['a', 'b']) {
