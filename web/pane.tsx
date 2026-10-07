@@ -21,6 +21,7 @@ import { MoveSheet, RESIZE_STEP, ResizeSheet, SwapSheet } from './layout.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
 import { SWITCH_HEADING, SWITCH_ROW, SwitchDrawer } from './switch.tsx';
+import { splitFloor } from './split-floor.ts';
 
 // ---- themed terminal colours ----
 // A 256-colour or truecolour span carries the palette the agent picked, which is nobody's
@@ -555,9 +556,9 @@ const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
 type WrapChoice = 'on' | 'off' | 'auto';
 /** The widest Wrap reflows to, in columns: a terminal's common wide width, still readable. */
 const WRAP_MEASURE = 120;
-/** The smallest scale a split cell's grid takes: 0.75 of text-caption still reads. */
-// ponytail: one floor for every font and DPI; make it a setting if a 4K screen wants less.
-const SPLIT_FLOOR = 0.75;
+// ponytail: the floor reads devicePixelRatio when the fit runs, with no matchMedia listener.
+// A zoom resizes the viewport and refits; moving a window between screens of different DPR
+// keeps the old floor until the next resize. Add a resolution listener if that bites.
 
 
 /** The last block the agent printed, for read-aloud. */
@@ -612,7 +613,7 @@ function PaneGrid({
   screen: ScreenEvent | null;
   interactive?: boolean;
   /** A split cell (ADR 0006): the same Wrap rules, but a grid wider than the cell scales
-   *  down to it, never below SPLIT_FLOOR; past that the cell scrolls sideways. */
+   *  down to it, never below splitFloor(devicePixelRatio); past that the cell scrolls sideways. */
   split?: boolean;
   onMeasure?: (measure: GridMeasure) => void;
 }) {
@@ -752,7 +753,7 @@ function PaneGrid({
     const nextRoom = el.parentElement.clientWidth - parseFloat(pad.paddingLeft || '0') - parseFloat(pad.paddingRight || '0');
     setRoom((prev) => (Math.abs(prev - nextRoom) < 0.01 ? prev : nextRoom));
     const fitted = fit ? Math.min(1, nextRoom / el.scrollWidth) : 1;
-    const next = split ? Math.max(SPLIT_FLOOR, fitted) : fitted;
+    const next = split ? Math.max(splitFloor(window.devicePixelRatio), fitted) : fitted;
     setScale(next);
     // A transform keeps the unscaled box, so the scroller would run on into blank space.
     setShrink(next < 1 ? { w: el.offsetWidth * (1 - next), h: el.offsetHeight * (1 - next) } : { w: 0, h: 0 });

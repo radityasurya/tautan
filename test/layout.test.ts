@@ -251,3 +251,15 @@ describe('tuiScreen', () => {
     expect(tuiScreen(panels, 80)).toBe(true);
   });
 });
+
+describe('splitFloor', () => {
+  test('keeps today\'s floor at 1x and falls with DPR, bounded', async () => {
+    const { splitFloor } = await import('../web/split-floor.ts');
+    expect(splitFloor(1)).toBe(0.75);
+    expect(splitFloor(2)).toBeCloseTo(0.53, 2);
+    expect(splitFloor(3)).toBeLessThan(splitFloor(2));
+    expect(splitFloor(16)).toBe(0.45);
+    expect(splitFloor(0)).toBe(0.75);
+    expect(splitFloor(NaN)).toBe(0.75);
+  });
+});
