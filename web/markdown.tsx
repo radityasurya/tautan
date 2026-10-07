@@ -1,10 +1,13 @@
 // Markdown for Chat turns, rendered as React elements: the transcript is untrusted Agent
 // output, so nothing here builds HTML from a string and raw HTML stays text.
 // ponytail: a line-based subset of CommonMark + GFM — ATX headings, paragraphs, lists nested
-// by indent, blockquotes, fences, rules, pipe tables; inline code, bold, italic, strike,
-// links, bare URLs and images (https only, see web/image.tsx). No setext headings, reference
-// links, footnotes, task boxes, HTML, linked images, or emphasis that crosses another span's boundary. Add a real parser (micromark)
-// when a transcript needs one of those.
+// by indent, blockquotes, fences, rules, pipe tables, task lists; inline code, bold, italic,
+// strike, links (inline, bare URL, reference-style), images (https and data:image only, see
+// web/image.tsx). Reference definitions are message-global and the first one wins; an
+// unresolved reference renders its span literally, markup inside included; a shortcut
+// reference only matches a label without emphasis characters. No setext headings, footnotes,
+// HTML, linked images, or image references. Add a real parser (micromark) when a transcript
+// needs one of those.
 import { useState, type ReactNode } from 'react';
 import { Picture, safeImage } from './image.tsx';
 
@@ -30,6 +33,35 @@ const isTable = (lines: string[], i: number) => lines[i]!.includes('|') && DELIM
 const starts = (lines: string[], i: number) =>
   FENCE.test(lines[i]!) || HEADING.test(lines[i]!) || RULE.test(lines[i]!) || QUOTE.test(lines[i]!) || ITEM.test(lines[i]!) || isTable(lines, i);
 
+// The regex that closes a fence opened by an opening-line match.
+const closer = (open: RegExpMatchArray) => new RegExp(`^ {0,3}${open[1]![0]}{${open[1]!.length},}\\s*$`);
+
+const DEF = /^ {0,3}\[([^\]\n]+)\]:[ \t]*(\S+)(?:[ \t]+"[^"]*")?[ \t]*$/;
+
+/** Pull link reference definitions out of a message: their lines become blank, so nothing
+ *  renders, and a definition anywhere outside a fence is visible everywhere in the message.
+ *  Labels fold to trimmed lowercase; the first definition of a label wins. */
+function definitions(source: string): { src: string; refs: Record<string, string> } {
+  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+  const refs: Record<string, string> = {};
+  let close: RegExp | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const open = line.match(FENCE);
+    if (close) { if (close.test(line)) close = null; }
+    else if (open) close = closer(open);
+    else {
+      const d = line.match(DEF);
+      if (d) {
+        const label = d[1]!.trim().toLowerCase();
+        if (!(label in refs)) refs[label] = d[2]!.replace(/^<|>$/g, '');
+        lines[i] = '';
+      }
+    }
+  }
+  return { src: lines.join('\n'), refs };
+}
+
 function cells(line: string): string[] {
   const row = line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '');
   return row.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, '|'));
@@ -44,7 +76,7 @@ export function parseBlocks(source: string): Block[] {
     if (!line.trim()) { i++; continue; }
     let m: RegExpMatchArray | null;
     if ((m = line.match(FENCE))) {
-      const close = new RegExp(`^ {0,3}${m[1]![0]}{${m[1]!.length},}\\s*$`);
+      const close = closer(m);
       const body: string[] = [];
       for (i++; i < lines.length && !close.test(lines[i]!); i++) body.push(lines[i]!);
       i++; // an unclosed fence runs to the end, as in CommonMark
@@ -109,6 +141,10 @@ const INLINE = new RegExp([
   /\*(?=[^\s*])([^*]*?[^\s*])\*/.source, // 11 italic
   /(?<!\w)_(?=[^\s_])([^_]*?[^\s_])_(?!\w)/.source, // 12 italic
   /!\[([^\]\n]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/.source, // 13,14 image; it starts left of its link, so it wins
+  /\[([^\]\n]+)\]\[([^\]\n]*)\]/.source, // 15,16 reference link [text][id]; an empty id reuses the text
+  // 17 shortcut [id]; emphasis characters stay out so a plain bracketed span without a
+  // definition keeps rendering exactly as it did before references existed
+  /\[([^\]\n*_~`\\[\]]+)\]/.source,
 ].join('|'), 'g');
 
 const SAFE_URL = /^(https?:|mailto:)/i;
@@ -118,29 +154,38 @@ function link(href: string, children: ReactNode, key: number) {
   return <a key={key} href={href} target="_blank" rel="noopener noreferrer" className={LINK}>{children}</a>;
 }
 
-export function inline(text: string): ReactNode[] {
+export function inline(text: string, refs?: Record<string, string>): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   const push = (s: string) => {
     // Single newlines inside a paragraph are line breaks.
     s.split('\n').forEach((part, n) => { if (n) out.push(<br key={`br${out.length}`} />); if (part) out.push(part); });
   };
+  const ref = (label: string) => refs?.[label.trim().toLowerCase()];
   for (const m of text.matchAll(INLINE)) {
     push(text.slice(last, m.index));
     last = m.index + m[0].length;
     const k = out.length;
     if (m[1] !== undefined) push(m[1]);
     else if (m[3] !== undefined) out.push(<code key={k} className="rounded-chip bg-bg px-1 py-px font-mono text-[0.86em] [overflow-wrap:anywhere]">{m[3].replace(/\n/g, ' ')}</code>);
-    else if (m[4] !== undefined) out.push(SAFE_URL.test(m[5]!) ? link(m[5]!, inline(m[4]), k) : m[0]);
+    else if (m[4] !== undefined) out.push(SAFE_URL.test(m[5]!) ? link(m[5]!, inline(m[4], refs), k) : m[0]);
     else if (m[6] !== undefined) out.push(link(m[6], m[6], k));
-    else if (m[7] !== undefined) out.push(<strong key={k} className="font-semibold"><em>{inline(m[7])}</em></strong>);
-    else if (m[8] !== undefined || m[9] !== undefined) out.push(<strong key={k} className="font-semibold">{inline((m[8] ?? m[9])!)}</strong>);
-    else if (m[10] !== undefined) out.push(<s key={k}>{inline(m[10])}</s>);
+    else if (m[7] !== undefined) out.push(<strong key={k} className="font-semibold"><em>{inline(m[7], refs)}</em></strong>);
+    else if (m[8] !== undefined || m[9] !== undefined) out.push(<strong key={k} className="font-semibold">{inline((m[8] ?? m[9])!, refs)}</strong>);
+    else if (m[10] !== undefined) out.push(<s key={k}>{inline(m[10], refs)}</s>);
     else if (m[14] !== undefined) {
       const src = /^https:/i.test(m[14]) ? safeImage(m[14]) : undefined;
       out.push(src ? <Picture key={k} src={src} alt={m[13]!.trim() || 'Image'} /> : m[0]);
     }
-    else out.push(<em key={k}>{inline((m[11] ?? m[12])!)}</em>);
+    else if (m[15] !== undefined) {
+      const href = ref(m[16]! || m[15]!);
+      out.push(href && SAFE_URL.test(href) ? link(href, inline(m[15]!, refs), k) : m[0]);
+    }
+    else if (m[17] !== undefined) {
+      const href = ref(m[17]!);
+      out.push(href && SAFE_URL.test(href) ? link(href, inline(m[17]!, refs), k) : m[0]);
+    }
+    else out.push(<em key={k}>{inline((m[11] ?? m[12])!, refs)}</em>);
   }
   push(text.slice(last));
   return out;
@@ -171,21 +216,21 @@ export function CopyButton({ text, className }: { text: string; className: strin
 const HEADING_CLASS = ['', 'text-title', 'text-title', 'text-body font-semibold', 'text-body font-semibold', 'text-body font-semibold text-muted', 'text-body font-semibold text-muted'];
 const CELL = 'border-border px-2 py-1.5 align-top [&+*]:border-l';
 
-function Blocks({ blocks, tight = false }: { blocks: Block[]; tight?: boolean }) {
+function Blocks({ blocks, tight = false, refs }: { blocks: Block[]; tight?: boolean; refs?: Record<string, string> }) {
   // A list item holding one paragraph renders it bare, so the marker sits on its text.
-  if (tight && blocks.length === 1 && blocks[0]!.kind === 'para') return <>{inline(blocks[0]!.text)}</>;
-  return <>{blocks.map((block, n) => <BlockView key={n} block={block} />)}</>;
+  if (tight && blocks.length === 1 && blocks[0]!.kind === 'para') return <>{inline(blocks[0]!.text, refs)}</>;
+  return <>{blocks.map((block, n) => <BlockView key={n} block={block} refs={refs} />)}</>;
 }
 
-function BlockView({ block }: { block: Block }) {
+function BlockView({ block, refs }: { block: Block; refs?: Record<string, string> }) {
   switch (block.kind) {
     case 'heading': {
       const H = `h${block.level}` as 'h1';
-      return <H className={`${HEADING_CLASS[block.level]} font-semibold [&:not(:first-child)]:mt-1`}>{inline(block.text)}</H>;
+      return <H className={`${HEADING_CLASS[block.level]} font-semibold [&:not(:first-child)]:mt-1`}>{inline(block.text, refs)}</H>;
     }
-    case 'para': return <p>{inline(block.text)}</p>;
+    case 'para': return <p>{inline(block.text, refs)}</p>;
     case 'rule': return <hr className="my-1 border-0 border-t border-border" />;
-    case 'quote': return <blockquote className="flex flex-col gap-2 border-l-2 border-border pl-3 text-muted"><Blocks blocks={block.blocks} /></blockquote>;
+    case 'quote': return <blockquote className="flex flex-col gap-2 border-l-2 border-border pl-3 text-muted"><Blocks blocks={block.blocks} refs={refs} /></blockquote>;
     case 'code': return (
       <div className="min-w-0 overflow-hidden rounded-card border border-border bg-bg">
         {(block.lang || canCopy()) && (
@@ -199,9 +244,19 @@ function BlockView({ block }: { block: Block }) {
     );
     case 'list': {
       const List = block.ordered ? 'ol' : 'ul';
+      const TASK = /^\[( |x|X)\] /;
       return (
         <List start={block.ordered && block.start !== 1 ? block.start : undefined} className={`space-y-1 pl-5 marker:text-muted ${block.ordered ? 'list-decimal' : 'list-disc [&_ul]:list-[circle]'}`}>
-          {block.items.map((item, n) => <li key={n} className="pl-0.5 [&>*+*]:mt-1"><Blocks blocks={item} tight /></li>)}
+          {block.items.map((item, n) => {
+            const first = item[0];
+            const task = first?.kind === 'para' ? first.text.match(TASK) : null;
+            return (
+              <li key={n} className={`pl-0.5 [&>*+*]:mt-1${task ? ' list-none' : ''}`}>
+                {task && <input type="checkbox" checked={task[1] !== ' '} disabled className="mr-1 align-[-2px] accent-accent" />}
+                <Blocks blocks={task && first?.kind === 'para' ? [{ ...first, text: first.text.slice(task[0].length) }, ...item.slice(1)] : item} tight refs={refs} />
+              </li>
+            );
+          })}
         </List>
       );
     }
@@ -209,12 +264,12 @@ function BlockView({ block }: { block: Block }) {
       <div className="min-w-0 overflow-x-auto overscroll-x-contain rounded-chip border border-border">
         <table className="min-w-full border-collapse text-caption">
           <thead className="bg-bg">
-            <tr>{block.head.map((cell, n) => <th key={n} style={{ textAlign: block.align[n] ?? 'left' }} className={`${CELL} border-b font-semibold`}>{inline(cell)}</th>)}</tr>
+            <tr>{block.head.map((cell, n) => <th key={n} style={{ textAlign: block.align[n] ?? 'left' }} className={`${CELL} border-b font-semibold`}>{inline(cell, refs)}</th>)}</tr>
           </thead>
           <tbody>
             {block.rows.map((row, r) => (
               <tr key={r} className="[&+tr]:border-t [&+tr]:border-border">
-                {block.head.map((_, n) => <td key={n} style={{ textAlign: block.align[n] }} className={CELL}>{inline(row[n] ?? '')}</td>)}
+                {block.head.map((_, n) => <td key={n} style={{ textAlign: block.align[n] }} className={CELL}>{inline(row[n] ?? '', refs)}</td>)}
               </tr>
             ))}
           </tbody>
@@ -225,5 +280,6 @@ function BlockView({ block }: { block: Block }) {
 }
 
 export function Markdown({ text }: { text: string }) {
-  return <div className="flex min-w-0 flex-col gap-2"><Blocks blocks={parseBlocks(text)} /></div>;
+  const { src, refs } = definitions(text);
+  return <div className="flex min-w-0 flex-col gap-2"><Blocks blocks={parseBlocks(src)} refs={refs} /></div>;
 }

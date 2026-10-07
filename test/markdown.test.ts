@@ -130,3 +130,67 @@ describe('inline', () => {
     expect(md('![](https://example.com/a.png)')).toContain('alt="Image"');
   });
 });
+
+describe('reference links', () => {
+  test('full, collapsed and shortcut references link; definitions do not render', () => {
+    const out = md('Read [the docs][a], [site][] and [b].\n\n[a]: https://example.com/one\n[b]: mailto:x@y.z "Mail"\n[site]: https://example.com');
+    expect(out).toBe(
+      '<p>Read <a href="https://example.com/one" target="_blank" rel="noopener noreferrer">the docs</a>, '
+      + '<a href="https://example.com" target="_blank" rel="noopener noreferrer">site</a> and '
+      + '<a href="mailto:x@y.z" target="_blank" rel="noopener noreferrer">b</a>.</p>',
+    );
+  });
+
+  test('labels ignore case; a definition inside a fence is text, not a definition', () => {
+    const out = md('[link][A]\n\n```\n[c]: https://nope\n```\n\n[A]: https://example.com/x');
+    expect(out).toContain('<a href="https://example.com/x" target="_blank" rel="noopener noreferrer">link</a>');
+    expect(out).toContain('<code>[c]: https://nope</code>');
+  });
+
+  test('an unresolved or unsafe reference stays text', () => {
+    expect(md('[nope][x] [q][] [r]\n\n[r]: javascript:alert(1)')).toBe('<p>[nope][x] [q][] [r]</p>');
+    // A bracketed span with no definition keeps rendering as before references existed.
+    expect(md('a [b *c*] d')).toBe('<p>a [b <em>c</em>] d</p>');
+  });
+});
+
+describe('task lists', () => {
+  test('a marker renders a disabled checkbox, checked for x or X', () => {
+    const out = md('- [ ] plain\n- [x] done\n- [X] upper\n- normal');
+    expect(out).toBe(
+      '<ul>'
+      + '<li><input type="checkbox" disabled=""/>plain</li>'
+      + '<li><input type="checkbox" disabled="" checked=""/>done</li>'
+      + '<li><input type="checkbox" disabled="" checked=""/>upper</li>'
+      + '<li>normal</li>'
+      + '</ul>',
+    );
+  });
+
+  test('ordered task items render the same checkbox', () => {
+    expect(md('1. [x] tracked\n2. [ ] later')).toBe(
+      '<ol><li><input type="checkbox" disabled="" checked=""/>tracked</li>'
+      + '<li><input type="checkbox" disabled=""/>later</li></ol>',
+    );
+  });
+
+  test('a marker without the trailing space stays text', () => {
+    expect(md('- [x]tight')).toBe('<ul><li>[x]tight</li></ul>');
+  });
+});
+
+describe('images in table cells', () => {
+  test('a cell image renders through the same safe path as prose', () => {
+    const out = md('| Shot |\n|---|\n| ![the chart](https://example.com/c.png) |');
+    expect(out).toContain('<td><button type="button" aria-label="Open the chart" aria-haspopup="dialog">');
+    expect(out).toContain('src="https://example.com/c.png"');
+  });
+
+  test('an unsafe image URL in a cell stays text', () => {
+    for (const src of ['http://example.com/a.png', 'javascript:alert(1)']) {
+      const out = md(`| a |\n|---|\n| ![x](${src}) |`);
+      expect(out).not.toContain('<img');
+      expect(out).toContain('![x](');
+    }
+  });
+});
