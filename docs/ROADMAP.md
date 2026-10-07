@@ -425,10 +425,12 @@ the chip follows. On a shell Pane, the `$` prompt and history chips show instead
 
 - [ ] Needs you card with Yes / No / Open on the phone and Yes in the desktop sidebar,
       behind the same stale-prompt guard — `web/home.tsx`
-- [ ] Hosts move into Settings; Host detail lists each Mux and its Workspaces; the bottom
-      bar has two tabs — `web/settings.tsx`, `web/hosts.tsx`, `web/app.tsx`
+- [ ] Hosts is its own screen beside Settings (the bottom bar keeps three tabs: Panes · Hosts ·
+      Settings); Host detail at `#/hosts/<id>` lists each Mux and its Workspaces —
+      `web/settings.tsx`, `web/hosts.tsx`, `web/app.tsx`. Phase 22 first merged Hosts into
+      Settings; 91edfca split them again at the user's request.
 
-Verify: answer a blocked prompt from the Pane list without opening the Pane. Open Settings,
+Verify: answer a blocked prompt from the Pane list without opening the Pane. Open Hosts,
 tap a Host, and see each Mux with its Workspaces and their Status.
 
 ## Later (explicitly out of v1)

@@ -328,15 +328,16 @@ Independent, small, and safe to pick up between waves. Each is one lane.
 | 6.1 | Settings section labels: Appearance · Notifications · Replies · Access · About | `frontend` | `web/settings.tsx` |
 | 6.2 | Version row: tautan's own and the herdr the Hub talks to | `frontend` + `glm-run` | `web/settings.tsx`, `server/http.ts` |
 | 6.3 | Quota rows from `quota-axi --json`. Shell out; do not reimplement it | `glm-run` | `server/`, `web/settings.tsx` |
-| 6.4 | Group the Agents list by folder, as an option beside by Workspace | `frontend` | `web/home.tsx` |
+| 6.4 | ~~Group the Agents list by folder~~ — replaced by the Pane list choice (tautan / herdr) | `frontend` | `web/home.tsx`, `web/spaces.ts` |
 | 6.5 | Sticky file header on the Diff screen | `fast-worker` | `web/diff.tsx` |
 | 6.6 | Refusal escalation in the confirm dialog | `frontend` | `web/sheets.tsx` |
 
 **6.1 note.** Six flat rows read fine. Ten do not, and 6.2 and 6.3 add two.
 
-**6.4 note.** Group Panes that share a `cwd`, across Workspaces, with the folds remembered per
-Host and path. One repository open as three worktrees is three Workspaces today, and the
-folder is often what you are looking for. Keep by Workspace as the default.
+**6.4 note.** Superseded. Folder grouping was built, then removed in 1006c21 at the user's
+request: Settings › Appearance › Pane list now offers **tautan** (grouped by Workspace) or
+**herdr** (Spaces above Agents, grouped by Priority or Spaces), and the Workspace/Folder
+switcher is gone. Do not rebuild folder grouping.
 
 **6.6 note.** When a write comes back refused for a reason the user can overrule, print the
 Hub's own words and relabel the action. A dirty checkout becomes **Delete anyway**, not a
