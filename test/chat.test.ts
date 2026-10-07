@@ -82,6 +82,34 @@ describe('parseTranscript', () => {
     expect(turn!.tools.map(t => [t.brief, t.output, t.truncated])).toEqual([['a.png', '**A** fine', undefined], ['b.png', 'B cut…', true]]);
   });
 
+  test('lifts z.ai blocks whose markers vary in case and spacing, or whose Input fence never closed', () => {
+    const loose = '** 🌐 Z.AI BUILT-IN TOOL: web_search **\n**Input:**\n```JSON\n{"query":"tautan"}\n```\n*executing on server…*\n';
+    const cut = '**🌐 z.ai Built-in Tool: web_search**\n**Input:**\n```json\n{"query":"still running ';
+    const out = '**output:** \n**Web_Search_Result_Summary:** [{"text": "\\"found\\""}]\n';
+    const jsonl = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: `Loose one.\n${loose}` }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: cut }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: `${out}\nDone.` }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const [turn] = parseTranscript(jsonl);
+    expect(turn!.text).toBe('Loose one.\n\nDone.');
+    expect(turn!.tools.map(t => [t.name, t.brief, t.output])).toEqual([
+      ['web_search', 'tautan', 'found'],
+      // the cut input never parsed, so its brief keeps the raw JSON head
+      ['web_search', JSON.stringify('{"query":"still running'), undefined],
+    ]);
+    expect(turn!.tools[1]!.detail).toBe('{"query":"still running'); // the unclosed fence keeps its input
+  });
+
+  test('ordinary prose that names the tool or heads a section Output stays prose', () => {
+    const jsonl = [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'The z.ai built-in tool: web_search ran fine.\n\n**Output:**\n**Notes:** nothing here.' }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const [turn] = parseTranscript(jsonl);
+    expect(turn!.tools).toEqual([]);
+    expect(turn!.text).toContain('**Output:**');
+  });
+
   test('a z.ai tool carries its imageSource; a Read of an image carries its path', () => {
     const call = `**🌐 Z.ai Built-in Tool: analyze_image**\n\n**Input:**\n\`\`\`json\n{"imageSource":"https://x.test/a.png?sig=1","prompt":"p"}\n\`\`\`\n*Executing on server...*\n`;
     const jsonl = [

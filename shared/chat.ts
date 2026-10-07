@@ -201,9 +201,11 @@ function detail(name: string, input: unknown): string {
 //   **🌐 Z.ai Built-in Tool: NAME**  **Input:** ```json {…}```  *Executing on server...*
 // and, later in the same text or a later one, one result per call, in call order:
 //   **Output:**\n**NAME_result_summary:** [{"text": "<JSON string, often cut with ...>"}]
-// ponytail: matched on z.ai's exact markers as of 2026-10; a changed marker leaves the block as prose.
-const ZAI_CALL = /^[ \t]*\*\*🌐 Z\.ai Built-in Tool: ([^*\n]+)\*\*[ \t]*\n(?:\s*\*\*Input:\*\*[ \t]*\n[ \t]*```\w*\n([\s\S]*?)\n[ \t]*```[ \t]*\n?)?(?:\s*\*Executing on server\.\.\.\*[ \t]*\n?)?/gm;
-const ZAI_OUTPUT = /^[ \t]*\*\*Output:\*\*[ \t]*\n[ \t]*\*\*([^*\n]+?)(?:_result_summary)?:\*\*[ \t]*([^\n]*(?:\n(?![ \t]*\n)[^\n]*)*)/gm;
+// The markers match whatever their case or spacing, and an Input fence z.ai never closed (a
+// message cut mid-input) still lifts. The bold markers themselves stay required, so ordinary
+// prose that merely names the tool never becomes a row.
+const ZAI_CALL = /^[ \t]*\*\*[ \t]*🌐[ \t]*z\.ai built-in tool:[ \t]*([^*\n]+?)[ \t]*\*\*[ \t]*(?:\n|$)(?:\s*\*\*[ \t]*input:[ \t]*\*\*[ \t]*\n[ \t]*```\w*[ \t]*\n([\s\S]*?)(?:\n[ \t]*```[ \t]*\n?|(?=\s*(?![\s\S]))))?(?:\s*\*[ \t]*executing on server[ \t]*(?:\.\.\.|…)[ \t]*\*[ \t]*\n?)?/gim;
+const ZAI_OUTPUT = /^[ \t]*\*\*[ \t]*output:[ \t]*\*\*[ \t]*\n[ \t]*\*\*([^*\n]+?)(?:_result_summary)?:\*\*[ \t]*([^\n]*(?:\n(?![ \t]*\n)[^\n]*)*)/gim;
 const CUT = /(?:\.\.\.|…)$/;
 
 /** Undo JSON string escapes without requiring the closing quote, so a cut string still reads. */
@@ -250,7 +252,7 @@ function zaiBrief(input: unknown): string {
  * a later message than its call.
  */
 function liftZai(text: string, pending: Tool[]): { text: string; tools: Tool[] } {
-  if (!text.includes('Z.ai Built-in Tool') && !text.includes('**Output:**')) return { text, tools: [] };
+  if (!/z\.ai built-in tool/i.test(text) && !/\*\*[ \t]*output:/i.test(text)) return { text, tools: [] };
   const tools: Tool[] = [];
   text = text.replace(ZAI_CALL, (_, name: string, raw?: string) => {
     let input: unknown = raw ?? '';
