@@ -4,7 +4,8 @@ A delegation plan for the orchestrator. Each wave is a goal, a set of lanes, and
 verification step you run on a real device. Hand a wave to `/lead` and the orchestrator routes
 its lanes.
 
-This file plans the work. [ROADMAP.md](./ROADMAP.md) records what landed — when a wave passes
+This file plans the work. The next plan, for the gaps found against herdr-web-ui 0.3.52 on
+2026-10-07, is [WAVES-PARITY.md](./WAVES-PARITY.md). [ROADMAP.md](./ROADMAP.md) records what landed — when a wave passes
 its verification, tick its phase there. Vocabulary is in [../CONTEXT.md](../CONTEXT.md); use
 its terms (Hub, Host, Mux, Workspace, Tab, Pane, Agent, Status, Seen, Screen, Explain).
 
