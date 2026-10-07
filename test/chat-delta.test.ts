@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatLens, type ChatHub, type TranscriptIo } from '../server/chat.ts';
-import type { ChatEvent } from '../shared/chat.ts';
+import { pendingTool, type ChatEvent } from '../shared/chat.ts';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
 import type { Explain, Mux, Pane, Screen, ScreenMode, State, Tree, Workspace } from '../shared/types.ts';
@@ -123,6 +123,64 @@ describe('ChatLens deltas (ADR 0007)', () => {
     expect(await lens.output(paneKey, 'toolu_big')).toEqual({ text: lines.join('\n') });
     expect(await lens.output(paneKey, 'toolu_none')).toEqual({ text: undefined });
     expect(await lens.output('local/fake/p9', 'toolu_big')).toBeUndefined();
+    lens.close();
+  });
+
+  test('a long tool detail keeps its head inline and serves the whole text by tool id', async () => {
+    const command = Array.from({ length: 20 }, (_, n) => `echo step ${n + 1} ${'x'.repeat(30)}`).join('\n');
+    const { state, lens } = fixture([
+      line({ uuid: 'run1', type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_d1', name: 'Bash', input: { command } }] } }),
+      line({ uuid: 'run2', type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_d1', content: 'ok' }] } }),
+    ].join('\n'));
+    const { cursor } = (await lens.delta(paneKey, 'unknown'))!;
+    const chat = await lens.query(paneKey);
+    const tool = chat!.turns[0]!.tools[0]!;
+    expect(tool.detailTruncated).toBe(true);
+    expect(tool.detailLines).toBe(20);
+    expect(tool.detail!.split('\n')).toHaveLength(6); // the head: the first six lines
+    expect(tool.detail!.endsWith('…')).toBe(true);
+    expect(await lens.output(paneKey, 'toolu_d1', undefined, 'detail')).toEqual({ text: command });
+    expect(await lens.output(paneKey, 'toolu_d1', undefined, 'result')).toEqual({ text: undefined }); // its result was never sliced
+    // A later turn changes nothing about the cut row: the delta carries only the new turn.
+    state.main += '\n' + line({ uuid: 'run3', type: 'user', message: { content: 'Done?' } });
+    const delta = await lens.delta(paneKey, cursor);
+    expect(delta!.reset).toBe(false);
+    expect(delta!.upserts.map(turn => turn.id)).toEqual(['run3']);
+    lens.close();
+  });
+
+  test('the pending tool keeps its whole detail inline for the approval row', async () => {
+    const command = Array.from({ length: 20 }, (_, n) => `echo step ${n + 1} ${'y'.repeat(30)}`).join('\n');
+    const { lens } = fixture(line({ uuid: 'run1', type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_p1', name: 'Bash', input: { command } }] } }));
+    const chat = await lens.query(paneKey);
+    const tool = chat!.turns[0]!.tools[0]!;
+    expect(pendingTool(chat!.turns)).toEqual({ turn: 0, tool: 0 });
+    expect(tool.detail).toBe(command); // whole: the approval row shows it with no fetch
+    expect(tool.detailTruncated).toBeUndefined();
+    expect(tool.detailLines).toBeUndefined();
+    lens.close();
+  });
+
+  test('a windowed reset serves the newest turns with a total; earlier pages serve what sits before an id', async () => {
+    const { state, lens } = fixture(Array.from({ length: 6 }, (_, n) =>
+      line({ uuid: `run${n + 1}`, type: n % 2 ? 'assistant' : 'user', message: { content: `Turn ${n + 1}.` } })).join('\n'));
+    const first = await lens.delta(paneKey, 'unknown', undefined, { limit: 4 });
+    expect(first).toMatchObject({ reset: true, total: 6 });
+    expect(first!.upserts.map(turn => turn.id)).toEqual(['run3', 'run4', 'run5', 'run6']);
+    // The windowed ask names the oldest Turn held, so the diff starts there.
+    state.main += '\n' + line({ uuid: 'run7', type: 'user', message: { content: 'More.' } });
+    const delta = await lens.delta(paneKey, first!.cursor, undefined, { limit: 4, after: 'run3' });
+    expect(delta).toMatchObject({ reset: false, total: 7 });
+    expect(delta!.upserts.map(turn => turn.id)).toEqual(['run7']);
+    const page = await lens.earlier(paneKey, 'run3', undefined, 4);
+    expect(page).toMatchObject({ reset: false, total: 7 });
+    expect(page!.upserts.map(turn => turn.id)).toEqual(['run1', 'run2']);
+    expect(page!.subagents).toBeUndefined(); // a page is no reset: the tree already rode
+    const top = await lens.earlier(paneKey, 'run1', undefined, 4); // nothing sits before the first Turn
+    expect(top).toMatchObject({ reset: false, total: 7 });
+    expect(top!.upserts).toEqual([]);
+    expect((await lens.delta(paneKey, first!.cursor, undefined, { limit: 4, after: 'gone' }))!.reset).toBe(true); // an unknown after cannot be diffed
+    expect((await lens.earlier(paneKey, 'gone'))!.reset).toBe(true); // neither can an unknown before
     lens.close();
   });
 
@@ -321,5 +379,51 @@ describe('chat delta routes', () => {
       await until('event: chat');
       expect(seen).toContain(`data: ${JSON.stringify({ pane: paneKey, cursor: fresh.cursor })}\n`);
     } finally { await reader.cancel(); }
+  });
+
+  test('the windowed route validates limit, after and before', async () => {
+    const before = state.main;
+    try {
+      for (let n = 0; n < 6; n++) state.main += '\n' + line({ uuid: `w${n}`, ...(n % 2 ? { type: 'user', message: { content: `W${n}` } } : { type: 'assistant', message: { content: [{ type: 'text', text: `W${n}` }] } }) }); // w0 leads assistant, so it merges into no prior user turn
+      const start = await (await chat('?since=nope&limit=4')).json();
+      expect(start).toMatchObject({ reset: true, total: 9 }); // run1, run2, run4 hold the earlier turns
+      expect(start.upserts.map((turn: { id?: string }) => turn.id)).toEqual(['w2', 'w3', 'w4', 'w5']);
+      const quiet = await (await chat(`?since=${encodeURIComponent(start.cursor)}&limit=4&after=w2`)).json();
+      expect(quiet).toMatchObject({ reset: false, total: 9, upserts: [] });
+      const page = await (await chat('?before=w2&limit=2')).json();
+      expect(page).toMatchObject({ reset: false, total: 9 });
+      expect(page.upserts.map((turn: { id?: string }) => turn.id)).toEqual(['w0', 'w1']);
+      const reset = await (await chat(`?since=${encodeURIComponent(start.cursor)}&limit=4&after=zz9`)).json();
+      expect(reset).toMatchObject({ reset: true, total: 9 }); // an unknown after cannot be diffed against
+      expect(reset.upserts).toHaveLength(4);
+      for (const bad of ['0', 'abc', '501']) expect((await chat(`?since=nope&limit=${bad}`)).status).toBe(400);
+      expect((await chat('?since=nope&limit=4&after=bad%20id')).status).toBe(400);
+      expect((await chat('?before=bad%20id')).status).toBe(400);
+    } finally { state.main = before; }
+  });
+
+  test('/chat/output/:toolId?part=detail serves the whole cut detail; a bad part answers 400', async () => {
+    const command = Array.from({ length: 20 }, (_, n) => `echo step ${n + 1} ${'z'.repeat(30)}`).join('\n');
+    const before = state.main;
+    try {
+      state.main += [
+        '', line({ uuid: 'wd1', type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_wd1', name: 'Bash', input: { command } }] } }),
+        '', line({ uuid: 'wd2', type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_wd1', content: 'ok' }] } }),
+      ].join('\n');
+      const body = await (await chat('?since=nope&limit=1')).json();
+      const tool = body.upserts[0].tools[0];
+      expect(tool.detailTruncated).toBe(true);
+      expect(tool.detail.split('\n')).toHaveLength(6);
+      const part = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/toolu_wd1?part=detail`));
+      expect(part.status).toBe(200);
+      expect(part.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+      expect(await part.text()).toBe(command);
+      expect((await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/toolu_wd1`))).status).toBe(404); // the default part stays the result, which never sliced
+      expect((await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/toolu_wd1?part=both`))).status).toBe(400);
+      expect((await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/bad%20id?part=detail`))).status).toBe(400);
+      const unknown = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/toolu_none?part=detail`));
+      expect(unknown.status).toBe(404);
+      expect(await unknown.json()).toEqual({ error: 'no-output' });
+    } finally { state.main = before; }
   });
 });

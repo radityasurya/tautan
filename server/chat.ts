@@ -1,7 +1,7 @@
 import { open, readFile, readdir, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { parseCodexRollout, parsePiTranscript, parseTranscript, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTool, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
 import { codexHome, resolveCodexPath } from './codex-chat.ts';
 import type { State, StateHost } from '../shared/types.ts';
 
@@ -374,7 +374,7 @@ export async function resolveSession(hub: SessionHub, paneKey: string, io?: Tran
 }
 
 type AgentKind = NonNullable<ChatResponse['agentKind']>;
-type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; outputs: Map<string, string>; subagents: Subagent[]; at: number };
+type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; outputs: Map<string, string>; details: Map<string, string>; subagents: Subagent[]; at: number };
 /** One remembered generation (ADR 0007): the cursor that names it, every Turn's fingerprint
  *  (none for an id-less transcript, which keeps its digest only), and the subagents digest
  *  at parse time. The lens keeps the newest eight per conversation. */
@@ -535,21 +535,31 @@ export class ChatLens {
   /** ADR 0007: the conversation's change since a cursor it handed out. A `since` equal to
    *  the current cursor answers nothing new; one naming an older remembered generation
    *  answers its diff; anything else — unknown, older than eight generations, from before
-   *  a restart, or another transcript — answers a full `reset`. */
-  async delta(paneKey: string, since: string, agent?: string): Promise<ChatDelta | undefined> {
+   *  a restart, or another transcript — answers a full `reset`. The amendment adds the
+   *  windowed form: `limit` caps a reset's upserts to the newest turns and reports
+   *  `total`, and `after` names the oldest Turn the client holds, so a diff considers only
+   *  turns from it on — the client never receives an upsert it cannot place, and a Turn it
+   *  holds outside the window never goes stale. */
+  async delta(paneKey: string, since: string, agent?: string, opts?: { limit?: number; after?: string }): Promise<ChatDelta | undefined> {
     const value = await this.value(paneKey, agent);
     if (!value) return undefined;
     const gen = this.generations.get(agent ? `${paneKey}\u0000${agent}` : paneKey)?.find(item => item.cursor === since);
+    const total = opts?.limit !== undefined ? value.turns.length : undefined;
+    const window = opts?.limit !== undefined ? value.turns.slice(-opts.limit) : value.turns;
+    // An `after` that names no Turn of this parse (a truncation, a switched branch) cannot
+    // be diffed against — not even quietly: the reset below replaces the client's list.
+    const from = opts?.after === undefined ? undefined : value.turns.findIndex(turn => turn.id === opts.after);
     // The quiet answer (ADR 0007): the cursor names exactly this parse, so it holds for a
     // digest-only generation (an id-less transcript) as surely as for a fingerprinted one.
     // Only the tree may still ride, when its digest moved past what the client last saw.
-    if (gen && since === value.cursor) {
+    if (gen && since === value.cursor && from !== -1) {
       return {
         sessionId: value.sessionId,
         cursor: value.cursor,
         reset: false,
         upserts: [],
         agentKind: value.agentKind,
+        ...(total !== undefined ? { total } : {}),
         ...(gen.subs !== subagentsDigest(value.subagents) ? { subagents: value.subagents } : {}),
         ...(agent ? { agent } : {}),
       };
@@ -557,14 +567,35 @@ export class ChatLens {
     const ids = new Set(value.turns.map(turn => turn.id));
     // One uniform shrink rule: a remembered id that ceased to exist (a pi branch switch, a
     // truncation) cannot be expressed as upserts. So can a Turn without a native id.
-    const reset = !gen || ids.has(undefined) || [...gen.prints.keys()].some(id => !ids.has(id));
+    const reset = !gen || from === -1 || ids.has(undefined) || [...gen.prints.keys()].some(id => !ids.has(id));
     return {
       sessionId: value.sessionId,
       cursor: value.cursor,
       reset,
-      upserts: !gen || reset ? value.turns : value.turns.filter(turn => gen.prints.get(turn.id!) !== print(turn)),
+      upserts: !gen || reset ? window : (from !== undefined && from > 0 ? value.turns.slice(from) : value.turns).filter(turn => gen.prints.get(turn.id!) !== print(turn)),
       agentKind: value.agentKind,
+      ...(total !== undefined ? { total } : {}),
       ...(!gen || reset || gen.subs !== subagentsDigest(value.subagents) ? { subagents: value.subagents } : {}),
+      ...(agent ? { agent } : {}),
+    };
+  }
+
+  /** The amendment's earlier page: the turns before `before` — the client's oldest held
+   *  Turn id — one page of `limit`, shaped as a delta whose upserts the client prepends.
+   *  `before` gone from the parse answers a reset, so the client replaces its list. */
+  async earlier(paneKey: string, before: string, agent?: string, limit = CHAT_PAGE_TURNS): Promise<ChatDelta | undefined> {
+    const value = await this.value(paneKey, agent);
+    if (!value) return undefined;
+    const index = value.turns.findIndex(turn => turn.id === before);
+    const page = index >= 0 ? value.turns.slice(Math.max(0, index - limit), index) : undefined;
+    return {
+      sessionId: value.sessionId,
+      cursor: value.cursor,
+      reset: page === undefined,
+      upserts: page ?? value.turns.slice(-limit),
+      agentKind: value.agentKind,
+      total: value.turns.length,
+      ...(page === undefined ? { subagents: value.subagents } : {}),
       ...(agent ? { agent } : {}),
     };
   }
@@ -597,11 +628,12 @@ export class ChatLens {
     return value ? { html: value.previews[id] } : undefined;
   }
 
-  /** A tool's whole result text (ADR 0007: kept only past the inline slice) from the cached
-   *  parse, under the same contract as `image`. */
-  async output(paneKey: string, toolId: string, agent?: string): Promise<{ text?: string } | undefined> {
+  /** A tool's whole text from the cached parse, under the same contract as `image`: its
+   *  result (ADR 0007: kept only past the inline slice) or, since the amendment, its detail
+   *  (kept only past the inline head). */
+  async output(paneKey: string, toolId: string, agent?: string, part: 'result' | 'detail' = 'result'): Promise<{ text?: string } | undefined> {
     const value = await this.value(paneKey, agent);
-    return value ? { text: value.outputs.get(toolId) } : undefined;
+    return value ? { text: (part === 'detail' ? value.details : value.outputs).get(toolId) } : undefined;
   }
 
   private async value(paneKey: string, agent?: string): Promise<Cached | undefined> {
@@ -679,15 +711,28 @@ export class ChatLens {
     const images: TranscriptImage[] = [];
     const previews: string[] = [];
     const outputs = new Map<string, string>();
+    const details = new Map<string, string>();
     const subagentIds = new Map<string, string>();
     for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
-    const opts: ParseOpts = { images, previews, outputs, subagentIds, ...(agent ? { sidechain: true } : {}) };
+    const opts: ParseOpts = { images, previews, outputs, details, subagentIds, ...(agent ? { sidechain: true } : {}) };
     if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
     const parsed = resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
       : (resolved.agent === 'pi' || resolved.agent === 'omp' ? parsePiTranscript : parseTranscript)(jsonl, opts);
     // A Codex parse without stable identity (Wave 12.1) is no Chat: the Pane keeps its Screen.
     if (!parsed) { this.cache.delete(cacheKey); return; }
-    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, outputs, subagents: list, at: Date.now() };
+    // The amendment: the pending tool's whole detail rides inline, so the approval row shows
+    // the whole command or diff with no fetch — the lens restores what the parser cut.
+    const pending = pendingTool(parsed);
+    if (pending) {
+      const tool = parsed[pending.turn]!.tools[pending.tool]!;
+      const whole = tool.id !== undefined ? details.get(tool.id) : undefined;
+      if (whole !== undefined) {
+        tool.detail = whole;
+        delete tool.detailTruncated;
+        delete tool.detailLines;
+      }
+    }
+    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, outputs, details, subagents: list, at: Date.now() };
     this.cache.set(cacheKey, value);
     this.remember(paneKey, agent, cacheKey, value);
     return value;

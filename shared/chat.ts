@@ -5,7 +5,15 @@ export interface Tool {
   id?: string;
   name: string;
   brief: string;
+  /** The tool's whole input, or its head when it was cut: the first `DETAIL_LINES` lines
+   *  within `DETAIL_CHARS` characters (ADR 0007's amendment), with `detailTruncated` set and
+   *  the whole text served from `GET /api/panes/:key/chat/output/<id>?part=detail`. A pending
+   *  tool keeps its whole detail inline, so the approval row needs no fetch. */
   detail: string;
+  /** The inline `detail` keeps only its head; the whole text serves by the row's id. */
+  detailTruncated?: boolean;
+  /** Lines in the whole detail, so a cut one can say "first 6 of 240". */
+  detailLines?: number;
   /** Set on a z.ai built-in tool, which z.ai writes into the assistant text, not as tool_use. */
   via?: 'z.ai';
   /** The decoded z.ai output (Markdown), capped like detail. */
@@ -76,6 +84,9 @@ export interface ChatDelta {
   reset: boolean;         // true: upserts is the whole conversation, replace the list
   upserts: Turn[];        // transcript order; merge by id
   subagents?: Subagent[]; // the whole tree, when it changed, and always on a reset
+  /** The conversation's whole turn count, on a windowed answer (the amendment): the turns
+   *  served are the last page, and `Load earlier` asks for the rest. */
+  total?: number;
   /** Set when the response is a subagent's own conversation, as today. */
   agent?: string;
   /** Which agent's transcript this is, as on `ChatResponse`. */
@@ -287,6 +298,8 @@ export interface ParseOpts {
   previews?: string[];
   /** tool id → the tool's whole result text, kept only for results past the inline slice. */
   outputs?: Map<string, string>;
+  /** tool id → the tool's whole detail text, kept only for details past the inline head. */
+  details?: Map<string, string>;
   /** tool_use id → subagent id: a Task/Agent call whose id is in it gets `subagentId`. */
   subagentIds?: Map<string, string>;
   /** Keep isSidechain entries; every entry of a subagent's own file carries the flag. */
@@ -295,6 +308,29 @@ export interface ParseOpts {
 // ADR 0007: a result past this many lines keeps only its tail inline; the whole text moves
 // out of band to /chat/output/:id, so no large result rides in the turns.
 const RESULT_LINES = 40;
+// ADR 0007's amendment (2026-10-07): a detail past this many lines (or characters) keeps only
+// its head inline; the whole text moves out of band to /chat/output/:id?part=detail. 6/300 was
+// picked from the live Panes: detail p50 was 559 B, p90 2 103 B — the head keeps a closed row
+// readable while the 46% share of detail drops out of the first load.
+const DETAIL_LINES = 6;
+const DETAIL_CHARS = 300;
+/** ADR 0007's amendment: turns per page on a windowed first load and on `Load earlier`.
+ *  100 was picked from the live Panes: the busiest Claude Pane's last 100 turns (detail head
+ *  applied) serialise to 568 789 B, 43% under the 1 MB budget. */
+export const CHAT_PAGE_TURNS = 100;
+
+/** Keep a tool row's detail inline only as its head, mirroring `attachResult`'s tail slice:
+ *  the whole text lands in `opts.details`, keyed by the row's native id. Rows without an id
+ *  (z.ai's, id-less transcripts) keep their whole detail — nothing serves them out of band. */
+function cutDetail(tool: Tool, opts?: ParseOpts): void {
+  if (tool.id === undefined || tool.detail.length <= DETAIL_CHARS) return;
+  const whole = tool.detail; // already capped at 4 000 by detail()/customDetail
+  const lines = whole.split('\n');
+  opts?.details?.set(tool.id, whole);
+  tool.detail = `${lines.slice(0, DETAIL_LINES).join('\n').slice(0, DETAIL_CHARS)}…`;
+  tool.detailTruncated = true;
+  tool.detailLines = lines.length;
+}
 const ESCAPES = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
 const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f]/g;
 
@@ -397,6 +433,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
           if (subagent) tool.subagentId = subagent;
         }
         if (typeof block.id === 'string') toolUses.set(block.id, tool);
+        cutDetail(tool, opts);
         tools.push(tool);
       }
       if (block.type === 'tool_result') {
@@ -501,6 +538,7 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         const image = block.name === 'read' ? readImage(block.arguments) : undefined;
         const tool: Tool = { name: block.name, brief: brief(block.arguments), detail: detail(block.name, block.arguments), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
         if (typeof block.id === 'string') toolUses.set(block.id, tool);
+        cutDetail(tool, opts);
         tools.push(tool);
       }
     }
@@ -631,6 +669,7 @@ export function parseCodexRollout(jsonl: string, opts?: ParseOpts): Turn[] | und
         const id = str(record.call_id);
         if (id) { tool.id = id; calls.set(id, tool); }
         if (record.status === 'failed') tool.isError = true;
+        cutDetail(tool, opts);
         callTurn(turnId, tool, at);
       } else if (record.type === 'web_search_call') {
         // A web search has no `call_id` and no output item: its `id` joins the `web_search_end`
@@ -642,6 +681,7 @@ export function parseCodexRollout(jsonl: string, opts?: ParseOpts): Turn[] | und
         const id = str(record.id);
         if (id) { tool.id = id; calls.set(id, tool); }
         if (record.status === 'failed') tool.isError = true;
+        cutDetail(tool, opts);
         callTurn(turnId, tool, at);
       } else if (CODEX_OUTPUTS.has(record.type as string)) {
         const callId = str(record.call_id);

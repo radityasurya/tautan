@@ -5,7 +5,7 @@ import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown } from './markdown.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
-import { pendingTool, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, pendingTool, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
 import { CHAT_EVENT, mergeTurns } from '../shared/chat-merge.ts';
 import { toolLabel, type AgentKind } from '../shared/tool-label.ts';
 import type { Span, Status } from '../shared/types.ts';
@@ -151,18 +151,19 @@ function ResultHint({ tool }: { tool: Tool }) {
   if (tool.result === undefined) return null;
   return <span className="shrink-0 text-[10px] tabular-nums text-muted">{count(tool.resultLines ?? 1, 'line')}</span>;
 }
-/** Whole outputs fetched so far, by Pane, subagent and tool id: a row that closes and opens again asks once. */
+/** Whole outputs fetched so far, by Pane, subagent, tool id and part: a row that closes and opens again asks once. */
 // ponytail: the cache grows for the tab's life; evict on Pane switch if that ever matters.
 const outputs = new Map<string, string>();
 
-/** The whole output of a sliced tool result, fetched the first time its row opens; the slice stands in until then. */
-function useFullOutput(paneKey: string, agent: string | undefined, tool: Tool, opened: boolean): string | undefined {
-  const key = tool.resultTruncated && tool.id ? `${paneKey}\u0000${agent ?? ''}\u0000${tool.id}` : undefined;
+/** A sliced row's whole text — a result's tail-complement, or since the amendment a cut
+ *  detail's head-complement — fetched the first time its row opens; the slice stands in until then. */
+function useFullOutput(paneKey: string, agent: string | undefined, tool: Tool, opened: boolean, part: 'result' | 'detail' = 'result'): string | undefined {
+  const key = (part === 'detail' ? tool.detailTruncated : tool.resultTruncated) && tool.id ? `${paneKey}\u0000${agent ?? ''}\u0000${part}\u0000${tool.id}` : undefined;
   const [, redraw] = useState(0);
   useEffect(() => {
     if (!opened || !key || outputs.has(key)) return;
     let alive = true;
-    const url = `/api/panes/${encodeURIComponent(paneKey)}/chat/output/${encodeURIComponent(tool.id!)}${agent ? `?agent=${encodeURIComponent(agent)}` : ''}`;
+    const url = `/api/panes/${encodeURIComponent(paneKey)}/chat/output/${encodeURIComponent(tool.id!)}?${agent ? `agent=${encodeURIComponent(agent)}&` : ''}part=${part}`;
     fetch(url)
       .then((r) => (r.ok ? r.text() : undefined))
       .then((text) => { if (text !== undefined) { outputs.set(key, text); if (alive) redraw((n) => n + 1); } })
@@ -174,7 +175,8 @@ function useFullOutput(paneKey: string, agent: string | undefined, tool: Tool, o
 const SUMMARY = 'cursor-pointer list-none rounded-chip [&::-webkit-details-marker]:hidden';
 
 /** The open part of a tool row: the image, the page preview, the input, and the output. */
-function ToolBody({ tool, image, preview, full }: { tool: Tool; image?: ReturnType<typeof toolImage>; preview?: { src: string; title: string }; full?: string }) {
+function ToolBody({ tool, image, preview, full, wholeDetail }: { tool: Tool; image?: ReturnType<typeof toolImage>; preview?: { src: string; title: string }; full?: string; wholeDetail?: string }) {
+  const input = wholeDetail ?? tool.detail;
   return (
     <>
       {image && (
@@ -188,13 +190,13 @@ function ToolBody({ tool, image, preview, full }: { tool: Tool; image?: ReturnTy
         </div>
       )}
       <div className="relative border-t border-border">
-        {(tool.detail || tool.brief) && (
+        {(input || tool.brief) && (
           <pre className="max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words px-2 py-2 pr-16 font-mono text-caption text-fg">
-            {tool.detail || tool.brief}
+            {input || tool.brief}
           </pre>
         )}
         <CopyButton
-          text={[tool.detail || tool.brief, tool.output].filter(Boolean).join('\n\n')}
+          text={[input || tool.brief, tool.output].filter(Boolean).join('\n\n')}
           className="absolute right-1.5 top-1.5 min-h-8 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg"
         />
       </div>
@@ -249,6 +251,7 @@ function ToolRow({
   const label = toolLabel(tool.name, kind);
   const [opened, setOpened] = useState(false);
   const full = useFullOutput(paneKey, agent, tool, opened);
+  const wholeDetail = useFullOutput(paneKey, agent, tool, opened, 'detail');
 
   return (
     <li className={ROW}>
@@ -301,7 +304,7 @@ function ToolRow({
             <ChevronRight className="text-muted transition-transform group-open:rotate-90" />
           </summary>
         )}
-        <ToolBody tool={tool} image={image} preview={preview} full={full} />
+        <ToolBody tool={tool} image={image} preview={preview} full={full} wholeDetail={wholeDetail} />
       </details>
       {tool.subagentId && (
         <button
@@ -664,6 +667,11 @@ export function Chat({
   /** Each conversation's scroll, kept across switches; null means "at the bottom". */
   const scrolls = useRef(new Map<string, number | null>());
   const restore = useRef<number | null>(null);
+  /** The scrollHeight before a Load-earlier page prepends, so the reading place survives it. */
+  const grew = useRef<number | null>(null);
+  /** The conversation's whole turn count, once the Hub windows the first load (the
+   *  amendment): `Load earlier` fetches the pages before the newest. */
+  const [total, setTotal] = useState<number | undefined>(undefined);
   /** New turns arrived below while the user reads further up. */
   const [fresh, setFresh] = useState(false);
   /** The approval row appeared below while the user reads further up. */
@@ -703,18 +711,25 @@ export function Chat({
   // from the Hub wakes it at once, and a slow poll covers a missed event, because herdr moves
   // a Pane's revision on the title, cwd and Status only. The first ask sends an empty cursor,
   // which the Hub answers as a reset. The next ask waits for the previous one; a revision, a
-  // send or a Status change asks at once.
+  // send or a Status change asks at once. The amendment windows the ask: `limit` keeps a
+  // reset's upserts to the newest turns and `after` names the oldest Turn held, so the Hub
+  // never sends an upsert the view cannot place.
   const pace = useRef({ fast: false, blocked: false });
   pace.current = { fast: status === 'working' || waiting.some((p) => p.state !== 'held' && p.state !== 'failed'), blocked: status === 'blocked' };
   const poke = useRef(() => {});
+  const back = useRef(() => {});
   useEffect(() => {
-    const base = `/api/panes/${encodeURIComponent(paneKey)}/chat?since=`;
+    const root = `/api/panes/${encodeURIComponent(paneKey)}/chat`;
+    const base = `${root}?since=`;
     const agentQuery = selected ? `&agent=${encodeURIComponent(selected)}` : '';
     const controller = new AbortController();
     let cursor = '';
     let turns: Turn[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     let busy = false, again = false, loaded = false, quiet = 0;
+    // An id-less oldest Turn cannot be named to the Hub: that ask keeps today's whole-list
+    // form, and `Load earlier` stays hidden.
+    const windowed = () => turns.length === 0 || turns[0]?.id !== undefined;
     const next = () => {
       clearTimeout(timer);
       if (controller.signal.aborted || document.visibilityState === 'hidden') return;
@@ -722,12 +737,20 @@ export function Chat({
       if (fast || blocked) quiet = 0; // the 30 s back-off counts idle 304s only
       timer = setTimeout(run, fast ? 1_500 : blocked ? 5_000 : quiet >= 4 ? 30_000 : 15_000);
     };
+    const show = (delta: ChatDelta) => {
+      setData((prev) => ({
+        agent: selected,
+        chat: { sessionId: delta.sessionId, turns, at: Date.now(), agentKind: delta.agentKind ?? (prev && prev.agent === selected ? prev.chat.agentKind : undefined), subagents: delta.subagents ?? (prev && prev.agent === selected ? prev.chat.subagents : undefined), ...(selected ? { agent: selected } : {}) },
+      }));
+      if (delta.subagents) setSubagents(delta.subagents);
+    };
     const run = async () => {
       clearTimeout(timer);
       if (busy) { again = true; return; }
       busy = true;
       try {
-        const response = await fetch(`${base}${encodeURIComponent(cursor)}${agentQuery}`, { signal: controller.signal, cache: 'no-store' });
+        const ask = `${base}${encodeURIComponent(cursor)}${agentQuery}${windowed() ? `&limit=${CHAT_PAGE_TURNS}${turns[0]?.id !== undefined ? `&after=${encodeURIComponent(turns[0].id)}` : ''}` : ''}`;
+        const response = await fetch(ask, { signal: controller.signal, cache: 'no-store' });
         if (!response.ok) throw Object.assign(new Error(String(response.status)), { gone: response.status === 404 || response.status === 501 });
         // A Hub that predates ?since= ignores it and answers the full ChatResponse (version
         // skew across an upgrade): its turns are a reset with no cursor, so the next ask
@@ -739,16 +762,13 @@ export function Chat({
         if (!delta) throw new Error('invalid chat');
         const merged = mergeTurns(turns, delta);
         cursor = delta.cursor;
+        setTotal(delta.total);
         if (merged === turns && loaded && !delta.subagents) quiet++;
         else {
           quiet = 0;
           loaded = true;
           turns = merged;
-          setData((prev) => ({
-            agent: selected,
-            chat: { sessionId: delta.sessionId, turns, at: Date.now(), agentKind: delta.agentKind ?? (prev && prev.agent === selected ? prev.chat.agentKind : undefined), subagents: delta.subagents ?? (prev && prev.agent === selected ? prev.chat.subagents : undefined), ...(selected ? { agent: selected } : {}) },
-          }));
-          if (delta.subagents) setSubagents(delta.subagents);
+          show(delta);
           const done = finishedIn(turns);
           setFinished((prev) => (done.every((id) => prev.has(id)) ? prev : new Set([...prev, ...done])));
         }
@@ -765,7 +785,45 @@ export function Chat({
       } finally { busy = false; }
       if (again) { again = false; void run(); } else next();
     };
+    // The amendment's earlier page: the turns before the oldest one held, prepended in one
+    // piece with the reading place kept. A poll in flight swallows the click; the button
+    // stays, so the next click goes through.
+    const earlier = async () => {
+      const oldest = turns[0]?.id;
+      if (busy || oldest === undefined) return;
+      busy = true;
+      const el = box.current;
+      const was = el ? el.scrollHeight : 0;
+      try {
+        const response = await fetch(`${root}?before=${encodeURIComponent(oldest)}&limit=${CHAT_PAGE_TURNS}${agentQuery}`, { signal: controller.signal, cache: 'no-store' });
+        if (!response.ok) throw Object.assign(new Error(String(response.status)), { gone: response.status === 404 || response.status === 501 });
+        const answer = (await response.json()) as ChatDelta & Pick<ChatResponse, 'turns'>;
+        const page: ChatDelta | null = Array.isArray(answer.upserts) ? answer
+          : Array.isArray(answer.turns) ? { sessionId: answer.sessionId, cursor: '', reset: true, upserts: answer.turns, subagents: answer.subagents, agent: answer.agent }
+          : null;
+        if (!page) throw new Error('invalid chat');
+        setTotal(page.total);
+        if (page.reset) {
+          cursor = page.cursor;
+          turns = page.upserts;
+        } else {
+          const held = new Set(turns.map(turn => turn.id));
+          grew.current = was;
+          turns = [...page.upserts.filter(turn => turn.id === undefined || !held.has(turn.id)), ...turns];
+        }
+        show(page);
+      } catch (error) {
+        if ((error as Error).name === 'AbortError') return;
+        if ((error as { gone?: boolean }).gone) {
+          controller.abort();
+          if (selected) pick(undefined);
+          else onUnavailable();
+          return;
+        }
+      } finally { busy = false; }
+    };
     poke.current = () => void run();
+    back.current = () => void earlier();
     const onChat = (event: Event) => {
       const wake = (event as CustomEvent<ChatEvent>).detail;
       if (wake.pane === paneKey && wake.agent === selected && wake.cursor !== cursor) void run();
@@ -780,6 +838,7 @@ export function Chat({
       document.removeEventListener('visibilitychange', onVisible);
       removeEventListener(CHAT_EVENT, onChat);
       poke.current = () => {};
+      back.current = () => {};
     };
   }, [paneKey, selected, onUnavailable]);
   // A revision, a send's nudge or a Status change asks now instead of at the next tick.
@@ -814,7 +873,11 @@ export function Chat({
     const before = shown.current;
     shown.current = view;
     if (!el || !view) return;
-    if (restore.current !== null) {
+    if (grew.current !== null) {
+      // A Load-earlier page prepended: the viewport moves down by the height added above it.
+      el.scrollTop += Math.max(0, el.scrollHeight - grew.current);
+      grew.current = null;
+    } else if (restore.current !== null) {
       el.scrollTop = restore.current;
       restore.current = null;
     } else if (pinned.current) el.scrollTop = el.scrollHeight;
@@ -928,6 +991,14 @@ export function Chat({
           ) : view.turns.length === 0 && !pendingShown.length && !approval ? (
             <p className="text-caption text-muted">No turns yet</p>
           ) : (
+            <>
+            {total !== undefined && view.turns.length < total && view.turns[0]?.id !== undefined && (
+              <p className="mb-4 flex justify-center">
+                <button type="button" onClick={() => back.current()} className="press min-h-9 rounded-chip border border-border bg-surface px-3 text-caption text-muted active:text-fg">
+                  Load earlier turns
+                </button>
+              </p>
+            )}
             <ol className="flex flex-col gap-4">
               {view.turns.map((turn, turnIndex) => {
                 const assistant = turn.role === 'assistant';
@@ -989,6 +1060,7 @@ export function Chat({
               {pendingShown.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} />)}
               {approval && !target && <ApprovalItem approval={approval} agent={agent} />}
             </ol>
+            </>
           )}
           {view && busy && !approval && <Working agent={agent} status={status === 'blocked' ? 'blocked' : 'working'} spinner={spinner} onReview={onReview} />}
         </div>

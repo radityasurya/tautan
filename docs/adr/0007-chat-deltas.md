@@ -157,3 +157,69 @@ delivery, and a stream shared by up to four Panes' screens would carry megabyte 
 inline. Rejected: byte- or line-offset deltas parsed from the tail — the parse is
 holistic, so a tail parsed alone differs from the same tail parsed whole. Rejected: a
 delete list beside upserts — only the pi branch switch needs it, and that case resets.
+
+## Amendment (2026-10-07): inline detail head, and the windowed first load
+
+Wave 11's target — a full first load under ~1 MB uncompressed on the busiest Pane —
+failed on the live Hub: the busiest Claude Pane answered 2 985 769 B plain (779 063 B
+gzip), with tool `detail` at 46% and `result` at 29%; the busiest pi Pane answered
+1 147 051 B plain. Two changes follow, both measured on those Panes' snapshotted
+transcripts through the Hub's own parser and serialisation.
+
+**The detail head.** A tool row's inline `detail` keeps its head — the first
+`DETAIL_LINES` 6 lines within `DETAIL_CHARS` 300 characters, then `…` — with
+`detailTruncated` set and `detailLines` reporting the whole, mirroring the result's
+last-40-lines slice and `resultLines`. The whole text serves from
+`GET /api/panes/:key/chat/output/:toolId?part=detail` (`part` defaults to `result`;
+anything else is a 400), under the same id allow-list, cached-parse lookup and 404
+behaviour. The Hub keeps full text only for cut rows, in the same cached value as
+`sliced results, so the memory ceiling argument is unchanged. Rows without a native id
+(z.ai's, id-less transcripts) keep their whole detail, as before. The one pending tool
+(the approval row's target) keeps its whole detail inline — the lens restores what the
+parser cut — so an approval row shows the whole command or diff with no fetch.
+
+Head size, from the measurement: Claude detail lengths ran p50 559 B, p90 2 103 B,
+p99 4 000 B (18 of 1 529 rows at the old cap). A 6-line/300-character head keeps every
+closed row's gist (the row's `brief` already carries the one-line form); 10 lines/600
+characters was measured too and bought nothing that changed a decision. The result's
+40-line tail stays: trimming it to 15 lines saves ~60 KB on the busiest Pane and
+changes no decision, so the closed row does not change.
+
+**The windowed first load.** Detail alone does not reach the target — with the
+harshest trim measured (3 lines/200 characters head, 15-line result tail) the busiest
+Pane still answers 1 732 541 B, because Turn text (418 KB) and the remaining row
+overhead (312 KB) are irreducible. So the first load is windowed:
+
+- `?since=&limit=N` — a reset answers the newest N Turns and reports `total`, the
+  conversation's whole Turn count.
+- `&after=<oldest held Turn id>` — a non-reset diff considers only Turns from `after`'s
+  index on, so the client never receives an upsert it cannot place (unknown ids append
+  at the end, which would misorder a windowed view) and a Turn it holds outside the
+  window never goes stale. An `after` that names no Turn of the current parse — even
+  against the current cursor — answers a reset.
+- `?before=<oldest held Turn id>&limit=N` — `Load earlier` fetches the page before it,
+  shaped as a delta (`reset: false`, `upserts` prepend; `before` gone from the parse
+  answers a reset so the client replaces its list). `limit` validates as an integer
+  1..500; `after`/`before` use the output route's id allow-list. Absent parameters keep
+  today's behaviour, so an old client against a new Hub is unchanged apart from the
+  shorter details.
+
+N is 100 (`CHAT_PAGE_TURNS`, shared by client and Hub): the busiest Claude Pane's last
+100 Turns, head cap applied, serialise to 568 789 B — 43% under the 1 MB budget —
+while 150 Turns (845 383 B) leaves too little room for a conversation that grows.
+
+Measured, Hub's own serialisation on the snapshotted transcripts (before → after):
+
+| Pane | full load plain | full load gzip | detail share | first load (limit 100) | one-Turn delta |
+|---|---|---|---|---|---|
+| Claude `wM:p1` | 2 960 609 → 1 988 998 B | 779 065 → 544 350 B | 46.5% → 18.2% | 584 091 B plain / 155 984 B gzip (100 of 329 Turns) | 4 283 → 3 924 B |
+| pi `w8:p2Z` | 1 136 861 → 928 122 B | 260 826 → 215 346 B | 31.8% → 15.4% | 928 154 B plain (whole conversation, 20 Turns) | 2 149 → 1 495 B |
+
+Both Panes land under 1 MB uncompressed on the windowed first load, and every delta
+stays far under Wave 11's 50 KB.
+
+Tests for the amendment, beside 11.2's: a long detail keeps its head, marker and whole
+text by `part=detail` (200/400/404 as for `result`); the pending tool keeps its whole
+detail; a windowed reset serves the newest Turns with `total`; a diff honours `after`;
+`earlier` serves the page before an id and answers a reset for an unknown one; a
+later Turn changes nothing about a cut row.

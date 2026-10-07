@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
 import type { DiffResult, DiffScope, HostConfig, InputBody, MouseBody, MoveBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SplitBody, SuggestSettingBody } from '../shared/types.ts';
-import type { ChatEvent } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, type ChatEvent } from '../shared/chat.ts';
 import { parseUnifiedDiff } from '../shared/diff.ts';
 import { promptId } from '../shared/blocked.ts';
 import { HerdrMux } from './herdr.ts';
@@ -45,6 +45,9 @@ const fileType = (path: string) => ({
 }[extname(path).toLowerCase()] ?? 'text/plain; charset=utf-8');
 const fileHeaders = (path: string) => ({ 'content-type': fileType(path), 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' });
 const agentId = /^[A-Za-z0-9_-]{1,64}$/;
+/** A native id on a chat route (a tool id, or the amendment's `after`/`before` Turn id): a
+ *  strict allow-list; it is only a map key and never names a path. */
+const nativeId = /^[A-Za-z0-9_|.:-]{1,256}$/;
 // A preview of HTML the Agent wrote: `sandbox` without allow-scripts or allow-same-origin, so
 // scripts never run and the page cannot reach the Hub's origin even when opened directly.
 const previewHeaders = {
@@ -367,10 +370,22 @@ export function startHttp(hub: Hub, opts: {
             if (list && !list.some(item => item.id === agent)) return json({ error: 'no-agent' }, 404);
           }
           const since = url.searchParams.get('since');
-          if (since !== null) {
+          const before = url.searchParams.get('before');
+          if (since !== null || before !== null) {
+            // The amendment's windowing: `limit` caps a reset's upserts to the newest turns,
+            // `after` names the client's oldest held Turn, `before` asks for the earlier page.
+            const limitRaw = url.searchParams.get('limit');
+            const parsedLimit = Number(limitRaw);
+            if (limitRaw !== null && (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 500)) return json({ error: 'limit' }, 400);
+            const after = url.searchParams.get('after');
+            if (after !== null && !nativeId.test(after)) return json({ error: 'after' }, 400);
+            if (before !== null && !nativeId.test(before)) return json({ error: 'before' }, 400);
             // ADR 0007: a `?since=` GET always answers 200, If-None-Match ignored; nothing
-            // changed is {cursor, reset: false, upserts: []}.
-            const found = await chats.delta(key, since, agent);
+            // changed is {cursor, reset: false, upserts: []}. A `?before=` page answers the
+            // same shape, so the client merges it with the same code.
+            const found = before !== null
+              ? await chats.earlier(key, before, agent, parsedLimit ?? CHAT_PAGE_TURNS)
+              : await chats.delta(key, since!, agent, { limit: parsedLimit, after: after ?? undefined });
             if (!found) return json({ error: 'no-session' }, 404);
             return zipped(req, JSON.stringify(found), { ...jsonHeaders, 'cache-control': 'no-cache' });
           }
@@ -401,11 +416,14 @@ export function startHttp(hub: Hub, opts: {
           // ADR 0007: the tool's native id (pi ids carry a pipe), a strict allow-list; it is only a map key and never names a path.
           let toolId: string;
           try { toolId = decodeURIComponent(chatOutputMatch[2]!); } catch { return json({ error: 'id' }, 400); }
-          if (!/^[A-Za-z0-9_|.:-]{1,256}$/.test(toolId) || toolId.includes('..')) return json({ error: 'id' }, 400);
+          if (!nativeId.test(toolId) || toolId.includes('..')) return json({ error: 'id' }, 400);
           if (!await hub.hasPane(key)) return json({ error: 'no-session' }, 404);
           const agent = url.searchParams.get('agent') ?? undefined;
           if (agent !== undefined && (!agentId.test(agent) || !(await chats.subagentList(key))?.some(item => item.id === agent))) return json({ error: 'no-agent' }, 404);
-          const found = await chats.output(key, toolId, agent);
+          // The amendment: `part` picks the whole detail over the whole result.
+          const part = url.searchParams.get('part') ?? 'result';
+          if (part !== 'result' && part !== 'detail') return json({ error: 'part' }, 400);
+          const found = await chats.output(key, toolId, agent, part);
           if (!found) return json({ error: 'no-session' }, 404);
           if (found.text === undefined) return json({ error: 'no-output' }, 404);
           return zipped(req, found.text, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' });
