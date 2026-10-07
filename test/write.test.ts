@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
-import type { Explain, Mux, Pane, Screen, Tree, Workspace } from '../shared/types.ts';
+import type { Explain, Mux, Pane, Screen, State, Tree, Workspace } from '../shared/types.ts';
 
 describe('write routes', () => {
   let dir: string;
@@ -33,7 +33,19 @@ describe('write routes', () => {
       rename: async (target, label) => { fail(); if ('workspaceId' in target) tree.workspaces.find(x => x.id === target.workspaceId)!.label = label; else if ('tabId' in target) tree.tabs.find(x => x.id === target.tabId)!.label = label; else tree.panes.find(x => x.id === target.paneId)!.title = label; },
       closePane: async id => { fail(); tree.panes = tree.panes.filter(x => x.id !== id); },
       zoom: async (id, zoomed) => { fail(); const pane = tree.panes.find(x => x.id === id)!; if (zoomed) pane.zoomed = true; else delete pane.zoomed; },
-      closeWorkspace: async id => { fail(); tree.workspaces = tree.workspaces.filter(x => x.id !== id); tree.tabs = tree.tabs.filter(x => x.workspaceId !== id); tree.panes = tree.panes.filter(x => x.workspaceId !== id); }, close: () => {},
+      closeWorkspace: async id => { fail(); tree.workspaces = tree.workspaces.filter(x => x.id !== id); tree.tabs = tree.tabs.filter(x => x.workspaceId !== id); tree.panes = tree.panes.filter(x => x.workspaceId !== id); },
+      split: async (id, body): Promise<string> => { fail(); const pane = tree.panes.find(x => x.id === id)!; const fresh = { id: `p${tree.panes.length + 1}`, tabId: pane.tabId, workspaceId: pane.workspaceId, title: 'Split', ...(body.cwd ? { cwd: body.cwd } : {}), status: 'unknown' as const, revision: 0 }; tree.panes.push(fresh); return fresh.id; },
+      swap: async () => { fail(); },
+      move: async (id, destination): Promise<string> => {
+        fail(); const pane = tree.panes.find(x => x.id === id)!;
+        if ('tabId' in destination) { pane.tabId = destination.tabId; return id; }
+        const tab = { id: `t${tree.tabs.length + 1}`, workspaceId: pane.workspaceId, label: 'Tab' };
+        if ('newTab' in destination) { tree.tabs.push(tab); pane.tabId = tab.id; return id; }
+        const workspace = { id: `w${tree.workspaces.length + 1}`, label: destination.label ?? 'Workspace' };
+        tab.workspaceId = workspace.id; tree.workspaces.push(workspace); tree.tabs.push(tab);
+        pane.workspaceId = workspace.id; pane.tabId = tab.id; pane.id = `moved-${id}`; return pane.id; // ids change across Workspaces (herdr)
+      },
+      resize: async () => { fail(); }, close: () => {},
     };
     hub = new Hub({ refreshMs: 0, suggest: null }); hub.add('local', mux); await hub.state();
     const serve = Bun.serve;
@@ -128,6 +140,62 @@ describe('write routes', () => {
     failure = 'pane_not_found: gone';
     const herdrError = await request(path, { zoomed: true });
     expect(herdrError.status).toBe(502); expect(await herdrError.json()).toEqual({ error: 'pane_not_found' });
+    failure = undefined;
+  });
+
+  test('splits, swaps, moves, and resizes Panes, refreshing state before the reply', async () => {
+    const state = async (): Promise<State> =>
+      (await (await handle(new Request('http://tautan.test/api/state'))).json());
+    const split = await request('/api/panes/local%2Ffake%2Fp1/split', { direction: 'right', ratio: 0.5, cwd: dir });
+    expect(split.status).toBe(201); expect(await split.json()).toEqual({ paneKey: 'local/fake/p2' });
+    expect((await state()).panes.some(pane => pane.id === 'p2')).toBe(true);
+    expect((await request('/api/panes/local%2Ffake%2Fp2/swap', { target: 'local/fake/p1' })).status).toBe(204);
+    expect((await request('/api/panes/local%2Ffake%2Fp1/resize', { direction: 'left', amount: 5 })).status).toBe(204);
+    const newTab = await request('/api/panes/local%2Ffake%2Fp1/move', { newTab: true });
+    expect(newTab.status).toBe(201); expect(await newTab.json()).toEqual({ paneKey: 'local/fake/p1' });
+    const newWorkspace = await request('/api/panes/local%2Ffake%2Fp1/move', { newWorkspace: true, label: 'Moved' });
+    expect(newWorkspace.status).toBe(201);
+    const moved = await newWorkspace.json() as { paneKey: string };
+    expect(moved.paneKey).not.toBe('local/fake/p1'); // a cross-Workspace move renames the Pane
+    const after = await state();
+    expect(after.panes.some(pane => pane.key === moved.paneKey)).toBe(true);
+    expect(after.workspaces.some(workspace => workspace.label === 'Moved')).toBe(true);
+  });
+
+  test('moves a Pane to an existing Tab and 404s an unknown Tab', async () => {
+    const split = await (await request('/api/panes/local%2Ffake%2Fp1/split', { direction: 'down' })).json() as { paneKey: string };
+    const path = `/api/panes/${encodeURIComponent(split.paneKey)}/move`;
+    const move = await request(path, { tab: 'local/fake/t1', split: 'right', ratio: 0.4 });
+    expect(move.status).toBe(201); expect(await move.json()).toEqual({ paneKey: split.paneKey });
+    const missing = await request(path, { tab: 'local/fake/missing', split: 'right' });
+    expect(missing.status).toBe(404); expect(await missing.json()).toEqual({ error: 'tab not found' });
+  });
+
+  test('validates layout bodies and maps adapter errors', async () => {
+    const split = '/api/panes/local%2Ffake%2Fp1/split';
+    expect((await request(split, { direction: 'up' })).status).toBe(400);
+    expect((await request(split, { direction: 'right', ratio: 1 })).status).toBe(400);
+    expect((await request(split, { direction: 'right', cwd: 'relative' })).status).toBe(400);
+    expect((await request('/api/panes/local%2Ffake%2Fp1/swap', { target: 'local/other/p1' })).status).toBe(404);
+    const move = '/api/panes/local%2Ffake%2Fp1/move';
+    expect((await request(move, {})).status).toBe(400);                     // no target
+    expect((await request(move, { newTab: true, newWorkspace: true })).status).toBe(400); // two targets
+    expect((await request(move, { newTab: 'yes' })).status).toBe(400);      // target must be true
+    expect((await request(move, { newTab: true, label: 'x' })).status).toBe(400); // label belongs to newWorkspace
+    expect((await request(move, { tab: 'local/fake/t1' })).status).toBe(400); // split required with tab
+    expect((await request(move, { tab: 'local/fake/t1', split: 'sideways' })).status).toBe(400);
+    expect((await request(move, { tab: 'local/fake/t1', split: 'right', ratio: 0 })).status).toBe(400);
+    const resize = '/api/panes/local%2Ffake%2Fp1/resize';
+    expect((await request(resize, { direction: 'left' })).status).toBe(400);
+    expect((await request(resize, { direction: 'left', amount: 0 })).status).toBe(400);
+    expect((await request(resize, { direction: 'left', amount: 501 })).status).toBe(400);
+    expect((await request(resize, { direction: 'left', amount: 2.5 })).status).toBe(400);
+    expect((await request('/api/panes/local%2Ffake%2Fmissing/split', { direction: 'right' })).status).toBe(404);
+    failure = 'unsupported';
+    expect((await request(split, { direction: 'right' })).status).toBe(501);
+    failure = 'pane_not_found: gone';
+    const herdr = await request(split, { direction: 'right' });
+    expect(herdr.status).toBe(502); expect(await herdr.json()).toEqual({ error: 'pane_not_found' });
     failure = undefined;
   });
 

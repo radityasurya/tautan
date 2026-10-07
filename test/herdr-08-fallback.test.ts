@@ -1,9 +1,12 @@
 import { createServer, type Server, type Socket } from 'node:net';
-import { unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { HerdrMux } from '../server/herdr.ts';
+import { hostId } from '../server/hosts.ts';
+import { Hub } from '../server/mux.ts';
+import { startHttp } from '../server/http.ts';
 
 // A fake herdr 0.8 (no 0.8 binary ships on this machine; installed is 0.9.2): one response
 // per connection for RPC, `layout.updated` refused with an error reply and a closed socket,
@@ -91,4 +94,34 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux ag
     expect(tree.panes.find(pane => pane.id === 'w1:p2')).toMatchObject({ x: 80, cols: 40, rows: 50 });
     mux.close();
   }, 15_000);
+
+  test('gates the four layout writes on the reported version (ADR 0008)', async () => {
+    const mux = new HerdrMux('test', socketPath);
+    await mux.tree(); // the snapshot carries version 0.8.0, so the gate can refuse without an RPC
+    expect(mux.split('w1:p1', { direction: 'right' })).rejects.toThrow('unsupported');
+    expect(mux.swap('w1:p1', 'w1:p2')).rejects.toThrow('unsupported');
+    expect(mux.move('w1:p1', { newTab: true })).rejects.toThrow('unsupported');
+    expect(mux.resize('w1:p1', 'right', 5)).rejects.toThrow('unsupported');
+    mux.close();
+  });
+
+  test('the layout routes answer 501 when herdr reports 0.8', async () => {
+    const mux = new HerdrMux('test', socketPath);
+    const hub = new Hub({ refreshMs: 0, suggest: null });
+    hub.add(hostId, mux);
+    await hub.state();
+    const dir = mkdtempSync(join(tmpdir(), 'tautan-08-routes-'));
+    const server = startHttp(hub, { port: 0, hostname: '127.0.0.1', staticDir: dir, discover: async () => [] });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const post = (action: string, body: unknown) =>
+        fetch(`${base}/api/panes/${encodeURIComponent(`${hostId}/test/w1:p1`)}/${action}`, {
+          method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify(body),
+        });
+      expect((await post('split', { direction: 'right' })).status).toBe(501);
+      expect((await post('swap', { target: `${hostId}/test/w1:p2` })).status).toBe(501);
+      expect((await post('move', { newTab: true })).status).toBe(501);
+      expect((await post('resize', { direction: 'left', amount: 5 })).status).toBe(501);
+    } finally { server.stop(); hub.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
 });

@@ -3,7 +3,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseAnsi } from '../shared/ansi.ts';
-import type { Explain, HostConfig, InputBody, MouseBody, Mux, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PushSubscriptionBody, RenameBody, Screen, ScreenEvent, ScreenMode, Settings, State, StateHost, StatePane, Tree } from '../shared/types.ts';
+import type { Explain, HostConfig, InputBody, MouseBody, MoveBody, Mux, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PushSubscriptionBody, RenameBody, Screen, ScreenEvent, ScreenMode, Settings, SplitBody, State, StateHost, StatePane, Tree } from '../shared/types.ts';
 import { sendPush, type VapidKeys } from './push.ts';
 import { configureSuggest, type SuggestAdapter } from './suggest.ts';
 import { hostId as localHostId, hostsConfigPath } from './hosts.ts';
@@ -287,6 +287,53 @@ export class Hub {
     if (!found) throw new Error('pane not found');
     await found.entry.mux.zoom(found.paneId, zoomed);
     await this.refreshAfterWrite(found.muxKey);
+  }
+
+  async splitPane(paneKey: string, body: SplitBody): Promise<NewTabResult> {
+    await this.state();
+    const found = this.resolve(paneKey);
+    if (!found) throw new Error('pane not found');
+    const paneId = await found.entry.mux.split(found.paneId, body);
+    await this.refreshAfterWrite(found.muxKey);
+    return { paneKey: `${found.muxKey}/${paneId}` };
+  }
+
+  async swapPanes(paneKey: string, targetPaneKey: string): Promise<void> {
+    await this.state();
+    const found = this.resolve(paneKey); const target = this.resolve(targetPaneKey);
+    if (!found || !target) throw new Error('pane not found');
+    if (found.muxKey !== target.muxKey) throw new Error('pane not found'); // a swap lives on one Mux
+    await found.entry.mux.swap(found.paneId, target.paneId);
+    await this.refreshAfterWrite(found.muxKey);
+  }
+
+  async movePane(paneKey: string, body: MoveBody): Promise<NewTabResult> {
+    await this.state();
+    const found = this.resolve(paneKey);
+    if (!found) throw new Error('pane not found');
+    const destination = body.tab !== undefined
+      ? { tabId: this.tabIdOf(found, body.tab), split: body.split!, ...(body.ratio !== undefined ? { ratio: body.ratio } : {}) }
+      : body.newTab ? { newTab: true as const } : { newWorkspace: true as const, ...(body.label !== undefined ? { label: body.label } : {}) };
+    const paneId = await found.entry.mux.move(found.paneId, destination);
+    await this.refreshAfterWrite(found.muxKey);
+    return { paneKey: `${found.muxKey}/${paneId}` };
+  }
+
+  async resizePane(paneKey: string, direction: 'left' | 'right' | 'up' | 'down', amount: number): Promise<void> {
+    await this.state();
+    const found = this.resolve(paneKey);
+    if (!found) throw new Error('pane not found');
+    await found.entry.mux.resize(found.paneId, direction, amount);
+    await this.refreshAfterWrite(found.muxKey);
+  }
+
+  /** The pane id a Tab key names on `found`'s Mux; both keys must share the Mux. */
+  private tabIdOf(found: { muxKey: string; entry: Entry }, tabKey: string): string {
+    const first = tabKey.indexOf('/'); const second = tabKey.indexOf('/', first + 1);
+    if (first < 0 || second < 0 || tabKey.slice(0, second) !== found.muxKey) throw new Error('tab not found');
+    const tabId = tabKey.slice(second + 1);
+    if (!found.entry.tree?.tabs.some(t => t.id === tabId)) throw new Error('tab not found');
+    return tabId;
   }
 
   async closeWorkspace(muxKey: string, workspaceId: string): Promise<void> {

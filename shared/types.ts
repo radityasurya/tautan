@@ -46,6 +46,13 @@ export interface Mux {
   /** zoom this Pane to fill its Tab, or unzoom the Tab; both backends */
   zoom(paneId: string, zoomed: boolean): Promise<void>;
   closeWorkspace(workspaceId: string): Promise<void>;
+  // ADR 0008 layout writes; herdr ≥ 0.9 and tmux. `ratio` is the share the new or moved Pane takes.
+  split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string }): Promise<string>;
+  swap(paneId: string, targetPaneId: string): Promise<void>;
+  /** resolves to the moved Pane's id — a cross-Workspace move changes it (herdr) */
+  move(paneId: string, destination: { tabId: string; split: 'right' | 'down'; ratio?: number } | { newTab: true } | { newWorkspace: true; label?: string }): Promise<string>;
+  /** grow the Pane `cells` whole cells in `direction` */
+  resize(paneId: string, direction: 'left' | 'right' | 'up' | 'down', cells: number): Promise<void>;
   explain(paneId: string): Promise<Explain | null>;
   close(): void;
 }
@@ -117,6 +124,16 @@ export interface NewWorkspaceResult { workspaceKey: string }
 export type RenameBody = { muxKey: string; label: string } & ({ workspaceId: string } | { tabId: string } | { paneId: string });
 /** POST /api/panes/:key/zoom → 204. `zoomed: true` zooms this Pane; `false` unzooms its Tab. */
 export interface ZoomBody { zoomed: boolean }
+// ADR 0008 layout edits. `ratio` is the share the new or moved Pane takes (0–1 exclusive);
+// `amount` is whole cells, 1–500, and names the direction the Pane grows.
+/** POST /api/panes/:key/split → 201 {paneKey} of the new Pane */
+export interface SplitBody { direction: 'right' | 'down'; ratio?: number; cwd?: string }
+/** POST /api/panes/:key/swap → 204; both keys on one Mux */
+export interface SwapBody { target: string }
+/** POST /api/panes/:key/move → 201 {paneKey} of the moved Pane's current key; exactly one of tab | newTab | newWorkspace */
+export interface MoveBody { tab?: string; split?: 'right' | 'down'; ratio?: number; newTab?: true; newWorkspace?: true; label?: string }
+/** POST /api/panes/:key/resize → 204 */
+export interface ResizeBody { direction: 'left' | 'right' | 'up' | 'down'; amount: number }
 /** POST /api/panes/:key/close → 204. Errors on all four: `{ error: string }` — 400 body, 403 origin, 404 unknown, 501 'unsupported', 502 herdr error code. */
 /** POST /api/workspaces/:key/close → 204; `key` is the workspaceKey. Same error set as the Pane close. */
 /** POST /api/panes/:key/attach */

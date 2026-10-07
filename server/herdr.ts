@@ -226,6 +226,46 @@ export class HerdrMux implements Mux {
   async zoom(paneId: string, zoomed: boolean): Promise<void> { await this.rpc('pane.zoom', { pane_id: paneId, mode: zoomed ? 'on' : 'off' }); }
   async closeWorkspace(workspaceId: string): Promise<void> { await this.rpc('workspace.close', { workspace_id: workspaceId }); }
 
+  /** ADR 0008: layout writes need herdr 0.9. Gate on the version the snapshot already carried —
+   *  a write must not learn 0.8 by firing a doomed RPC. An unreadable or absent version attempts the call. */
+  private assertLayout(): void {
+    const [major, minor] = (this.cachedVersion() ?? '').split('.');
+    if (Number(major) === 0 && Number(minor) < 9) throw new Error('unsupported');
+  }
+
+  async split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string }): Promise<string> {
+    this.assertLayout();
+    // herdr's ratio is the share the split Pane KEEPS (probed on 0.9.2); the API's is the new Pane's share.
+    const result = await this.rpc('pane.split', {
+      target_pane_id: paneId, direction: o.direction, focus: false,
+      ...(o.ratio !== undefined ? { ratio: 1 - o.ratio } : {}), ...(o.cwd ? { cwd: o.cwd } : {}),
+    });
+    return result.pane.pane_id;
+  }
+
+  async swap(paneId: string, targetPaneId: string): Promise<void> {
+    this.assertLayout();
+    await this.rpc('pane.swap', { source_pane_id: paneId, target_pane_id: targetPaneId });
+  }
+
+  async move(paneId: string, destination: { tabId: string; split: 'right' | 'down'; ratio?: number } | { newTab: true } | { newWorkspace: true; label?: string }): Promise<string> {
+    this.assertLayout();
+    const dest = 'tabId' in destination
+      ? { type: 'tab', tab_id: destination.tabId, split: destination.split, ...(destination.ratio !== undefined ? { ratio: 1 - destination.ratio } : {}) }
+      : 'newTab' in destination ? { type: 'new_tab' } : { type: 'new_workspace', ...(destination.label ? { label: destination.label } : {}) };
+    const result = await this.rpc('pane.move', { pane_id: paneId, destination: dest, focus: false });
+    return result.move_result.pane.pane_id;
+  }
+
+  async resize(paneId: string, direction: 'left' | 'right' | 'up' | 'down', cells: number): Promise<void> {
+    this.assertLayout();
+    // herdr's amount is a fraction of the Tab's cell span; the Tab's size rides the layout's area.
+    const layout = ((await this.rpc('session.snapshot', {})).snapshot.layouts ?? [])
+      .find((layout: Json) => (layout.panes ?? []).some((item: Json) => item.pane_id === paneId));
+    const span = direction === 'left' || direction === 'right' ? Number(layout?.area?.width) : Number(layout?.area?.height);
+    await this.rpc('pane.resize', { pane_id: paneId, direction, amount: span > 0 ? cells / span : cells });
+  }
+
   private paneRecord(pane: Json): Pane {
     const agent = pane.display_agent ?? pane.agent;
     return { id: pane.pane_id, tabId: pane.tab_id, workspaceId: pane.workspace_id,

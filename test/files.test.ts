@@ -54,7 +54,7 @@ describe('files routes', () => {
       read: async (_id, mode): Promise<Screen> => ({ text: '', ansi: false, revision: 0, mode }),
       sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {}, explain: async (): Promise<Explain | null> => null,
       newTab: async (): Promise<Pane> => { throw new Error('unused'); }, newWorkspace: async (): Promise<Workspace> => { throw new Error('unused'); },
-      rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, close: () => {},
+      rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, close: () => {},
     };
     hub = new Hub({ refreshMs: 0, suggest: null }); hub.add('local', mux); await hub.state();
     const serve = Bun.serve;

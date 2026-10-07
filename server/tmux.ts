@@ -211,6 +211,32 @@ export class TmuxMux implements Mux {
     await this.run(['resize-pane', '-Z', '-t', paneId]);
   }
   async closeWorkspace(_workspaceId: string): Promise<void> { throw new Error('unsupported'); }
+  async split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string }): Promise<string> {
+    // `-l` is the NEW Pane's share — the API ratio, no complement (unlike herdr).
+    return (await this.run(['split-window', '-d', o.direction === 'right' ? '-h' : '-v', '-t', paneId,
+      ...(o.ratio !== undefined ? ['-l', `${Math.round(o.ratio * 100)}%`] : []), ...(o.cwd ? ['-c', o.cwd] : []),
+      '-P', '-F', '#{pane_id}'])).trim();
+  }
+  async swap(paneId: string, targetPaneId: string): Promise<void> { await this.run(['swap-pane', '-d', '-s', paneId, '-t', targetPaneId]); }
+  async move(paneId: string, destination: { tabId: string; split: 'right' | 'down'; ratio?: number } | { newTab: true } | { newWorkspace: true; label?: string }): Promise<string> {
+    if ('tabId' in destination) {
+      await this.run(['join-pane', '-d', destination.split === 'right' ? '-h' : '-v',
+        ...(destination.ratio !== undefined ? ['-l', `${Math.round(destination.ratio * 100)}%`] : []), '-t', destination.tabId, '-s', paneId]);
+      return paneId; // tmux pane ids are stable across moves
+    }
+    if ('newTab' in destination) { await this.run(['break-pane', '-d', '-s', paneId]); return paneId; }
+    // ponytail: three commands, not atomic — a failure between them leaves a seed Workspace the
+    // user sees and can close; the write-route refresh reconciles either way. One `move-pane -t` once tmux grows one.
+    const cwd = (await this.run(['display-message', '-p', '-t', paneId, '#{pane_current_path}'])).trim();
+    const name = destination.label?.replace(/[.:]/g, '-'); // tmux session names reject `.` and `:`
+    const session = (await this.run(['new-session', '-d', ...(name ? ['-s', name] : []), ...(cwd ? ['-c', cwd] : []), '-P', '-F', '#{session_name}'])).trim();
+    await this.run(['join-pane', '-d', '-s', paneId, '-t', `${session}:`]);
+    await this.run(['kill-pane', '-a', '-t', paneId]); // the seed Pane; last, or the fresh Workspace dies with it
+    return paneId;
+  }
+  async resize(paneId: string, direction: 'left' | 'right' | 'up' | 'down', cells: number): Promise<void> {
+    await this.run(['resize-pane', '-t', paneId, { left: '-L', right: '-R', up: '-U', down: '-D' }[direction]!, String(cells)]);
+  }
   async explain(_paneId: string): Promise<Explain | null> { return null; }
   close(): void {
     this.stopPolling(); this.listeners.clear(); this.revisions.clear(); this.lastReadAt.clear();

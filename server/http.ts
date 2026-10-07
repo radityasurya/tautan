@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
-import type { DiffResult, DiffScope, HostConfig, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SuggestSettingBody } from '../shared/types.ts';
+import type { DiffResult, DiffScope, HostConfig, InputBody, MouseBody, MoveBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SplitBody, SuggestSettingBody } from '../shared/types.ts';
 import { parseUnifiedDiff } from '../shared/diff.ts';
 import { promptId } from '../shared/blocked.ts';
 import { HerdrMux } from './herdr.ts';
@@ -485,7 +485,7 @@ export function startHttp(hub: Hub, opts: {
           try { key = decodeURIComponent(mouseMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           await hub.input(key, { raw: mouseBytes(body) }); return new Response(null, { status: 204 });
         }
-        const match = url.pathname.match(/^\/api\/panes\/([^/]+)\/(screen|input|seen|explain|attach|suggest|close|zoom)$/);
+        const match = url.pathname.match(/^\/api\/panes\/([^/]+)\/(screen|input|seen|explain|attach|suggest|close|zoom|split|swap|move|resize)$/);
         if (match) {
           let key: string;
           try { key = decodeURIComponent(match[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
@@ -497,6 +497,47 @@ export function startHttp(hub: Hub, opts: {
             try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
             if (!plainObject(body) || typeof body.zoomed !== 'boolean') return json({ error: 'body' }, 400);
             await hub.zoomPane(key, body.zoomed); return new Response(null, { status: 204 });
+          }
+          if (req.method === 'POST' && (action === 'split' || action === 'swap' || action === 'move' || action === 'resize')) {
+            let body: unknown;
+            try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
+            if (!plainObject(body)) return json({ error: 'body' }, 400);
+            if (typeof body.label === 'string') body.label = body.label.trim();
+            const validRatio = (value: unknown) => value === undefined || typeof value === 'number' && value > 0 && value < 1;
+            // ADR 0008: restore every leased Pane of the source or destination Tab before the edit.
+            const state = await hub.state();
+            const releaseLeases = async (...tabIds: (string | undefined)[]) => {
+              const wanted = new Set(tabIds.flatMap(id => id ? [id] : []));
+              const muxKey = state.panes.find(pane => pane.key === key)?.muxKey;
+              for (const pane of state.panes) if (pane.muxKey === muxKey && wanted.has(pane.tabId)) await leases.release(pane.key);
+            };
+            const sourceTab = state.panes.find(pane => pane.key === key)?.tabId;
+            if (action === 'split') {
+              if (body.direction !== 'right' && body.direction !== 'down' || !validRatio(body.ratio) || !validCwd(body.cwd)) return json({ error: 'body' }, 400);
+              await releaseLeases(sourceTab);
+              return json(await hub.splitPane(key, body as unknown as SplitBody), 201);
+            }
+            if (action === 'swap') {
+              if (!nonEmpty(body.target)) return json({ error: 'body' }, 400);
+              await releaseLeases(sourceTab, state.panes.find(pane => pane.key === body.target)?.tabId);
+              await hub.swapPanes(key, body.target as string); return new Response(null, { status: 204 });
+            }
+            if (action === 'move') {
+              // presence discrimination, as /api/rename: exactly one of tab | newTab | newWorkspace
+              const targets = ['tab', 'newTab', 'newWorkspace'].filter(field => Object.hasOwn(body, field));
+              const target = targets[0];
+              if (targets.length !== 1) return json({ error: 'body' }, 400);
+              if (target === 'tab') {
+                if (!nonEmpty(body.tab) || body.split !== 'right' && body.split !== 'down' || !validRatio(body.ratio)) return json({ error: 'body' }, 400);
+              } else if (body[target!] !== true) return json({ error: 'body' }, 400);
+              if (body.label !== undefined && target !== 'newWorkspace' || !validLabel(body.label)) return json({ error: 'body' }, 400);
+              await releaseLeases(sourceTab, target === 'tab' ? state.tabs.find(tab => tab.key === body.tab)?.id : undefined);
+              return json(await hub.movePane(key, body as unknown as MoveBody), 201);
+            }
+            if (body.direction !== 'left' && body.direction !== 'right' && body.direction !== 'up' && body.direction !== 'down'
+              || typeof body.amount !== 'number' || !Number.isInteger(body.amount) || body.amount < 1 || body.amount > 500) return json({ error: 'body' }, 400);
+            await releaseLeases(sourceTab);
+            await hub.resizePane(key, body.direction, body.amount); return new Response(null, { status: 204 });
           }
           if (req.method === 'POST' && action === 'suggest') return json(await hub.forceSuggest(key));
           if (req.method === 'POST' && action === 'attach') {
