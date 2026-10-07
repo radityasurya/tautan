@@ -38,28 +38,33 @@ const closer = (open: RegExpMatchArray) => new RegExp(`^ {0,3}${open[1]![0]}{${o
 
 const DEF = /^ {0,3}\[([^\]\n]+)\]:[ \t]*(\S+)(?:[ \t]+"[^"]*")?[ \t]*$/;
 
-/** Pull link reference definitions out of a message: their lines become blank, so nothing
- *  renders, and a definition anywhere outside a fence is visible everywhere in the message.
- *  Labels fold to trimmed lowercase; the first definition of a label wins. */
-function definitions(source: string): { src: string; refs: Record<string, string> } {
-  const lines = source.replace(/\r\n?/g, '\n').split('\n');
-  const refs: Record<string, string> = {};
-  let close: RegExp | null = null;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const open = line.match(FENCE);
-    if (close) { if (close.test(line)) close = null; }
-    else if (open) close = closer(open);
-    else {
-      const d = line.match(DEF);
-      if (d) {
-        const label = d[1]!.trim().toLowerCase();
-        if (!(label in refs)) refs[label] = d[2]!.replace(/^<|>$/g, '');
-        lines[i] = '';
+/** Pull link reference definitions out of parsed paragraphs: the line leaves the paragraph
+ *  and splits it, as a blank line would, and a definition anywhere is visible everywhere in
+ *  the message. Walking the parsed tree leaves fenced code intact by construction, so a
+ *  fence behind a list marker or indented keeps its content. Labels fold to trimmed
+ *  lowercase; the first definition of a label wins, and the map has no prototype, so
+ *  `constructor` and `__proto__` stay ordinary labels. */
+function extractDefs(blocks: Block[], refs: Record<string, string>): Block[] {
+  const out: Block[] = [];
+  for (const block of blocks) {
+    if (block.kind === 'para') {
+      let text: string[] = [];
+      for (const line of block.text.split('\n')) {
+        const d = line.match(DEF);
+        if (!d) text.push(line);
+        else {
+          const label = d[1]!.trim().toLowerCase();
+          if (!Object.hasOwn(refs, label)) refs[label] = d[2]!.replace(/^<|>$/g, '');
+          if (text.length) out.push({ kind: 'para', text: text.join('\n') });
+          text = [];
+        }
       }
-    }
+      if (text.length) out.push({ kind: 'para', text: text.join('\n') });
+    } else if (block.kind === 'quote') out.push({ ...block, blocks: extractDefs(block.blocks, refs) });
+    else if (block.kind === 'list') out.push({ ...block, items: block.items.map((item) => extractDefs(item, refs)) });
+    else out.push(block);
   }
-  return { src: lines.join('\n'), refs };
+  return out;
 }
 
 function cells(line: string): string[] {
@@ -145,6 +150,9 @@ const INLINE = new RegExp([
   // 17 shortcut [id]; emphasis characters stay out so a plain bracketed span without a
   // definition keeps rendering exactly as it did before references existed
   /\[([^\]\n*_~`\\[\]]+)\]/.source,
+  // 18 an image reference stays literal; it swallows the whole span so the reference inside
+  // never half-parses into ! plus a link
+  /(!\[[^\]\n]*\]\[[^\]\n]*\])/.source,
 ].join('|'), 'g');
 
 const SAFE_URL = /^(https?:|mailto:)/i;
@@ -185,6 +193,7 @@ export function inline(text: string, refs?: Record<string, string>): ReactNode[]
       const href = ref(m[17]!);
       out.push(href && SAFE_URL.test(href) ? link(href, inline(m[17]!, refs), k) : m[0]);
     }
+    else if (m[18] !== undefined) push(m[18]!);
     else out.push(<em key={k}>{inline((m[11] ?? m[12])!, refs)}</em>);
   }
   push(text.slice(last));
@@ -244,14 +253,15 @@ function BlockView({ block, refs }: { block: Block; refs?: Record<string, string
     );
     case 'list': {
       const List = block.ordered ? 'ol' : 'ul';
-      const TASK = /^\[( |x|X)\] /;
+      // A bare marker with nothing after it is still a task item.
+      const TASK = /^\[( |x|X)\](?:\s|$)/;
       return (
         <List start={block.ordered && block.start !== 1 ? block.start : undefined} className={`space-y-1 pl-5 marker:text-muted ${block.ordered ? 'list-decimal' : 'list-disc [&_ul]:list-[circle]'}`}>
           {block.items.map((item, n) => {
             const first = item[0];
             const task = first?.kind === 'para' ? first.text.match(TASK) : null;
             return (
-              <li key={n} className={`pl-0.5 [&>*+*]:mt-1${task ? ' list-none' : ''}`}>
+              <li key={n} className={`pl-0.5 [&>*+*]:mt-1${task && !block.ordered ? ' list-none' : ''}`}>
                 {task && <input type="checkbox" checked={task[1] !== ' '} disabled className="mr-1 align-[-2px] accent-accent" />}
                 <Blocks blocks={task && first?.kind === 'para' ? [{ ...first, text: first.text.slice(task[0].length) }, ...item.slice(1)] : item} tight refs={refs} />
               </li>
@@ -280,6 +290,6 @@ function BlockView({ block, refs }: { block: Block; refs?: Record<string, string
 }
 
 export function Markdown({ text }: { text: string }) {
-  const { src, refs } = definitions(text);
-  return <div className="flex min-w-0 flex-col gap-2"><Blocks blocks={parseBlocks(src)} refs={refs} /></div>;
+  const refs: Record<string, string> = Object.create(null);
+  return <div className="flex min-w-0 flex-col gap-2"><Blocks blocks={extractDefs(parseBlocks(text), refs)} refs={refs} /></div>;
 }

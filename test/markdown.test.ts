@@ -152,6 +152,21 @@ describe('reference links', () => {
     // A bracketed span with no definition keeps rendering as before references existed.
     expect(md('a [b *c*] d')).toBe('<p>a [b <em>c</em>] d</p>');
   });
+
+  test('a fence opened behind a list marker keeps its content', () => {
+    expect(md('- ```\n  [a]: https://x\n  ```')).toContain('<code>[a]: https://x</code>');
+  });
+
+  test('prototype labels define and resolve like any other', () => {
+    const out = md('See [a][constructor] and [b][__proto__].\n\n[constructor]: https://example.com/c\n[__proto__]: https://example.com/p');
+    expect(out).toContain('<a href="https://example.com/c"');
+    expect(out).toContain('<a href="https://example.com/p"');
+  });
+
+  test('an image reference stays literal, not ! plus a link', () => {
+    const out = md('![alt][id]\n\n[id]: https://example.com/i.png');
+    expect(out).toBe('<p>![alt][id]</p>');
+  });
 });
 
 describe('task lists', () => {
@@ -176,6 +191,16 @@ describe('task lists', () => {
 
   test('a marker without the trailing space stays text', () => {
     expect(md('- [x]tight')).toBe('<ul><li>[x]tight</li></ul>');
+  });
+
+  test('a bare marker with no content still renders the box', () => {
+    expect(md('- [x]')).toBe('<ul><li><input type="checkbox" disabled="" checked=""/></li></ul>');
+    expect(md('- [ ]')).toBe('<ul><li><input type="checkbox" disabled=""/></li></ul>');
+  });
+
+  test('only unordered task items drop their bullet', () => {
+    expect(renderToStaticMarkup(createElement(Markdown, { text: '1. [x] a' }))).not.toContain('list-none');
+    expect(renderToStaticMarkup(createElement(Markdown, { text: '- [x] a' }))).toContain('list-none');
   });
 });
 
