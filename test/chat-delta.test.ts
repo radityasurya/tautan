@@ -253,6 +253,26 @@ describe('chat delta routes', () => {
     expect(delta.upserts.map((turn: { id?: string; text: string }) => [turn.id, turn.text])).toEqual([['run4', 'Again.']]);
   });
 
+  test('a large Chat response gzips only when asked; a small delta stays plain', async () => {
+    const before = state.main;
+    try {
+      for (let n = 0; n < 40; n++) state.main += '\n' + line({ uuid: `big${n}`, ...(n % 2 ? { type: 'user', message: { content: 'x'.repeat(1000) } } : { type: 'assistant', message: { content: [{ type: 'text', text: 'y'.repeat(1000) }] } }) });
+      const plain = await chat('?since=nope');
+      expect(plain.headers.get('content-encoding')).toBeNull();
+      const body = await plain.json();
+      const zip = await chat('?since=nope', { 'accept-encoding': 'gzip, br' });
+      expect(zip.headers.get('content-encoding')).toBe('gzip');
+      expect(zip.headers.get('vary')).toBe('accept-encoding');
+      expect(JSON.parse(new TextDecoder().decode(Bun.gunzipSync(await zip.arrayBuffer())))).toEqual(body);
+      const full = await chat('', { 'accept-encoding': 'gzip' });
+      expect(full.headers.get('content-encoding')).toBe('gzip');
+      expect(full.headers.get('etag')).toMatch(/^"\w+"$/);
+      const small = await chat(`?since=${encodeURIComponent(body.cursor)}`, { 'accept-encoding': 'gzip' });
+      expect(small.headers.get('content-encoding')).toBeNull();
+      expect(await small.json()).toMatchObject({ reset: false, upserts: [] });
+    } finally { state.main = before; }
+  });
+
   test('/chat/output/:toolId serves the whole sliced text; a malformed or unknown id answers 400 and 404', async () => {
     const response = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/toolu_b1`));
     expect(response.status).toBe(200);

@@ -15,6 +15,12 @@ import { CompleteError, paneCompletion } from './complete.ts';
 import { fileList, fileRaw, FilesError, inside, quoteShell } from './files.ts';
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
+/** Chat bodies over 8 KB go out gzipped when the client accepts it; small ones stay plain. */
+const zipped = (req: Request, body: string, headers: Record<string, string>) => {
+  if (body.length <= 8192 || !req.headers.get('accept-encoding')?.includes('gzip')) return new Response(body, { headers });
+  return new Response(Bun.gzipSync(body), { headers: { ...headers, 'content-encoding': 'gzip', vary: 'accept-encoding' } });
+};
+const jsonHeaders = { 'content-type': 'application/json;charset=utf-8' };
 const tautanVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
 const QUOTA_TTL = 5 * 60 * 1_000;
 let quotaCache: { value: unknown; at: number } | undefined;
@@ -366,14 +372,14 @@ export function startHttp(hub: Hub, opts: {
             // changed is {cursor, reset: false, upserts: []}.
             const found = await chats.delta(key, since, agent);
             if (!found) return json({ error: 'no-session' }, 404);
-            return Response.json(found, { headers: { 'cache-control': 'no-cache' } });
+            return zipped(req, JSON.stringify(found), { ...jsonHeaders, 'cache-control': 'no-cache' });
           }
           const found = await chats.tagged(key, agent);
           if (!found) return json({ error: 'no-session' }, 404);
           // The Chat view polls with If-None-Match; an unchanged transcript costs a stat and a 304.
           const headers = { etag: found.etag, 'cache-control': 'no-cache' };
           const fresh = req.headers.get('if-none-match')?.split(',').some(tag => tag.trim().replace(/^W\//, '') === found.etag);
-          return fresh ? new Response(null, { status: 304, headers }) : Response.json(found.chat, { headers });
+          return fresh ? new Response(null, { status: 304, headers }) : zipped(req, JSON.stringify(found.chat), { ...jsonHeaders, ...headers });
         }
         const chatImageMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat\/image\/([^/]+)$/);
         if (req.method === 'GET' && chatImageMatch) {
@@ -402,7 +408,7 @@ export function startHttp(hub: Hub, opts: {
           const found = await chats.output(key, toolId, agent);
           if (!found) return json({ error: 'no-session' }, 404);
           if (found.text === undefined) return json({ error: 'no-output' }, 404);
-          return new Response(found.text, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
+          return zipped(req, found.text, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' });
         }
         const chatPreviewMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat\/preview\/([^/]+)$/);
         if (req.method === 'GET' && chatPreviewMatch) {
