@@ -118,17 +118,27 @@ rows there too; no setting lives in the header.
 
 **Header, desktop.** A 64 px row: back, then the `host / workspace / tab` path over the
 title, then the Status chip (`● status · agent ⌄`, tinted with its Status colour, one button
-that opens Switch), then the lens as a labelled control, **Read aloud** and ⋯. The Status
+that opens Switch), then the lens as a labelled control and ⋯. The Status
 word for `blocked` reads `needs you`.
 
-**Blocked.** A 2 px `--warn` line draws under the header while Status is `blocked`. The
-phone swaps the lens for **Review**, which scrolls to the blocked card and stays disabled
-until Explain has loaded. The desktop replaces the lens and Read aloud with the command, from
-Explain, and **Yes** and **No** buttons, each with the key it sends. The buttons come from
-`yesNoKeys()` in `shared/blocked.ts`, so they appear only for a plain yes/no prompt and
-never for an Always option. They use the card's own send path, so a 409 shows **The prompt
-changed.** and **Re-read** in the header and in the card together. While an answer is in
-flight both buttons are disabled.
+**Blocked.** A 2 px `--warn` line draws under the header while Status is `blocked`, and the
+Status word reads `needs you`. That is all the header does: the lens stays, and the header
+offers no answer. The answer lives in the blocked card, which is always on screen: the
+composer's card in the Screen view, the approval row in the Chat view.
+
+**Approval row (Chat view).** While the Pane is blocked, the last tool row of the final
+assistant turn that has no result yet (`pendingTool()` in `shared/chat.ts`) becomes the
+approval row: a `--warn` border and an 8 % `--warn` fill, the tool name, **Needs your
+approval**, the tool's input open in mono, and the blocked card's choices under it (the
+card component with `bare`, so the same pick-then-Send rows on the phone and one-click
+buttons on desktop, the same `sendBlocked()` and 409 guard). With no matching tool row (a
+question, not a tool), the whole card is the last item of the transcript instead. The
+composer drops its own card in the Chat view and keeps its text box. When the row appears
+the view scrolls to it; if the user reads further up, a **Needs your approval ↓** pill
+appears instead and scrolls to the row and focuses its first choice. After an answer the
+row says **Sent · waiting for Claude** until the Status moves on, then turns back into a
+normal tool row when the result arrives. The choices come back after 10 s if the Status
+never moves.
 
 Switching Pane inside the screen — a Tab, a Pane pill, a Switch drawer row, a
 swipe — calls `navigate()` without the View Transition, which plays only when
@@ -269,7 +279,7 @@ agent's colours, and one button per offered key plus ↑/↓. On the phone each 
 px row; on desktop the options sit on one line. A button shows the key it sends, spelled
 by `keyGlyph()` (`↵`, `esc`), and not `1 2 3`, because tautan's order is not the Agent's own
 numbering. The card rises into place over 200 ms and fades 150 ms after the Status clears.
-Every answer, from the card, the header or the Pane list, goes through `sendBlocked()`
+Every answer, from the card, the approval row or the Pane list, goes through `sendBlocked()`
 and its stale-prompt guard: if the Hub answers 409, the prompt has moved on, and **Re-read**
 replaces the buttons.
 
@@ -282,7 +292,7 @@ duplicates, because the footer's `esc to cancel` and `enter to confirm` are the
 preset under another name. The id alone is not enough: a real Claude Code
 permission box matches `live_blocked_form`, never `bash_permission_prompt`.
 `yesNoKeys()` returns the Yes and No keys only for a plain yes/no prompt, never for one
-with an Always option. The desktop header and the Pane list use it for their Yes and No.
+with an Always option. The Pane list uses it for its Yes and No.
 
 The composer is the only place with input, and it is one bar plus what it opens:
 

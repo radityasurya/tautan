@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseTranscript, type TranscriptImage } from '../shared/chat.ts';
+import { parseTranscript, pendingTool, type TranscriptImage } from '../shared/chat.ts';
 import { ChatLens, resolveSession, transcriptPath, type ChatHub, type SessionHub, type TranscriptIo } from '../server/chat.ts';
 import type { State } from '../shared/types.ts';
 
@@ -347,4 +347,16 @@ test('ChatLens serves a tool_result image from the cached parse', async () => {
   expect(await lens.image('local/mux/none', 0)).toBeUndefined();
   lens.close();
   expect(reads).toBe(1);
+});
+
+describe('pendingTool', () => {
+  const tool = (name: string, result?: string, isError?: boolean) => ({ name, brief: name, detail: name, ...(result !== undefined ? { result } : {}), ...(isError ? { isError } : {}) });
+  test('the last tool with no result on a final assistant turn', () => {
+    expect(pendingTool([{ role: 'assistant', text: '', tools: [tool('Read', 'ok'), tool('Bash'), tool('Edit', 'done')] }])).toEqual({ turn: 0, tool: 1 });
+  });
+  test('none when every tool finished or failed, or the final turn is the user', () => {
+    expect(pendingTool([{ role: 'assistant', text: '', tools: [tool('Read', 'ok'), tool('Bash', undefined, true)] }])).toBeNull();
+    expect(pendingTool([{ role: 'assistant', text: '', tools: [tool('Bash')] }, { role: 'user', text: 'hi', tools: [] }])).toBeNull();
+    expect(pendingTool([])).toBeNull();
+  });
 });

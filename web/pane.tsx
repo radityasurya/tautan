@@ -9,8 +9,7 @@ import type {
 import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordances.tsx';
 
 import { api, haptic, navigate, opensWith, post, reducedMotion, setSplitOn, splitSet, useDesktop, useSplitPref } from './app.tsx';
-import { yesNoKeys } from '../shared/blocked.ts';
-import { fetchExplain, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
+import { fetchExplain, sendBlocked, type ExplainResponse } from './blocked.tsx';
 import { Chat, readLens, writeLens, type LensMode } from './chat.tsx';
 import { Composer, FADE } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
@@ -969,9 +968,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const [switchTabs, setSwitchTabs] = useState(false);
   /** The prompt id whose answer came back 409, from the card or the header alike. */
   const [stalePrompt, setStalePrompt] = useState<string | null>(null);
-  /** The header's Yes or No is on its way: both stay disabled, so one tap is one answer. */
-  const [answering, setAnswering] = useState(false);
   const card = useRef<HTMLDivElement>(null);
+  /** The Chat view's approval row, when it shows the blocked prompt in place of the dock's card. */
+  const approvalRow = useRef<HTMLLIElement>(null);
   const [lensChoice, setLensChoice] = useState<{ paneKey: string; mode: LensMode }>(() => ({
     paneKey,
     mode: readLens(paneKey),
@@ -1155,8 +1154,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const renameTab = tabs.find((t) => t.id === tabRename);
   const closingTab = tabs.find((t) => t.id === tabClose);
 
-  /** The one answer path for a blocked prompt: the card and the desktop header both send
-   *  through it, so a 409 from either shows Re-read on both. */
+  /** The one answer path for a blocked prompt: the dock's card and the Chat view's approval
+   *  row both send through it, so a 409 from either shows Re-read on both. */
   const answer = async (names: string[], promptId?: string) => {
     const outcome = await sendBlocked(paneKey, names, promptId);
     if (outcome === 'changed') setStalePrompt(promptId ?? '');
@@ -1167,12 +1166,13 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     void loadExplain();
   };
 
-  /** Review (phone, blocked): bring the card into view and put focus on its first option. */
+  /** Review: bring the blocked card into view (the Chat view's approval row when it shows
+   *  one, else the dock's) and put focus on its first option. */
   const review = () => {
     haptic();
-    const el = card.current;
+    const el = approvalRow.current ?? card.current;
     el?.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
-    el?.querySelector<HTMLElement>('[role="radio"]')?.focus({ preventScroll: true });
+    el?.querySelector<HTMLElement>('[role="group"][aria-label="Options"] button')?.focus({ preventScroll: true });
   };
 
   const speak = () => {
@@ -1209,23 +1209,11 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     haptic();
     setTabMenu(id);
   } : undefined);
-  // Desktop's quick answer: only the plain Yes and No of a yes/no prompt (the card's own
-  // preset keys), never an Always-type hint key.
-  const yesNo = explain && status === 'blocked' ? yesNoKeys(explain) : null;
   const stale = !!explain && stalePrompt === (explain.promptId ?? '');
-  const quick = desktop && explain && yesNo
-    ? {
-        command: promptLine(explain),
-        choices: [yesNo.yes, yesNo.no],
-        stale,
-        sending: answering,
-        onAnswer: (key: string) => {
-          setAnswering(true);
-          void answer([key], explain.promptId).finally(() => setAnswering(false));
-        },
-        onReread: reread,
-      }
-    : null;
+  // In the Chat view the prompt is answered in the transcript, so the dock drops its card,
+  // through the card's 150 ms exit too, so the dock never flashes it after an answer.
+  const chatLens = !!agent && lens === 'chat';
+  const inlineApproval = chatLens && status === 'blocked' && !!explain;
   const mouseChip = mouseOn && !gridMeasure.effectiveWrap && (
     // Taps on the grid are going to the program, not to tautan.
     <span className="shrink-0 rounded-chip border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
@@ -1273,9 +1261,6 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
           setShowSwitch(true);
         }}
         onMore={() => setShowMore(true)}
-        onReview={review}
-        reviewReady={!!explain}
-        quick={quick}
       />
 
       {desktop ? (
@@ -1408,6 +1393,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
             lines={current ? lines : null}
             profile={profile}
             onReview={explain ? review : undefined}
+            approval={inlineApproval ? { explain: explain!, stale, desktop, onAnswer: answer, onReread: reread, ref: approvalRow } : null}
           />
         );
         return (
@@ -1433,6 +1419,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         onAnswer={answer}
         onReread={reread}
         cardRef={card}
+        hideCard={chatLens}
       />
 
       <SwitchDrawer

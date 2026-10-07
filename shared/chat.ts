@@ -70,6 +70,24 @@ export interface Turn {
   at?: number;
 }
 
+/**
+ * The tool row a blocked Agent is asking about: the last tool of the final turn, when that
+ * turn is the assistant's and the tool has no result, output or error yet. Null otherwise,
+ * so the caller shows the blocked card on its own (a question, not a tool).
+ */
+// ponytail: the last pending tool wins; parallel calls that each wait for approval would need
+// the prompt's own command matched against `detail`.
+export function pendingTool(turns: Turn[]): { turn: number; tool: number } | null {
+  const turn = turns.length - 1;
+  const last = turns[turn];
+  if (last?.role !== 'assistant') return null;
+  for (let tool = last.tools.length - 1; tool >= 0; tool--) {
+    const t = last.tools[tool]!;
+    if (t.result === undefined && t.output === undefined && !t.isError) return { turn, tool };
+  }
+  return null;
+}
+
 type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
 
 const commandWrapper = /^(?:command-name|command-message|local-command(?:-[\w-]+)?|task-notification|bash-(?:input|stdout))$/;

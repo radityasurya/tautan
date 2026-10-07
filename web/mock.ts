@@ -635,6 +635,18 @@ const liveTurn = (n: number): Turn => ({
   tools: [{ name: 'Bash', brief: `pnpm test --filter step-${n}`, detail: `pnpm test --filter step-${n}`, result: `✓ step-${n} (12 ms)`, resultLines: 1 }],
 });
 
+/** The Bash call behind mbp/herdr/p1's permission box (PERMISSION_BOX). */
+const PERMISSION_AT = ago(0.5);
+const permissionTurn = (status: Status): Turn => ({
+  role: 'assistant', at: PERMISSION_AT, text: 'I will run the suite to confirm.',
+  tools: [{
+    name: 'Bash', brief: 'pnpm test --filter ansi', detail: '# Run the ANSI parser tests\npnpm test --filter ansi',
+    ...(status === 'blocked' ? {} : status === 'idle'
+      ? { isError: true, result: 'The user doesn’t want to proceed with this tool use.', resultLines: 1 }
+      : { result: '✓ parseAnsi > SGR 22 clears dim [0.21ms]\n\n 41 pass, 0 fail', resultLines: 3 }),
+  }],
+});
+
 /** A Claude transcript as `GET /api/panes/:key/chat` returns it, with the Markdown Claude writes. */
 const mockChat = (agent?: string): ChatResponse => agent ? {
   sessionId: '11111111-1111-1111-1111-111111111111', at: Date.now(), agent,
@@ -1140,10 +1152,14 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
     // An ETag like the Hub's. `?mock&open=live` grows Main by one Bash turn every 4 s, so
     // the Chat view's polling and its "New messages" pill can be seen.
     const grown = !agent && mockOpen() === 'live' ? Math.floor((Date.now() - LIVE_FROM) / 4_000) : 0;
-    const etag = `"mock-${agent ?? 'main'}-${grown}"`;
+    // The blocked Claude Pane's last turn is the Bash call its permission box asks about:
+    // no result while it waits, the result once answered.
+    const asking = !agent && key === 'mbp/herdr/p1';
+    const etag = `"mock-${agent ?? 'main'}-${grown}${asking ? `-${pane.status}` : ''}"`;
     if (headers?.get('if-none-match') === etag) return new Response(null, { status: 304, headers: { etag } });
     const chat = mockChat(agent);
     for (let n = 1; n <= grown; n++) chat.turns.push(liveTurn(n));
+    if (asking) chat.turns.push(permissionTurn(pane.status));
     return Response.json(chat, { headers: { etag, 'cache-control': 'no-cache' } });
   }
   if (method === 'GET' && match[2] === 'explain') return json(mockExplains[key] ?? null);

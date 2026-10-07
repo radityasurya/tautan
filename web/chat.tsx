@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { Blocked, ON_WARN, type ExplainResponse } from './blocked.tsx';
 import { Dot, timeAgo } from './home.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown } from './markdown.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
-import type { ChatResponse, Subagent, Tool, Turn } from '../shared/chat.ts';
+import { pendingTool, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
 import type { Span, Status } from '../shared/types.ts';
 import { deliver, dropPending, pendingSnapshot, settled, subscribePending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
@@ -287,6 +288,92 @@ function ToolRow({
 
 const capital = (name: string) => `${name[0]!.toUpperCase()}${name.slice(1)}`;
 
+/** The blocked prompt, answered where it sits in the conversation. Absent unless blocked. */
+export interface Approval {
+  explain: ExplainResponse;
+  /** The last answer to this prompt came back 409. */
+  stale: boolean;
+  desktop: boolean;
+  /** The Pane's one answer path (`sendBlocked` with the 409 guard). */
+  onAnswer: (keys: string[], promptId?: string) => Promise<'sent' | 'changed'>;
+  onReread: () => void;
+  /** The row on screen, so Review can bring it into view. */
+  ref: RefObject<HTMLLIElement | null>;
+}
+
+/** An answer went out and the Agent has not moved yet. Choices come back after this, in case it never does. */
+const SENT_MS = 10_000;
+
+/**
+ * The approval as a transcript item: the tool row it asks about (warn-tinted, its input open)
+ * with the choices under it, or the full blocked card when no tool row matches (a question).
+ * After an answer it says so until the Status moves on and the row turns back into a tool row.
+ */
+function ApprovalItem({ approval, agent, tool, at }: { approval: Approval; agent: string; tool?: Tool; at?: number }) {
+  const { explain, stale, desktop, onAnswer, onReread, ref } = approval;
+  const promptId = explain.promptId ?? '';
+  const [sent, setSent] = useState<string | null>(null);
+  const waiting = sent === promptId;
+  useEffect(() => {
+    if (!waiting) return;
+    const t = setTimeout(() => setSent(null), SENT_MS);
+    return () => clearTimeout(t);
+  }, [waiting]);
+  const send = async (keys: string[], id?: string) => {
+    const outcome = await onAnswer(keys, id);
+    if (outcome === 'sent') setSent(id ?? '');
+    return outcome;
+  };
+  const note: ReactNode = (
+    <p role="status" className="flex min-h-11 items-center gap-2 px-1 text-caption text-muted lg:min-h-9">
+      <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-muted motion-safe:animate-pulse" />
+      Sent · waiting for {capital(agent)}
+    </p>
+  );
+  const card = (bare: boolean) =>
+    waiting ? note : (
+      <Blocked
+        key={promptId || 'mock'}
+        explain={explain}
+        agent={agent}
+        stale={stale}
+        layout={desktop ? 'row' : 'rows'}
+        bare={bare}
+        onSend={send}
+        onReread={onReread}
+      />
+    );
+
+  if (!tool) {
+    return (
+      <li ref={ref} data-approval className="flex scroll-my-4 flex-col items-start">
+        <div className="w-[min(92%,42rem)]">{card(false)}</div>
+      </li>
+    );
+  }
+  const input = tool.detail || tool.brief;
+  return (
+    <li ref={ref} data-approval aria-label={`${tool.name} needs your approval`} className="min-w-0 scroll-my-4 rounded-chip border border-warn/40 bg-warn/8">
+      <div className="flex min-h-11 items-center gap-2 px-2 py-1 lg:min-h-8">
+        <span className="max-w-32 shrink-0 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] leading-none text-fg">
+          {tool.name}
+        </span>
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold text-warn">
+          <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-warn" />
+          <span className="truncate">Needs your approval</span>
+        </span>
+        <Stamp at={at} />
+      </div>
+      {input && (
+        <pre className="mx-2 max-h-48 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded-[6px] border border-border bg-bg px-2 py-1.5 font-mono text-caption text-fg">
+          {input}
+        </pre>
+      )}
+      <div className="p-2">{card(true)}</div>
+    </li>
+  );
+}
+
 /**
  * The assistant side's "typing": three dots and what the Agent is doing. Claude's own spinner
  * line, read off the Screen, gives the verb and the time; anything else says "working".
@@ -518,6 +605,7 @@ export function Chat({
   lines,
   profile,
   onReview,
+  approval,
 }: {
   paneKey: string;
   revision: number;
@@ -530,6 +618,8 @@ export function Chat({
   profile: Profile;
   /** Brings the blocked prompt's card into view. */
   onReview?: () => void;
+  /** Set while the Pane is blocked: the prompt is answered in the transcript. */
+  approval?: Approval | null;
 }) {
   const [selected, setSelected] = useState<string | undefined>(() => readSubagent(paneKey));
   const [data, setData] = useState<{ agent?: string; chat: ChatResponse } | null>(null);
@@ -545,6 +635,8 @@ export function Chat({
   const restore = useRef<number | null>(null);
   /** New turns arrived below while the user reads further up. */
   const [fresh, setFresh] = useState(false);
+  /** The approval row appeared below while the user reads further up. */
+  const [asking, setAsking] = useState(false);
   const shown = useRef<ChatResponse | null>(null);
   const all = useSyncExternalStore(subscribePending, pendingSnapshot);
   const waiting = all.filter((p) => p.paneKey === paneKey);
@@ -690,6 +782,24 @@ export function Chat({
     return () => observer.disconnect();
   }, []);
 
+  // A new prompt comes into view, unless the user reads further up: then the pill says so.
+  const prompt = approval && view ? approval.explain.promptId ?? 'mock' : null;
+  useLayoutEffect(() => {
+    const el = box.current;
+    const row = approval?.ref.current;
+    if (!prompt || !el || !row) {
+      setAsking(false);
+      return;
+    }
+    if (!pinned.current) {
+      setAsking(true);
+      return;
+    }
+    // A row taller than the view shows its top (the command); else the bottom stays pinned.
+    if (row.offsetHeight > el.clientHeight) row.scrollIntoView({ block: 'start' });
+    else el.scrollTop = el.scrollHeight;
+  }, [prompt]);
+
   // A delivered reply shows the dots before the Status catches up: from the send until the
   // Status turns working (it then speaks for itself), an assistant turn arrives, or AWAIT_MS.
   const mainTurns = data && !data.agent ? data.chat.turns : null;
@@ -721,6 +831,7 @@ export function Chat({
   const running = useCallback((item: Subagent) => subagentRunning(item, subagents, finished, live), [subagents, finished, live]);
   const openRunning = open ? running(open) : false;
   const pendingShown = selected ? [] : waiting;
+  const target = approval && view ? pendingTool(view.turns) : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -748,6 +859,8 @@ export function Chat({
           const el = event.currentTarget;
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
           if (pinned.current) setFresh(false);
+          const row = approval?.ref.current;
+          if (asking && row && row.getBoundingClientRect().top < el.getBoundingClientRect().bottom - 48) setAsking(false);
         }}
         className={`relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4 ${subagents.length ? 'pb-4' : 'pb-10'}`}
       >
@@ -758,7 +871,7 @@ export function Chat({
               <Skeleton className="ml-auto h-11 w-2/3 rounded-card" />
               <Skeleton className="h-20 w-5/6 rounded-card" />
             </div>
-          ) : view.turns.length === 0 && !pendingShown.length ? (
+          ) : view.turns.length === 0 && !pendingShown.length && !approval ? (
             <p className="text-caption text-muted">No turns yet</p>
           ) : (
             <ol className="flex flex-col gap-4">
@@ -788,7 +901,15 @@ export function Chat({
                     )}
                     {tools.length > 0 && (
                       <ul className="mt-1.5 flex w-[min(92%,42rem)] flex-col gap-1">
-                        {tools.map((tool, toolIndex) => (
+                        {tools.map((tool, toolIndex) => approval && target?.turn === turnIndex && target.tool === toolIndex ? (
+                          <ApprovalItem
+                            key={`${tool.name}-${toolIndex}`}
+                            approval={approval}
+                            agent={agent}
+                            tool={tool}
+                            at={toolIndex === tools.length - 1 ? turn.at : undefined}
+                          />
+                        ) : (
                           <ToolRow
                             key={`${tool.name}-${toolIndex}`}
                             paneKey={paneKey}
@@ -810,12 +931,26 @@ export function Chat({
                 );
               })}
               {pendingShown.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} />)}
+              {approval && !target && <ApprovalItem approval={approval} agent={agent} />}
             </ol>
           )}
-          {view && busy && <Working agent={agent} status={status === 'blocked' ? 'blocked' : 'working'} spinner={spinner} onReview={onReview} />}
+          {view && busy && !approval && <Working agent={agent} status={status === 'blocked' ? 'blocked' : 'working'} spinner={spinner} onReview={onReview} />}
         </div>
       </div>
-      {fresh && (
+      {asking && approval ? (
+        <button
+          type="button"
+          onClick={() => {
+            setAsking(false);
+            onReview?.();
+          }}
+          className="absolute inset-x-0 bottom-2 mx-auto flex w-max items-center gap-1.5 rounded-chip bg-warn px-3 py-1.5 text-caption font-semibold shadow-elevated"
+          style={{ color: ON_WARN }}
+        >
+          Needs your approval
+          <Down />
+        </button>
+      ) : fresh && (
         <button
           type="button"
           onClick={() => {

@@ -233,7 +233,7 @@ try {
     return 'no switch offered (agent pane without lens support) — Screen only';
   });
 
-  await flow('desktop header answers through the 409 guard; ⌘2 opens Tab 2', async () => {
+  await flow('desktop card answers through the 409 guard; the header has no answer; ⌘2 opens Tab 2', async () => {
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-tabs' });
     const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
     const second = (await mux.newTab(workspace.id, { cwd: fixture.dir, label: 'second' })).id;
@@ -241,12 +241,14 @@ try {
     await print(first, box);
     await report(first, 'blocked');
     await desktop.goto(`${BASE}/#/pane/${encodeURIComponent(`HireOpz/default/${first}`)}`, { waitUntil: 'networkidle' });
-    const yes = desktop.getByRole('banner').getByRole('button', { name: /^Yes, key/ });
+    // The header says "needs you" and nothing more: the answer lives in the dock's card.
+    const yes = desktop.getByRole('region', { name: 'Blocked' }).getByRole('button', { name: /^Yes, key/ });
     await yes.waitFor({ timeout: 8_000 });
+    const banner = desktop.getByRole('banner').filter({ hasText: 'needs you' });
+    assert(await banner.getByRole('button', { name: /^(Yes|No), key|^Review$/ }).count() === 0, 'no answer in the header');
     await print(first, box.map(l => l.includes('echo') ? 'echo e2e-desk-v2' : l)); // the box moves on
     await report(first, 'blocked');
     await yes.click();
-    await desktop.getByRole('banner').getByText('The prompt changed.').waitFor({ timeout: 8_000 });
     await desktop.getByText('The prompt changed. Read it again before you answer.').waitFor({ timeout: 8_000 });
     await desktop.keyboard.press('Meta+Digit2');
     await desktop.waitForTimeout(900);
@@ -354,6 +356,64 @@ try {
     await desktop.goto(`${BASE}/#/hosts/HireOpz`, { waitUntil: 'networkidle' });
     await desktop.getByRole('region', { name: /^herdr / }).getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
     return 'three tabs, Hosts apart from Settings, Host detail at both widths';
+  });
+  await flow('chat view: the pending tool row asks for approval; the pill scrolls to it; No sends esc', async () => {
+    const asker = await pane('e2e-approval');
+    const key = `HireOpz/default/${asker}`;
+    // The live shape (Claude Code 2.1, herdr's bash_permission_prompt): description, the
+    // command between dashed rules, numbered options, `Esc to cancel · Tab to amend`.
+    const box = (cmd: string) => ['● Creating an empty test file in /tmp', '─'.repeat(40), ' Bash command', ' Create an empty test file in /tmp', '╌'.repeat(40), ` ${cmd}`, '╌'.repeat(40), ' Do you want to proceed?', ' ❯ 1. Yes', '   4. No', '', ' Esc to cancel · Tab to amend'];
+    await print(asker, box('touch /tmp/tautan-permission-test'));
+    await report(asker, 'working');
+    // A transcript shaped like the live one (chat JSON saved from a real blocked Pane): long
+    // enough to scroll, ending in the Bash call with no result.
+    const filler = Array.from({ length: 12 }, (_, n) => ({ role: n % 2 ? 'assistant' : 'user', text: `Filler turn ${n + 1}: ${'words '.repeat(30)}`, tools: [], at: Date.now() - 60_000 }));
+    const transcript = { sessionId: 'e2e', at: Date.now(), turns: [...filler,
+      { role: 'user', text: 'run: touch /tmp/tautan-permission-test', tools: [], at: Date.now() - 4_000 },
+      { role: 'assistant', text: '', at: Date.now() - 2_000, tools: [{ name: 'Bash', brief: 'touch /tmp/tautan-permission-test', detail: '# Create an empty test file in /tmp\ntouch /tmp/tautan-permission-test' }] },
+    ] };
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    const sent: string[] = [];
+    page.on('request', (r: { method(): string; url(): string; postData(): string | null }) => {
+      if (r.method() === 'POST' && r.url().endsWith(`${encodeURIComponent(key)}/input`)) sent.push(r.postData() ?? '');
+    });
+    try {
+      await page.route((url: URL) => /^\/api\/panes\/[^/]+\/chat$/.test(url.pathname), (route: { fulfill: (reply: object) => Promise<void> }) => route.fulfill({ json: transcript }));
+      await page.addInitScript((k: string) => sessionStorage.setItem(`tautan.lens.${k}`, 'chat'), key);
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      // The user reads further up when the Pane turns blocked: the pill says so, nothing jumps.
+      const transcriptBox = page.locator('[aria-label$="transcript"]');
+      await page.getByText('Filler turn 1:').waitFor({ timeout: 8_000 });
+      await transcriptBox.evaluate((el: HTMLElement) => { el.scrollTop = 0; });
+      await page.waitForTimeout(300);
+      await report(asker, 'blocked');
+      const pill = page.getByRole('button', { name: 'Needs your approval' });
+      await pill.waitFor({ timeout: 8_000 });
+      assert(await transcriptBox.evaluate((el: HTMLElement) => el.scrollTop) < 40, 'stayed scrolled up');
+      const row = page.locator('[data-approval]');
+      assert((await row.textContent() ?? '').includes('touch /tmp/tautan-permission-test'), 'command shown');
+      assert(await row.getByRole('radio', { name: /^Yes, key enter/ }).count() === 1 && await row.getByRole('radio', { name: /^No, key esc/ }).count() === 1, 'Yes and No in the row');
+      assert(await page.getByRole('region', { name: 'Blocked' }).count() === 0, 'dock card hidden in the Chat view');
+      assert(await page.getByRole('banner').getByRole('button', { name: 'Review' }).count() === 0, 'no header Review');
+      assert(await page.getByRole('banner').getByRole('button', { name: 'Chat' }).count() === 1, 'lens switch stays while blocked');
+      // The pill scrolls to the row and focuses its first choice; the lens stays Chat.
+      await pill.click();
+      await page.waitForTimeout(800);
+      const inView = await row.evaluate((el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        const box = el.closest('[aria-label$="transcript"]')!.getBoundingClientRect();
+        return r.top >= box.top - 1 && r.top < box.bottom;
+      });
+      assert(inView, 'row in view');
+      assert(await row.evaluate((el: HTMLElement) => el.contains(document.activeElement)), 'focus in the row');
+      assert(await page.evaluate((k: string) => sessionStorage.getItem(`tautan.lens.${k}`), key) === 'chat', 'lens still chat');
+      await row.getByRole('radio', { name: /^No, key esc/ }).click();
+      await row.getByRole('button', { name: 'Send', exact: true }).click();
+      await row.getByText('Sent · waiting for Claude').waitFor({ timeout: 8_000 });
+      return assert(sent.length === 1 && sent[0]!.includes('"keys":["esc"]') && sent[0]!.includes('"promptId"'), `sent=${sent.join('|').slice(0, 120)}`);
+    } finally {
+      await page.close().catch(() => {});
+    }
   });
   await flow('split view: both cells render, a click moves focus without a new EventSource, the Chat lens keeps the split, chips return at 1100 px', async () => {
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-split' });

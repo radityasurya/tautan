@@ -4,8 +4,6 @@ import { Link } from './app.tsx';
 import { LensSwitch, type LensMode } from './chat.tsx';
 import { Dot, statusText } from './home.tsx';
 import { Back, ChatLens, ChevronDown, More, ScreenLens } from './icons.tsx';
-import { keyGlyph } from './keys.ts';
-import { tokens } from './halaska-kit';
 
 /**
  * Sticky top bar, shared by the root screens and the Pane. One 56 px row + safe area, 16 px
@@ -81,28 +79,13 @@ const TINT: Record<Status, string> = {
   unknown: 'bg-surface',
 };
 
-/** Ink on the warn fill. The dark palette's background reads on amber in both themes. */
-const ON_WARN = tokens.dark.bg;
-
-/** The desktop header's quick answer to a blocked prompt. "Always" stays in the card. */
-export interface QuickAnswer {
-  command: string;
-  choices: { key: string; label: string }[];
-  /** The last answer came back 409: the prompt moved on, so Re-read replaces the choices. */
-  stale: boolean;
-  /** An answer is in flight: Yes and No are disabled until it lands. */
-  sending: boolean;
-  onAnswer: (key: string) => void;
-  onReread: () => void;
-}
-
 /**
  * The Pane's header, one component at both widths (docs/WAVES.md 10.2, variants A and C).
  * Phone: back · title over `● status · agent · host / workspace / tab ⌄` (one Switch trigger;
  * the path gives way first) · lens icons · ⋯. At `lg`: the title over the small muted path,
  * the Status chip, the labelled lens, then ⋯. Read aloud lives in ⋯ at both widths. Blocked
- * draws a 2 px warn line under the bar; the phone swaps the lens for Review, the desktop
- * shows the command with Yes and No.
+ * draws a 2 px warn line under the bar and says "needs you"; the answer lives in the
+ * blocked card (the dock, or the Chat view's approval row), never in the header.
  */
 export function PaneHeader({
   desktop,
@@ -114,9 +97,6 @@ export function PaneHeader({
   onLens,
   onSwitch,
   onMore,
-  onReview,
-  reviewReady,
-  quick,
 }: {
   desktop: boolean;
   title: string;
@@ -128,10 +108,6 @@ export function PaneHeader({
   onLens?: (mode: LensMode) => void;
   onSwitch: () => void;
   onMore: () => void;
-  onReview: () => void;
-  /** The blocked card has its Explain; until then Review has nothing to scroll to. */
-  reviewReady: boolean;
-  quick?: QuickAnswer | null;
 }) {
   const blocked = status === 'blocked';
   const back = (
@@ -193,50 +169,7 @@ export function PaneHeader({
               <ChevronDown />
             </span>
           </button>
-          {quick ? (
-            <>
-              <code title={quick.command} className="max-w-[280px] min-w-0 truncate font-mono text-[12px] text-fg">
-                {quick.command}
-              </code>
-              {quick.stale ? (
-                <>
-                  <span className="shrink-0 text-[12px] text-warn">The prompt changed.</span>
-                  <button
-                    type="button"
-                    onClick={quick.onReread}
-                    className="press h-9 shrink-0 rounded-composer border border-border px-3 text-[13px] font-medium text-accent"
-                  >
-                    Re-read
-                  </button>
-                </>
-              ) : (
-                quick.choices.map((c, i) => (
-                  <button
-                    key={c.key}
-                    type="button"
-                    aria-label={`${c.label}, key ${c.key}`}
-                    disabled={quick.sending}
-                    onClick={() => quick.onAnswer(c.key)}
-                    className={`press flex h-9 disabled:opacity-50 shrink-0 items-center gap-1.5 rounded-composer px-3 text-[13px] ${
-                      i === 0 ? 'bg-warn font-semibold' : 'border border-border text-danger'
-                    }`}
-                    style={i === 0 ? { color: ON_WARN } : undefined}
-                  >
-                    {c.label}
-                    <kbd
-                      className={`rounded-[4px] border px-[5px] font-mono text-[10.5px] font-normal ${
-                        i === 0 ? 'border-current/25' : 'border-border text-muted'
-                      }`}
-                    >
-                      {keyGlyph(c.key)}
-                    </kbd>
-                  </button>
-                ))
-              )}
-            </>
-          ) : (
-            onLens && <LensSwitch value={lens} onChange={onLens} />
-          )}
+          {onLens && <LensSwitch value={lens} onChange={onLens} />}
           {more}
         </div>
       ) : (
@@ -263,41 +196,28 @@ export function PaneHeader({
               </span>
             </button>
           </h1>
-          {blocked ? (
-            <button
-              type="button"
-              disabled={!reviewReady}
-              aria-busy={!reviewReady}
-              onClick={onReview}
-              className="press h-10 disabled:opacity-50 shrink-0 rounded-composer bg-warn px-3.5 text-[13px] font-semibold"
-              style={{ color: ON_WARN }}
-            >
-              Review
-            </button>
-          ) : (
-            onLens && (
-              <div role="group" aria-label="Pane view" className="flex shrink-0 rounded-composer bg-surface p-0.5">
-                {(
-                  [
-                    ['chat', 'Chat', <ChatLens key="c" />],
-                    ['screen', 'Screen', <ScreenLens key="s" />],
-                  ] as const
-                ).map(([mode, label, icon]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    aria-label={label}
-                    aria-pressed={lens === mode}
-                    onClick={() => onLens(mode)}
-                    className={`press flex h-9 w-10 items-center justify-center rounded-chip ${
-                      lens === mode ? 'bg-elevated text-fg shadow-sm' : 'text-muted'
-                    }`}
-                  >
-                    {icon}
-                  </button>
-                ))}
-              </div>
-            )
+          {onLens && (
+            <div role="group" aria-label="Pane view" className="flex shrink-0 rounded-composer bg-surface p-0.5">
+              {(
+                [
+                  ['chat', 'Chat', <ChatLens key="c" />],
+                  ['screen', 'Screen', <ScreenLens key="s" />],
+                ] as const
+              ).map(([mode, label, icon]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-label={label}
+                  aria-pressed={lens === mode}
+                  onClick={() => onLens(mode)}
+                  className={`press flex h-9 w-10 items-center justify-center rounded-chip ${
+                    lens === mode ? 'bg-elevated text-fg shadow-sm' : 'text-muted'
+                  }`}
+                >
+                  {icon}
+                </button>
+              ))}
+            </div>
           )}
           {more}
         </div>

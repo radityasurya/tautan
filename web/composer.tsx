@@ -239,6 +239,7 @@ export function Composer({
   onAnswer,
   onReread,
   cardRef,
+  hideCard,
 }: {
   paneKey: string;
   pane?: StatePane;
@@ -255,6 +256,8 @@ export function Composer({
   onReread: () => void;
   /** The card's live region, so the header's Review can bring it into view. */
   cardRef: RefObject<HTMLDivElement | null>;
+  /** The Chat view shows the prompt in the transcript: the card stays out, the text box stays. */
+  hideCard?: boolean;
 }) {
   const agent = pane?.agent;
   const status = pane?.status ?? 'unknown';
@@ -996,9 +999,9 @@ export function Composer({
         {/* The blocked card takes the replies' place. The live region must exist before the
             card does, or a screen reader announces nothing: it stays mounted at zero height
             while no prompt asks. */}
-        <div ref={cardRef} aria-live="polite" className={explain ? gutter : `-mb-2.5 h-0 overflow-hidden ${gutter}`}>
+        <div ref={cardRef} aria-live="polite" className={explain && !hideCard ? gutter : `-mb-2.5 h-0 overflow-hidden ${gutter}`}>
           <div className={`transition-opacity duration-150 ${status === 'blocked' && explain ? 'opacity-100' : 'opacity-0'}`}>
-            {explain && (
+            {explain && !hideCard && (
               <Blocked
                 key={explain.promptId ?? 'mock'}
                 explain={explain}
