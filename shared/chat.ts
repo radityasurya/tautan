@@ -64,6 +64,8 @@ export interface ChatResponse {
   subagents?: Subagent[];
   /** Set when the response is a subagent's own conversation. */
   agent?: string;
+  /** Which agent's transcript this is, for the Chat view's agent badge (Wave 12.4). */
+  agentKind?: 'claude' | 'pi' | 'codex';
 }
 
 /** `GET /api/panes/:key/chat?since=<cursor>[&agent=<id>]` (ADR 0007): only what changed
@@ -76,6 +78,8 @@ export interface ChatDelta {
   subagents?: Subagent[]; // the whole tree, when it changed, and always on a reset
   /** Set when the response is a subagent's own conversation, as today. */
   agent?: string;
+  /** Which agent's transcript this is, as on `ChatResponse`. */
+  agentKind?: 'claude' | 'pi' | 'codex';
 }
 
 /** The `chat` event on `/api/events`: a watched Pane's conversation moved to a new
@@ -124,7 +128,7 @@ export function pendingTool(turns: Turn[]): { turn: number; tool: number } | nul
   return null;
 }
 
-type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
+type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; image_url?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
 
 const commandWrapper = /^(?:command-name|command-message|local-command(?:-[\w-]+)?|task-notification|bash-(?:input|stdout))$/;
 const shortened = (text: string) => text.length > 80 ? `${text.slice(0, 79)}…` : text;
@@ -146,7 +150,7 @@ function wrapper(text: string): boolean {
 function brief(input: unknown): string {
   if (input && typeof input === 'object' && !Array.isArray(input)) {
     const value = input as Record<string, unknown>;
-    for (const key of ['file_path', 'command', 'pattern', 'url', 'path']) if (typeof value[key] === 'string' && value[key].trim()) return shortened(value[key].replace(/\s+/g, ' ').trim());
+    for (const key of ['file_path', 'command', 'cmd', 'pattern', 'url', 'path']) if (typeof value[key] === 'string' && value[key].trim()) return shortened(value[key].replace(/\s+/g, ' ').trim());
   }
   try { return shortened(JSON.stringify(input) ?? ''); } catch { return ''; }
 }
@@ -161,9 +165,9 @@ function detail(name: string, input: unknown): string {
   const value = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
   const filePath = str(value.file_path) ?? str(value.path);
   const lines: string[] = [];
-  if (str(value.command)) {
+  if (str(value.command) ?? str(value.cmd)) {
     if (str(value.description)) lines.push(`# ${value.description as string}`);
-    lines.push(value.command as string);
+    lines.push((str(value.command) ?? str(value.cmd))!);
   } else if (str(value.pattern)) {
     lines.push(value.pattern as string);
     if (str(value.path)) lines.push(`in ${value.path as string}`);
@@ -505,4 +509,154 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     } else turns.push({ role, text: cap(text), tools, ...(typeof entry.id === 'string' ? { id: entry.id } : {}), ...(at !== undefined ? { at } : {}) });
   }
   return turns;
+}
+
+// Codex's rollout JSONL: every display-bearing record — a user/assistant `message`, a call,
+// an output — carries `internal_chat_message_metadata_passthrough.turn_id`; the `event_msg`
+// `user_message`/`agent_message` records are duplicate presentation of the same text.
+const codexTurnId = (payload: Record<string, unknown>): string | undefined => {
+  const passthrough = payload.internal_chat_message_metadata_passthrough;
+  const turn = passthrough && typeof passthrough === 'object' && !Array.isArray(passthrough) ? (passthrough as Record<string, unknown>).turn_id : undefined;
+  return typeof turn === 'string' && turn.trim() ? turn : undefined;
+};
+const DATA_IMAGE = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/;
+// The only call kinds Codex writes as `response_item`s (observed across this host's rollouts);
+// anything else is not a tool row.
+const CODEX_CALLS = new Set(['function_call', 'custom_tool_call', 'tool_search_call']);
+const CODEX_OUTPUTS = new Set(['function_call_output', 'custom_tool_call_output', 'tool_search_output']);
+// A custom tool's input is free text (Codex `exec`), not JSON, so it renders directly.
+const customDetail = (input: unknown): string => {
+  const text = typeof input === 'string' ? input : (() => { try { return JSON.stringify(input) ?? ''; } catch { return ''; } })();
+  return cap(text);
+};
+
+/** Parse Codex's rollout JSONL into the same turns. One `turn_id` spans a whole user↔assistant
+ *  exchange, so a Turn's id is the native `turn_id` qualified by role — native identity without
+ *  collisions, never array position. If identity is absent (a record without the passthrough) or
+ *  ambiguous (one qualified id on two Turns), the parse returns `undefined` and the Pane keeps
+ *  its Screen (Wave 12.1). */
+export function parseCodexRollout(jsonl: string, opts?: ParseOpts): Turn[] | undefined {
+  const turns: Turn[] = [];
+  const calls = new Map<string, Tool>(); // native call id → its row, wherever it lives
+  let imageSeq = 0; // pasted and tool-result images number together, in file order
+  // One image source → a servable slot, or a placeholder that consumes no id (ADR 0007's bound).
+  const image = (source: unknown): Pasted => {
+    const found = typeof source === 'string' ? source.match(DATA_IMAGE) : undefined;
+    if (found && found[2]!.length <= RESULT_MAX) {
+      opts?.images?.push({ mediaType: found[1]!, data: found[2]! });
+      return { imageId: imageSeq++ };
+    }
+    return {};
+  };
+  // Codex writes text blocks as `input_text` in both directions; `attachResult` reads `text`.
+  const content = (output: unknown): unknown => !Array.isArray(output) ? output
+    : (output as Record<string, unknown>[]).map(block => block && typeof block === 'object' && !Array.isArray(block)
+      && (block.type === 'input_text' || block.type === 'output_text') && typeof block.text === 'string'
+      ? { type: 'text', text: block.text } : block);
+  const images = (output: unknown, tool: Tool | undefined) => {
+    for (const block of Array.isArray(output) ? output : []) {
+      if (!block || typeof block !== 'object' || Array.isArray(block) || (block as Block).type !== 'input_image') continue;
+      const imageId = image((block as Block).image_url).imageId; // a tool row keeps the first image only
+      if (imageId !== undefined && tool && tool.imageId === undefined) tool.imageId = imageId;
+    }
+  };
+  /** Append a tool row to the assistant Turn its `turn_id` names, opening that Turn when the
+   *  exchange produced no assistant message yet. */
+  const callTurn = (turnId: string | undefined, tool: Tool, at: number | undefined): void => {
+    const id = turnId === undefined ? undefined : `${turnId}:assistant`;
+    const previous = turns.at(-1);
+    if (previous?.role === 'assistant' && previous.id === id) previous.tools.push(tool);
+    else turns.push({ role: 'assistant', text: '', tools: [tool], ...(id ? { id } : {}), ...(at !== undefined ? { at } : {}) });
+  };
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line) continue;
+    let entry: Record<string, unknown>;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      entry = value as Record<string, unknown>;
+    } catch { continue; }
+    const payload = entry.payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    const record = payload as Record<string, unknown>;
+    const turnId = codexTurnId(record);
+    const at = time(entry.timestamp);
+    if (entry.type === 'response_item') {
+      if (record.type === 'message' && (record.role === 'user' || record.role === 'assistant')) {
+        const role = record.role;
+        const id = turnId === undefined ? undefined : `${turnId}:${role}`;
+        let text = '';
+        const pasted: Pasted[] = [];
+        if (Array.isArray(record.content)) for (const item of record.content) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+          const block = item as Block;
+          if ((block.type === 'input_text' || block.type === 'output_text') && typeof block.text === 'string') text += block.text;
+          if (block.type === 'input_image') pasted.push(image(block.image_url));
+        }
+        // `local_images` rides the payload beside `content`; no sample exists on this host, so
+        // ponytail: entries need inline `data` + a media type to serve — a bare file path
+        // becomes a placeholder until a real capture fixes the shape.
+        for (const item of Array.isArray(record.local_images) ? record.local_images : []) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+          const local = item as Record<string, unknown>;
+          const mediaType = str(local.mime_type) ?? str(local.media_type) ?? str(local.mimeType);
+          const data = str(local.data);
+          if (mediaType && PASTED_TYPE.test(mediaType) && data && data.length <= RESULT_MAX && BASE64.test(data)) {
+            opts?.images?.push({ mediaType, data });
+            pasted.push({ imageId: imageSeq++ });
+          } else pasted.push({});
+        }
+        if (!text && !pasted.length) continue;
+        const previous = turns.at(-1);
+        if (previous?.role === role && previous.id === id) {
+          previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
+          if (pasted.length) previous.images = [...previous.images ?? [], ...pasted];
+        } else turns.push({ role, text: cap(text), tools: [], ...(id ? { id } : {}), ...(pasted.length ? { images: pasted } : {}), ...(at !== undefined ? { at } : {}) });
+      } else if (CODEX_CALLS.has(record.type as string)) {
+        const name = str(record.name) ?? (record.type as string);
+        let tool: Tool;
+        if (record.type === 'custom_tool_call') {
+          tool = { name, brief: shortened(String(record.input ?? '').replace(/\s+/g, ' ').trim()), detail: customDetail(record.input) };
+        } else {
+          let input: unknown = record.arguments;
+          if (typeof input === 'string') { try { input = JSON.parse(input); } catch { /* not JSON: the brief shows it raw */ } }
+          tool = { name, brief: brief(input), detail: detail(name, input) };
+        }
+        const id = str(record.call_id);
+        if (id) { tool.id = id; calls.set(id, tool); }
+        if (record.status === 'failed') tool.isError = true;
+        callTurn(turnId, tool, at);
+      } else if (record.type === 'web_search_call') {
+        // A web search has no `call_id` and no output item: its `id` joins the `web_search_end`
+        // event that carries the results.
+        const action = record.action && typeof record.action === 'object' && !Array.isArray(record.action) ? record.action as Record<string, unknown> : {};
+        const query = str(action.query) ?? (Array.isArray(action.queries) ? (action.queries as unknown[]).map(String).join(' ') : undefined);
+        const what = query ?? str(action.url) ?? str(action.pattern) ?? '';
+        const tool: Tool = { name: 'web_search', brief: shortened(what), detail: cap(what) };
+        const id = str(record.id);
+        if (id) { tool.id = id; calls.set(id, tool); }
+        if (record.status === 'failed') tool.isError = true;
+        callTurn(turnId, tool, at);
+      } else if (CODEX_OUTPUTS.has(record.type as string)) {
+        const callId = str(record.call_id);
+        const tool = callId ? calls.get(callId) : undefined;
+        const output = record.type === 'tool_search_output' && record.output === undefined
+          ? (Array.isArray(record.tools) ? (record.tools as Record<string, unknown>[]).map(item => str(item?.name)).filter(Boolean).join('\n') : '')
+          : record.output;
+        attachResult(tool, content(output), record.is_error === true || record.isError === true, opts?.outputs);
+        images(record.output, tool);
+      }
+    } else if (entry.type === 'event_msg' && record.type === 'web_search_end') {
+      const callId = str(record.call_id);
+      const tool = callId ? calls.get(callId) : undefined;
+      const results = Array.isArray(record.results) ? (record.results as Record<string, unknown>[]).map(item => {
+        const title = str(item.title), url = str(item.url);
+        return title && url ? `${title} — ${url}` : title ?? url ?? '';
+      }).filter(Boolean).join('\n') : '';
+      attachResult(tool, results, false, opts?.outputs);
+    }
+  }
+  // Wave 12.1: identity absent or ambiguous → Screen, never ids from array position.
+  if (turns.some(turn => turn.id === undefined)) return undefined;
+  return new Set(turns.map(turn => turn.id)).size === turns.length ? turns : undefined;
 }

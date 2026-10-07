@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-07T11:10:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"no passthrough on this record"}]}}
+{"timestamp":"2026-10-07T11:10:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"so the parse has no stable identity"}]}}

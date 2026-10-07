@@ -1,7 +1,8 @@
 import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { parsePiTranscript, parseTranscript, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { parseCodexRollout, parsePiTranscript, parseTranscript, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { codexHome, resolveCodexPath } from './codex-chat.ts';
 import type { State, StateHost } from '../shared/types.ts';
 
 export interface TranscriptSignature { inode: string; size: number; mtime: string }
@@ -18,6 +19,11 @@ export interface TranscriptIo {
   mtimes?(dir: string, target?: string): Promise<Map<string, number> | undefined>;
   /** The last `bytes` of a file, for a conversation's ending. */
   tail?(path: string, bytes: number, target?: string): Promise<string>;
+  /** Every file matching a `*` wildcard pattern under a directory, recursively; `undefined`
+   *  when the directory does not exist. For Codex's exact-id rollout search. */
+  find?(root: string, pattern: string, target?: string): Promise<string[] | undefined>;
+  /** A file's first line within the head window, for Codex's `session_meta` id check. */
+  head?(path: string, target?: string): Promise<string | undefined>;
 }
 
 type Process = { pid?: number; name?: string; argv?: string[] };
@@ -37,6 +43,8 @@ export interface ChatHub extends SessionHub {
 const sessionId = /^[0-9a-f-]{36}$/;
 const sameSignature = (a: TranscriptSignature, b: TranscriptSignature) => a.inode === b.inode && a.size === b.size && a.mtime === b.mtime;
 const quoteShell = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+/** A `*` wildcard pattern as a whole-name test: every other character literal. */
+const glob = (pattern: string) => new RegExp(`^${pattern.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
 
 /** The session's own folder, which holds its `subagents/` directory. */
 export function transcriptDir(cwd: string, id: string, home = homedir()): string {
@@ -119,6 +127,34 @@ export const localIo: TranscriptIo = {
       return buffer.toString('utf8');
     } finally { await handle.close(); }
   },
+  async find(root, pattern) {
+    const match = glob(pattern);
+    const out: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      let entries;
+      try { entries = await readdir(dir, { withFileTypes: true }); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+        throw error;
+      }
+      for (const entry of entries) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) await walk(path);
+        else if (entry.isFile() && match.test(entry.name)) out.push(path);
+      }
+    };
+    await walk(root);
+    return out;
+  },
+  // ponytail: a session_meta line over the 256 KB window (huge base_instructions) fails the
+  // header check and stays unresolved; raise HEAD if one ever appears.
+  async head(path) {
+    const handle = await open(path, 'r');
+    try {
+      const buffer = Buffer.alloc(HEAD);
+      const { bytesRead } = await handle.read(buffer, 0, HEAD, 0);
+      return buffer.subarray(0, bytesRead).toString('utf8').split('\n', 1)[0] ?? '';
+    } finally { await handle.close(); }
+  },
   async subagents(dir) {
     try {
       const info = await stat(dir);
@@ -163,6 +199,20 @@ const remoteIo: TranscriptIo = {
     const result = await ssh(target, `tail -c ${bytes} -- ${remotePath(path)}`);
     if (result.code) throw new Error('remote transcript tail failed');
     return result.stdout;
+  },
+  find: async (root, pattern, target) => {
+    if (!target) return localIo.find!(root, pattern);
+    const file = remotePath(root);
+    const result = await ssh(target, `[ -d ${file} ] || exit 3; find ${file} -type f -name ${quoteShell(pattern)}`);
+    if (result.code === 3) return undefined;
+    if (result.code) throw new Error('remote codex rollout find failed');
+    return result.stdout.split('\n').filter(Boolean);
+  },
+  head: async (path, target) => {
+    if (!target) return localIo.head!(path);
+    const result = await ssh(target, `head -c ${HEAD} -- ${remotePath(path)}`);
+    if (result.code) throw new Error('remote transcript head failed');
+    return result.stdout.split('\n', 1)[0] ?? '';
   },
 };
 
@@ -225,9 +275,11 @@ done`;
   return { mtime, agents };
 }
 
-/** A resolved session: Claude's rollout id, or pi's session file path (herdr reports pi as
- *  `kind: "path"`). Both come only from herdr's `agent_session` or the process's own argv. */
-export type ResolvedSession = { agent: 'claude'; sessionId: string } | { agent: 'pi'; path: string };
+/** A resolved session: Claude's rollout id; pi's session file path (herdr reports it as
+ *  `kind: "path"`); or Codex's thread id, which maps to its one rollout file under the
+ *  Codex home (Wave 12.2). All come only from herdr's `agent_session` or the process's
+ *  own argv. */
+export type ResolvedSession = { agent: 'claude'; sessionId: string } | { agent: 'pi'; path: string } | { agent: 'codex'; sessionId: string };
 
 const piFile = /^\/\S+\.jsonl$/;
 // ponytail: `pi --session <uuid>` (a bare or partial id) is left unresolved — mapping an id to a
@@ -250,6 +302,7 @@ export async function resolveSession(hub: SessionHub, paneKey: string): Promise<
   const pane = found.entry.tree?.panes.find(pane => pane.id === found.paneId);
   const known = pane?.agentSession;
   if (pane?.agent === 'pi') return piSession(known, found.entry.mux.processInfo?.(found.paneId));
+  if (pane?.agent === 'codex' && known && sessionId.test(known)) return { agent: 'codex', sessionId: known };
   if (known && sessionId.test(known)) return { agent: 'claude', sessionId: known };
   const info = await found.entry.mux.processInfo?.(found.paneId);
   if (!info) return undefined;
@@ -259,9 +312,16 @@ export async function resolveSession(hub: SessionHub, paneKey: string): Promise<
     if (process.name?.toLowerCase() !== 'claude' && !argv.some(arg => /(?:^|\/)claude$/i.test(arg))) continue;
     for (let index = 0; index < argv.length - 1; index++) if (['-r', '--resume', '--session-id'].includes(argv[index]!) && sessionId.test(argv[index + 1]!)) return { agent: 'claude', sessionId: argv[index + 1]! };
   }
+  // The Pane's own `codex resume <thread-id>` descriptor carries the same id the hook reports.
+  for (const process of processes) {
+    const argv = process.argv ?? [];
+    if (process.name?.toLowerCase() !== 'codex' && !argv.some(arg => /(?:^|\/)codex$/.test(arg))) continue;
+    for (let index = 0; index < argv.length - 1; index++) if (argv[index] === 'resume' && sessionId.test(argv[index + 1]!)) return { agent: 'codex', sessionId: argv[index + 1]! };
+  }
 }
 
-type Cached = { sessionId: string; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; outputs: Map<string, string>; subagents: Subagent[]; at: number };
+type AgentKind = NonNullable<ChatResponse['agentKind']>;
+type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; outputs: Map<string, string>; subagents: Subagent[]; at: number };
 /** One remembered generation (ADR 0007): the cursor that names it, every Turn's fingerprint
  *  (none for an id-less transcript, which keeps its digest only), and the subagents digest
  *  at parse time. The lens keeps the newest eight per conversation. */
@@ -412,7 +472,7 @@ export class ChatLens {
     const value = await this.value(paneKey, agent);
     if (!value) return undefined;
     return {
-      chat: { sessionId: value.sessionId, turns: value.turns, at: value.at, subagents: value.subagents, ...(agent ? { agent } : {}) },
+      chat: { sessionId: value.sessionId, turns: value.turns, at: value.at, subagents: value.subagents, agentKind: value.agentKind, ...(agent ? { agent } : {}) },
       etag: `"${Bun.hash([value.sessionId, agent ?? '', value.signature.inode, value.signature.size, value.signature.mtime, value.at, subagentsDigest(value.subagents)].join('\u0000')).toString(36)}"`,
     };
   }
@@ -434,6 +494,7 @@ export class ChatLens {
         cursor: value.cursor,
         reset: false,
         upserts: [],
+        agentKind: value.agentKind,
         ...(gen.subs !== subagentsDigest(value.subagents) ? { subagents: value.subagents } : {}),
         ...(agent ? { agent } : {}),
       };
@@ -447,6 +508,7 @@ export class ChatLens {
       cursor: value.cursor,
       reset,
       upserts: !gen || reset ? value.turns : value.turns.filter(turn => gen.prints.get(turn.id!) !== print(turn)),
+      agentKind: value.agentKind,
       ...(!gen || reset || gen.subs !== subagentsDigest(value.subagents) ? { subagents: value.subagents } : {}),
       ...(agent ? { agent } : {}),
     };
@@ -456,7 +518,7 @@ export class ChatLens {
   async subagentList(paneKey: string): Promise<Subagent[] | undefined> {
     const resolved = await resolveSession(this.hub, paneKey);
     if (!resolved) return undefined;
-    if (resolved.agent === 'pi') return [];
+    if (resolved.agent !== 'claude') return []; // only Claude Code writes a subagents directory
     const target = this.hub.host(await this.hub.paneHost(paneKey))?.target;
     const cwd = (await this.hub.state()).panes.find(item => item.key === paneKey)?.cwd;
     if (!cwd) return undefined;
@@ -507,7 +569,9 @@ export class ChatLens {
     const resolved = await resolveSession(this.hub, paneKey);
     if (!resolved) { this.cache.delete(cacheKey); return; }
     const target = this.hub.host(await this.hub.paneHost(paneKey))?.target;
-    const session = resolved.agent === 'pi' ? piSessionId(resolved.path) : resolved.sessionId;
+    let session: string;
+    if (resolved.agent === 'codex' || resolved.agent === 'claude') session = resolved.sessionId;
+    else session = piSessionId(resolved.path); // pi: the id rides the file's name
     // A failed resolve or stat is a transient miss, not a new conversation: a cursor names
     // bytes, not cache state, so the generations survive it. Only a session change retires
     // them — and a cursor hashes the session id, so a stale one can never match anyway.
@@ -517,15 +581,19 @@ export class ChatLens {
     }
     let path: string | undefined;
     let dir: string | undefined;
-    if (resolved.agent === 'pi') {
-      if (agent) return;
-      path = resolved.path;
-    } else {
+    if (resolved.agent === 'codex') {
+      if (agent) return; // no subagent views: Codex writes none
+      path = await this.rollout(paneKey, resolved.sessionId, target);
+      if (!path) return;
+    } else if (resolved.agent === 'claude') {
       const cwd = (await this.hub.state()).panes.find(item => item.key === paneKey)?.cwd;
       if (!cwd) return;
       const home = target ? '$HOME' : this.home;
       dir = transcriptDir(cwd, resolved.sessionId, home);
       path = agent ? join(dir, 'subagents', `agent-${agent}.jsonl`) : transcriptPath(cwd, resolved.sessionId, home);
+    } else {
+      if (agent) return; // pi keeps no subagent directory either
+      path = resolved.path;
     }
     const signature = await this.io.stat(path, target);
     if (!signature) { this.cache.delete(cacheKey); return; }
@@ -555,10 +623,26 @@ export class ChatLens {
     for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
     const opts: ParseOpts = { images, previews, outputs, subagentIds, ...(agent ? { sidechain: true } : {}) };
     if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
-    const value: Cached = { sessionId: session, signature, cursor: cursorOf(session, agent, signature), turns: (resolved.agent === 'pi' ? parsePiTranscript : parseTranscript)(jsonl, opts), images, previews, outputs, subagents: list, at: Date.now() };
+    const parsed = resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
+      : (resolved.agent === 'pi' ? parsePiTranscript : parseTranscript)(jsonl, opts);
+    // A Codex parse without stable identity (Wave 12.1) is no Chat: the Pane keeps its Screen.
+    if (!parsed) { this.cache.delete(cacheKey); return; }
+    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, outputs, subagents: list, at: Date.now() };
     this.cache.set(cacheKey, value);
     this.remember(paneKey, agent, cacheKey, value);
     return value;
+  }
+
+  /** Each Pane's resolved Codex rollout: Wave 12.1's exact-id search runs once per thread,
+   *  and again only when the mapped file's stat misses (an archived rollout moved). */
+  private rollouts = new Map<string, { sessionId: string; path: string }>();
+  private async rollout(paneKey: string, threadId: string, target: string | undefined): Promise<string | undefined> {
+    const cached = this.rollouts.get(paneKey);
+    if (cached?.sessionId === threadId && await this.io.stat(cached.path, target)) return cached.path;
+    if (cached) this.rollouts.delete(paneKey);
+    const path = await resolveCodexPath(this.io, threadId, target ? '$HOME/.codex' : codexHome(this.home), target);
+    if (path) this.rollouts.set(paneKey, { sessionId: threadId, path });
+    return path;
   }
 
   /** Keep the newest eight generations of a conversation (ADR 0007). One without native Turn
