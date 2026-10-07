@@ -288,26 +288,50 @@ done`;
 export type ResolvedSession = { agent: 'claude'; sessionId: string } | { agent: 'pi' | 'omp'; path: string } | { agent: 'codex'; sessionId: string };
 
 const piFile = /^\/\S+\.jsonl$/;
-// ponytail: `pi --session <uuid>` (a bare or partial id) is left unresolved — mapping an id to a
-// file means scanning the cwd-encoded sessions directory, and herdr's path already covers it.
-async function piSession(known: string | undefined, info: Promise<ProcessInfo | undefined> | undefined): Promise<ResolvedSession | undefined> {
+const piId = /^[0-9a-f-]+$/i;
+
+/** pi's own `--session <path|id>` rule (its help: "partial UUID"): a bare or partial id maps
+ *  to the one sessions file whose name carries it — the header's id always equals the name's.
+ *  ponytail: the scan is uncached and walks the whole sessions root, not the Pane's project
+ *  dir; cache it beside `rollouts`, or scope it by cwd, if the walk ever shows up. */
+async function piSessionFile(io: TranscriptIo | undefined, id: string, home: string, target?: string): Promise<string | undefined> {
+  if (!io?.find) return undefined;
+  const root = target ? '$HOME/.pi/agent/sessions' : join(home, '.pi', 'agent', 'sessions');
+  try {
+    const found = await io.find(root, `*_${id}*.jsonl`, target) ?? [];
+    return found.length === 1 ? found[0] : undefined; // zero matches or an ambiguous prefix
+  } catch { return undefined; }
+}
+
+async function piSession(known: string | undefined, info: Promise<ProcessInfo | undefined> | undefined, io?: TranscriptIo, home = homedir(), target?: string): Promise<ResolvedSession | undefined> {
   if (typeof known === 'string' && piFile.test(known)) return { agent: 'pi', path: known };
   const value = await info;
-  if (!value) return undefined;
-  const processes = [...value.foregroundProcesses].sort((a, b) => Number(b.pid === value.foregroundProcessGroupId) - Number(a.pid === value.foregroundProcessGroupId));
+  const processes = value ? [...value.foregroundProcesses].sort((a, b) => Number(b.pid === value.foregroundProcessGroupId) - Number(a.pid === value.foregroundProcessGroupId)) : [];
   for (const process of processes) {
     const argv = process.argv ?? [];
     if (process.name?.toLowerCase() !== 'pi' && !argv.some(arg => /(?:^|\/)pi$/.test(arg))) continue;
-    for (let index = 0; index < argv.length - 1; index++) if (['--session', '--session-id'].includes(argv[index]!) && piFile.test(argv[index + 1]!)) return { agent: 'pi', path: argv[index + 1]! };
+    for (let index = 0; index < argv.length - 1; index++) {
+      if (!['--session', '--session-id'].includes(argv[index]!)) continue;
+      const arg = argv[index + 1]!;
+      if (piFile.test(arg)) return { agent: 'pi', path: arg };
+      if (piId.test(arg)) {
+        const path = await piSessionFile(io, arg, home, target);
+        if (path) return { agent: 'pi', path };
+      }
+    }
+  }
+  if (typeof known === 'string' && piId.test(known)) {
+    const path = await piSessionFile(io, known, home, target);
+    if (path) return { agent: 'pi', path };
   }
 }
 
-export async function resolveSession(hub: SessionHub, paneKey: string): Promise<ResolvedSession | undefined> {
+export async function resolveSession(hub: SessionHub, paneKey: string, io?: TranscriptIo, home = homedir(), target?: string): Promise<ResolvedSession | undefined> {
   const found = hub.resolvePane(paneKey);
   if (!found || found.entry.mux.kind !== 'herdr') return undefined;
   const pane = found.entry.tree?.panes.find(pane => pane.id === found.paneId);
   const known = pane?.agentSession;
-  if (pane?.agent === 'pi') return piSession(known, found.entry.mux.processInfo?.(found.paneId));
+  if (pane?.agent === 'pi') return piSession(known, found.entry.mux.processInfo?.(found.paneId), io, home, target);
   // omp (Wave 12.3): the Herdr path report only — an id-only report would need the cwd/profile
   // root scans ADR 0005 forbids, so it stays unresolved.
   if (pane?.agent === 'omp') return typeof known === 'string' && piFile.test(known) ? { agent: 'omp', path: known } : undefined;
@@ -525,10 +549,10 @@ export class ChatLens {
 
   /** The Pane's subagent tree, `undefined` when the Pane resolves to no session. */
   async subagentList(paneKey: string): Promise<Subagent[] | undefined> {
-    const resolved = await resolveSession(this.hub, paneKey);
+    const target = await this.target(paneKey);
+    const resolved = await resolveSession(this.hub, paneKey, this.io, this.home, target);
     if (!resolved) return undefined;
     if (resolved.agent !== 'claude') return []; // only Claude Code writes a subagents directory
-    const target = this.hub.host(await this.hub.paneHost(paneKey))?.target;
     const cwd = (await this.hub.state()).panes.find(item => item.key === paneKey)?.cwd;
     if (!cwd) return undefined;
     const dir = join(transcriptDir(cwd, resolved.sessionId, target ? '$HOME' : this.home), 'subagents');
@@ -573,11 +597,16 @@ export class ChatLens {
 
   close(): void { for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); }
 
+  /** The Pane's Host ssh target: `undefined` for a local Host, or for a Pane already gone. */
+  private async target(paneKey: string): Promise<string | undefined> {
+    return await this.hub.paneHost(paneKey).then(hostId => this.hub.host(hostId)?.target, () => undefined);
+  }
+
   private async refresh(paneKey: string, agent?: string): Promise<Cached | undefined> {
     const cacheKey = agent ? `${paneKey}\u0000${agent}` : paneKey;
-    const resolved = await resolveSession(this.hub, paneKey);
+    const target = await this.target(paneKey);
+    const resolved = await resolveSession(this.hub, paneKey, this.io, this.home, target);
     if (!resolved) { this.cache.delete(cacheKey); return; }
-    const target = this.hub.host(await this.hub.paneHost(paneKey))?.target;
     let session: string;
     if (resolved.agent === 'codex' || resolved.agent === 'claude') session = resolved.sessionId;
     else session = piSessionId(resolved.path); // pi and omp: the id rides the file's name

@@ -1,6 +1,9 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parsePiTranscript, type TranscriptImage } from '../shared/chat.ts';
-import { ChatLens, resolveSession, type ChatHub, type SessionHub, type TranscriptIo } from '../server/chat.ts';
+import { ChatLens, localIo, resolveSession, type ChatHub, type SessionHub, type TranscriptIo } from '../server/chat.ts';
 import type { State } from '../shared/types.ts';
 
 const paneKey = 'local/mux/pane';
@@ -117,10 +120,41 @@ describe('resolveSession (pi)', () => {
     ]), paneKey)).resolves.toEqual({ agent: 'pi', path: '/tmp/other.jsonl' });
   });
 
-  test('a bare --session id and a plain pi process stay unresolved', async () => {
-    await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi', '--session', piSession] }]), paneKey)).resolves.toBeUndefined();
-    await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi'] }]), paneKey)).resolves.toBeUndefined();
-    await expect(resolveSession(piHub(piSession), paneKey)).resolves.toBeUndefined(); // an id without a file is not a path
+  test('a plain pi process and an id with no sessions file stay unresolved', async () => {
+    const empty = mkdtempSync(join(tmpdir(), 'tautan-pi-none-'));
+    try {
+      await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi', '--session', piSession] }]), paneKey, localIo, empty)).resolves.toBeUndefined();
+      await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi'] }]), paneKey, localIo, empty)).resolves.toBeUndefined();
+      await expect(resolveSession(piHub(piSession), paneKey, localIo, empty)).resolves.toBeUndefined(); // an id without a file is not a path
+    } finally { rmSync(empty, { recursive: true, force: true }); }
+  });
+});
+
+describe('resolveSession (pi id scan)', () => {
+  // Two sessions sharing a timestamp, distinct in the uuid's second group: 'cccccccc-0000'
+  // and 'cccccccc-ffff' are unique prefixes, 'cccccccc' alone is ambiguous.
+  const uuidA = 'cccccccc-0000-4000-8000-00000000000a';
+  const uuidF = 'cccccccc-ffff-4000-8000-00000000000f';
+  let home: string;
+  const file = (uuid: string) => join(home, '.pi', 'agent', 'sessions', '--tmp-repo--', `2026-10-05T21-16-32-763Z_${uuid}.jsonl`);
+  beforeAll(() => {
+    home = mkdtempSync(join(tmpdir(), 'tautan-pi-home-'));
+    const dir = join(home, '.pi', 'agent', 'sessions', '--tmp-repo--');
+    mkdirSync(dir, { recursive: true });
+    for (const uuid of [uuidA, uuidF]) writeFileSync(file(uuid), jsonl([entry('u1', null, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Hi.' }] } })]));
+  });
+  afterAll(() => rmSync(home, { recursive: true, force: true }));
+
+  test('a bare or partial --session id resolves through the sessions directory', async () => {
+    await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi', '--session', uuidA] }]), paneKey, localIo, home)).resolves.toEqual({ agent: 'pi', path: file(uuidA) });
+    await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi', '--session-id', 'cccccccc-ffff'] }]), paneKey, localIo, home)).resolves.toEqual({ agent: 'pi', path: file(uuidF) });
+    await expect(resolveSession(piHub(uuidA), paneKey, localIo, home)).resolves.toEqual({ agent: 'pi', path: file(uuidA) }); // herdr's bare id report
+  });
+
+  test('an ambiguous prefix, an unknown id and a non-id argument stay unresolved', async () => {
+    await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi', '--session', 'cccccccc'] }]), paneKey, localIo, home)).resolves.toBeUndefined();
+    await expect(resolveSession(piHub('dddddddd-0000-4000-8000-00000000000d'), paneKey, localIo, home)).resolves.toBeUndefined();
+    await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi', '--session', 'not an id'] }]), paneKey, localIo, home)).resolves.toBeUndefined();
   });
 });
 
