@@ -151,6 +151,10 @@ describe('resolveSession (pi id scan)', () => {
     await expect(resolveSession(piHub(uuidA), paneKey, localIo, home)).resolves.toEqual({ agent: 'pi', path: file(uuidA) }); // herdr's bare id report
   });
 
+  test('an uppercase id matches its lowercase file name', async () => {
+    await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi', '--session', 'CCCCCCCC-0000'] }]), paneKey, localIo, home)).resolves.toEqual({ agent: 'pi', path: file(uuidA) });
+  });
+
   test('an ambiguous prefix, an unknown id and a non-id argument stay unresolved', async () => {
     await expect(resolveSession(piHub(undefined, [{ pid: 2, name: 'pi', argv: ['pi', '--session', 'cccccccc'] }]), paneKey, localIo, home)).resolves.toBeUndefined();
     await expect(resolveSession(piHub('dddddddd-0000-4000-8000-00000000000d'), paneKey, localIo, home)).resolves.toBeUndefined();
@@ -167,8 +171,8 @@ describe('ChatLens (pi)', () => {
     ] } }),
     entry('t1', 'a1', { type: 'message', message: { role: 'toolResult', toolCallId: 'call_1', content: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }] } }),
   ]);
-  const hub = (agentSession?: string): ChatHub => ({
-    ...piHub(agentSession),
+  const hub = (agentSession?: string, processes: { pid?: number; name?: string; argv?: string[] }[] = []): ChatHub => ({
+    ...piHub(agentSession, processes),
     state: async () => ({ panes: [{ key: paneKey, cwd: '/home/tama/projects/taut' }] }) as State,
     paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
   });
@@ -177,6 +181,14 @@ describe('ChatLens (pi)', () => {
     return { reads: () => reads, io: {
       stat: async () => ({ inode: '1', size: 10, mtime: 'now' }),
       read: async () => { reads++; return source; },
+    } };
+  };
+  const findIo = (found: () => string[]): { io: TranscriptIo; finds: () => number } => {
+    let finds = 0;
+    return { finds: () => finds, io: {
+      stat: async () => ({ inode: '1', size: source.length, mtime: 'now' }),
+      read: async () => source,
+      find: async () => { finds++; return found(); },
     } };
   };
 
@@ -201,6 +213,24 @@ describe('ChatLens (pi)', () => {
     expect(await lens.image(paneKey, 0)).toBeUndefined();
     lens.close();
     expect(reads()).toBe(0);
+  });
+
+  test('two refreshes of the same pi Pane walk the sessions dir once', async () => {
+    const { io: transcriptIo, finds } = findIo(() => [piPath]);
+    const lens = new ChatLens(hub(piSession), transcriptIo, '/home/tama');
+    expect((await lens.query(paneKey))?.sessionId).toBe(piSession);
+    expect((await lens.query(paneKey))?.sessionId).toBe(piSession);
+    lens.close();
+    expect(finds()).toBe(1);
+  });
+
+  test('an unresolvable id is remembered: the argv miss and the bare id check walk once', async () => {
+    const { io: transcriptIo, finds } = findIo(() => []);
+    const lens = new ChatLens(hub('dddddddd', [{ pid: 2, name: 'pi', argv: ['pi', '--session', 'dddddddd'] }]), transcriptIo, '/home/tama');
+    expect(await lens.query(paneKey)).toBeUndefined();
+    expect(await lens.query(paneKey)).toBeUndefined();
+    lens.close();
+    expect(finds()).toBe(1);
   });
 
   test('a branch switch answers a reset, a new leaf answers its diff', async () => {

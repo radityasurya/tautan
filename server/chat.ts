@@ -216,6 +216,8 @@ const remoteIo: TranscriptIo = {
   },
   head: async (path, target) => {
     if (!target) return localIo.head!(path);
+    // The pipeline's exit status is `head -n 1`'s: an unreadable file prints nothing and still
+    // exits 0, so it reads as a header miss, not as a failed head.
     const result = await ssh(target, `head -c ${HEAD_CAP} -- ${remotePath(path)} | head -n 1`);
     if (result.code) throw new Error('remote transcript head failed');
     return result.stdout.split('\n', 1)[0] ?? '';
@@ -290,20 +292,38 @@ export type ResolvedSession = { agent: 'claude'; sessionId: string } | { agent: 
 const piFile = /^\/\S+\.jsonl$/;
 const piId = /^[0-9a-f-]+$/i;
 
+/** One remembered pi session-file resolution per ssh target + id: the path (re-checked by
+ *  stat on every use, like `rollouts`), or a miss held briefly so an unresolvable id does not
+ *  walk the sessions root on every poll. */
+type PiFiles = Map<string, { path?: string; at: number }>;
+const PI_MISS_MS = 30_000;
+
 /** pi's own `--session <path|id>` rule (its help: "partial UUID"): a bare or partial id maps
  *  to the one sessions file whose name carries it — the header's id always equals the name's.
- *  ponytail: the scan is uncached and walks the whole sessions root, not the Pane's project
- *  dir; cache it beside `rollouts`, or scope it by cwd, if the walk ever shows up. */
-async function piSessionFile(io: TranscriptIo | undefined, id: string, home: string, target?: string): Promise<string | undefined> {
+ *  ponytail: a resolved id (or a 30 s miss) is cached per target+id, stat-checked like
+ *  `rollouts`; a cold or invalidated walk still scans the whole sessions root, not the
+ *  Pane's project dir — scope it by cwd if that walk ever shows up. */
+async function piSessionFile(io: TranscriptIo | undefined, id: string, home: string, target?: string, piFiles?: PiFiles): Promise<string | undefined> {
   if (!io?.find) return undefined;
+  const lower = id.toLowerCase(); // pi writes lowercase uuid file names; `piId` takes any case
+  const key = `${target ?? ''}\u0000${lower}`;
+  const remembered = piFiles?.get(key);
+  if (remembered) {
+    if (remembered.path) {
+      if (await io.stat(remembered.path, target)) return remembered.path;
+    } else if (Date.now() - remembered.at < PI_MISS_MS) return undefined;
+    piFiles?.delete(key); // the file vanished, or the miss went stale: resolve again
+  }
   const root = target ? '$HOME/.pi/agent/sessions' : join(home, '.pi', 'agent', 'sessions');
   try {
-    const found = await io.find(root, `*_${id}*.jsonl`, target) ?? [];
-    return found.length === 1 ? found[0] : undefined; // zero matches or an ambiguous prefix
-  } catch { return undefined; }
+    const found = await io.find(root, `*_${lower}*.jsonl`, target) ?? [];
+    const path = found.length === 1 ? found[0] : undefined; // zero matches or an ambiguous prefix
+    piFiles?.set(key, path ? { path, at: Date.now() } : { at: Date.now() });
+    return path;
+  } catch { return undefined; } // a failed walk (ssh) is transient: remember nothing
 }
 
-async function piSession(known: string | undefined, info: Promise<ProcessInfo | undefined> | undefined, io?: TranscriptIo, home = homedir(), target?: string): Promise<ResolvedSession | undefined> {
+async function piSession(known: string | undefined, info: Promise<ProcessInfo | undefined> | undefined, io?: TranscriptIo, home = homedir(), target?: string, piFiles?: PiFiles): Promise<ResolvedSession | undefined> {
   if (typeof known === 'string' && piFile.test(known)) return { agent: 'pi', path: known };
   const value = await info;
   const processes = value ? [...value.foregroundProcesses].sort((a, b) => Number(b.pid === value.foregroundProcessGroupId) - Number(a.pid === value.foregroundProcessGroupId)) : [];
@@ -315,23 +335,23 @@ async function piSession(known: string | undefined, info: Promise<ProcessInfo | 
       const arg = argv[index + 1]!;
       if (piFile.test(arg)) return { agent: 'pi', path: arg };
       if (piId.test(arg)) {
-        const path = await piSessionFile(io, arg, home, target);
+        const path = await piSessionFile(io, arg, home, target, piFiles);
         if (path) return { agent: 'pi', path };
       }
     }
   }
   if (typeof known === 'string' && piId.test(known)) {
-    const path = await piSessionFile(io, known, home, target);
+    const path = await piSessionFile(io, known, home, target, piFiles); // a remembered miss serves the argv id's re-check
     if (path) return { agent: 'pi', path };
   }
 }
 
-export async function resolveSession(hub: SessionHub, paneKey: string, io?: TranscriptIo, home = homedir(), target?: string): Promise<ResolvedSession | undefined> {
+export async function resolveSession(hub: SessionHub, paneKey: string, io?: TranscriptIo, home = homedir(), target?: string, piFiles?: PiFiles): Promise<ResolvedSession | undefined> {
   const found = hub.resolvePane(paneKey);
   if (!found || found.entry.mux.kind !== 'herdr') return undefined;
   const pane = found.entry.tree?.panes.find(pane => pane.id === found.paneId);
   const known = pane?.agentSession;
-  if (pane?.agent === 'pi') return piSession(known, found.entry.mux.processInfo?.(found.paneId), io, home, target);
+  if (pane?.agent === 'pi') return piSession(known, found.entry.mux.processInfo?.(found.paneId), io, home, target, piFiles);
   // omp (Wave 12.3): the Herdr path report only — an id-only report would need the cwd/profile
   // root scans ADR 0005 forbids, so it stays unresolved.
   if (pane?.agent === 'omp') return typeof known === 'string' && piFile.test(known) ? { agent: 'omp', path: known } : undefined;
@@ -485,6 +505,8 @@ export class ChatLens {
   private generations = new Map<string, Generation[]>();
   /** The session each conversation's generations belong to; a change is the one thing that retires them. */
   private sessions = new Map<string, string>();
+  /** Remembered pi session files per ssh target + id, stat-checked like `rollouts` on every use. */
+  private piFiles: PiFiles = new Map();
   private subagents = new Map<string, Subagents>();
   /** The main transcript's completion records per Pane, re-derived only on a fresh parse. */
   private parents = new Map<string, { sessionId: string; parent: ParentDone }>();
@@ -550,7 +572,7 @@ export class ChatLens {
   /** The Pane's subagent tree, `undefined` when the Pane resolves to no session. */
   async subagentList(paneKey: string): Promise<Subagent[] | undefined> {
     const target = await this.target(paneKey);
-    const resolved = await resolveSession(this.hub, paneKey, this.io, this.home, target);
+    const resolved = await resolveSession(this.hub, paneKey, this.io, this.home, target, this.piFiles);
     if (!resolved) return undefined;
     if (resolved.agent !== 'claude') return []; // only Claude Code writes a subagents directory
     const cwd = (await this.hub.state()).panes.find(item => item.key === paneKey)?.cwd;
@@ -605,7 +627,7 @@ export class ChatLens {
   private async refresh(paneKey: string, agent?: string): Promise<Cached | undefined> {
     const cacheKey = agent ? `${paneKey}\u0000${agent}` : paneKey;
     const target = await this.target(paneKey);
-    const resolved = await resolveSession(this.hub, paneKey, this.io, this.home, target);
+    const resolved = await resolveSession(this.hub, paneKey, this.io, this.home, target, this.piFiles);
     if (!resolved) { this.cache.delete(cacheKey); return; }
     let session: string;
     if (resolved.agent === 'codex' || resolved.agent === 'claude') session = resolved.sessionId;
