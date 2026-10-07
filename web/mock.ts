@@ -194,13 +194,14 @@ export const mockState: State = {
     {
       key: 'mbp/herdr/p2', muxKey: 'mbp/herdr', workspaceId: 'tautan', tabId: 't2', id: 'p2',
       title: 'wire SSE events', cwd: '~/projects/tautan', agent: 'claude',
-      status: 'working', revision: 1180, seenRevision: 1180, cols: 80, rows: 24,
+      status: 'working', revision: 1180, seenRevision: 1180, cols: 80, rows: 24, x: 0, y: 0,
       lastLine: 'Reading server/mux.ts…', statusChangedAt: ago(2),
     },
     {
       key: 'mbp/herdr/p3', muxKey: 'mbp/herdr', workspaceId: 'tautan', tabId: 't2', id: 'p3',
       title: 'pnpm dev', cwd: '~/projects/tautan',
-      status: 'unknown', revision: 87, seenRevision: 87, cols: 80, rows: 24, statusChangedAt: ago(46),
+      // Rects side by side, so Tab t2 opens as a split view at `lg` (ADR 0006).
+      status: 'unknown', revision: 87, seenRevision: 87, cols: 80, rows: 24, x: 80, y: 0, statusChangedAt: ago(46),
     },
     {
       key: 'mbp/herdr/p4', muxKey: 'mbp/herdr', workspaceId: 'tautan', tabId: 't3', id: 'p4',
@@ -842,33 +843,35 @@ class MockEventSource extends EventTarget {
   onopen: ((e: Event) => void) | null = null;
   onmessage: ((e: MessageEvent<string>) => void) | null = null;
   onerror: ((e: Event) => void) | null = null;
-  readonly paneKey?: string;
+  readonly paneKeys: string[];
   readonly mode: ScreenMode;
 
   constructor(url: string | URL) {
     super();
     this.url = String(url);
     const params = new URL(this.url, location.origin).searchParams;
-    this.paneKey = params.get('pane') ?? undefined;
+    this.paneKeys = params.getAll('pane');
     this.mode = params.get('mode') === 'recent' ? 'recent' : 'visible';
     setTimeout(() => {
       if (this.readyState !== 0 || !store) return;
       this.readyState = 1;
       sources.add(this);
       this.onopen?.(new Event('open'));
-      this.push(store, { state: true, screenKey: this.paneKey });
+      this.push(store, { state: true });
+      for (const key of this.paneKeys) this.push(store, { screenKey: key });
     }, 120);
   }
 
-  /** Send what this stream watches: always `state`, plus `screen` when its Pane changed. */
+  /** Send what this stream watches: `state`, plus `screen` when one of its Panes changed. */
   push(s: Store, what: { state?: boolean; screenKey?: string }): void {
     if (this.readyState !== 1) return;
     const send = (name: string, data: unknown) =>
       this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(data) }));
     if (what.state) send('state', s.state);
-    if (this.paneKey && what.screenKey === this.paneKey) {
-      const screen = s.screens[this.paneKey]?.[this.mode];
-      if (screen) send('screen', { ...screen, key: this.paneKey } satisfies ScreenEvent);
+    const key = what.screenKey;
+    if (key && this.paneKeys.includes(key)) {
+      const screen = s.screens[key]?.[this.mode];
+      if (screen) send('screen', { ...screen, key } satisfies ScreenEvent);
     }
   }
 

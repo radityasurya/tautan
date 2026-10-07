@@ -29,8 +29,9 @@ to 4 Panes. A Screen payload was 3–9 KB.
   Panes, or a cell narrower than 420 px or shorter than 180 px falls back to the Pane chips
   row.
 - The focused Pane is the route's Pane. Only the focused Pane has the Composer, the keys,
-  the blocked card, the header Status, the Chat lens, Affordances and mouse forwarding. A
-  click on another cell only moves focus.
+  the blocked card, the header Status, Affordances and mouse forwarding. The focused cell
+  shows Chat or Screen, as the lens says; every other cell shows its Screen, and the lens
+  never turns the split off. A click on another cell only moves focus.
 - A visible Pane that is not focused is marked Seen after its Screen stays on display for
   3 s while the page is visible. The focused Pane keeps the 1 s delay. Seen stays tautan's own
   flag. A `blocked` Pane stays unseen by rule (`shared/seen.ts`).

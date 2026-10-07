@@ -355,7 +355,7 @@ try {
     await desktop.getByRole('region', { name: /^herdr / }).getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
     return 'three tabs, Hosts apart from Settings, Host detail at both widths';
   });
-  await flow('split view: both cells render, a click moves focus without a new EventSource, chips return at 1100 px', async () => {
+  await flow('split view: both cells render, a click moves focus without a new EventSource, the Chat lens keeps the split, chips return at 1100 px', async () => {
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-split' });
     const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
     // herdr splits the focused Workspace whatever pane_id says, so focus ours first (throwaway server).
@@ -373,7 +373,8 @@ try {
     await report(b, 'idle');
     await print(a, ['SPLIT-MARK-A']);
     await print(b, ['SPLIT-MARK-B']);
-    const wide = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    // No service worker, so the stubbed chat route below sees the page's fetch.
+    const wide = await browser.newPage({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
     try {
       // Count every EventSource the page constructs.
       await wide.addInitScript(() => {
@@ -404,10 +405,28 @@ try {
       assert(await cellB.getAttribute('aria-current') === 'true', 'cell b focused');
       const reopened = await wide.evaluate(() => (window as unknown as { __es: number }).__es);
       assert(reopened === opened, `EventSource constructions ${opened} -> ${reopened}`);
+      // The Chat lens keeps the split: the focused cell shows the Chat view, cell a its Screen.
+      // A throwaway Pane has no transcript, so the page gets one from a stubbed chat route.
+      const isChat = (url: URL) => /^\/api\/panes\/[^/]+\/chat$/.test(url.pathname);
+      await wide.route(isChat, (route: { fulfill: (reply: object) => Promise<void> }) => route.fulfill({
+        json: { sessionId: 'e2e', at: Date.now(), turns: [{ role: 'assistant', text: 'CHAT-MARK-B', tools: [], at: Date.now() }] },
+      }));
+      await wide.evaluate((k: string) => sessionStorage.setItem(`tautan.lens.${k}`, 'chat'), keyB);
+      await wide.reload({ waitUntil: 'networkidle' });
+      await cellB.getByText('CHAT-MARK-B').waitFor({ timeout: 8_000 });
+      await cellA.getByText('SPLIT-MARK-A').waitFor({ timeout: 8_000 });
+      assert(await wide.getByTestId('split-cell').count() === 2 && await cellB.locator('pre').count() === 0, 'Chat in cell b, Screen in cell a');
+      // No transcript: the lens falls back to Screen, and the split stays.
+      await wide.unroute(isChat);
+      await wide.route(isChat, (route: { fulfill: (reply: object) => Promise<void> }) => route.fulfill({ status: 404, json: { error: 'no-transcript' } }));
+      await wide.reload({ waitUntil: 'networkidle' });
+      await cellB.getByText('SPLIT-MARK-B').waitFor({ timeout: 8_000 });
+      const lens = await wide.evaluate((k: string) => sessionStorage.getItem(`tautan.lens.${k}`), keyB);
+      assert(lens === 'screen' && await wide.getByTestId('split-cell').count() === 2, `still split after the lens fell back (lens=${lens})`);
       await wide.setViewportSize({ width: 1100, height: 900 });
       await wide.getByRole('group', { name: 'Panes in this Tab' }).waitFor({ timeout: 8_000 });
       assert(await wide.getByTestId('split-view').count() === 0, 'split gone at 1100 px');
-      return 'two cells, focus by click, one stream, chips at 1100 px';
+      return 'two cells, focus by click, one stream, Chat in the focused cell, chips at 1100 px';
     } finally {
       await wide.close().catch(() => {});
     }

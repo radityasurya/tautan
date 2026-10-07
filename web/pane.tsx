@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
 import { boxInner, classify, continues, fillOf, hangOf, splitAt, tuiScreen, type LineKind } from '../shared/layout.ts';
@@ -829,15 +829,20 @@ function useCellSeen(paneKey: string, revision: number | undefined) {
   }, [paneKey, revision, visible]);
 }
 
-function SplitCell({ pane, focused, screen, box, onFocus, onMeasure }: {
+function SplitCell({ pane, focused, screen, box, content, onFocus, onMeasure }: {
   pane: StatePane;
   focused: boolean;
   screen: ScreenEvent | null;
   box: CSSProperties;
+  /** What the focused cell shows instead of its grid: the Chat view in the Chat lens. */
+  content?: ReactNode;
   onFocus: () => void;
   onMeasure?: (measure: GridMeasure) => void;
 }) {
   useCellSeen(focused ? '' : pane.key, focused ? undefined : screen?.revision);
+  // Focus is quiet: the focused title row carries a 2 px accent underline, like the open
+  // Tab; the other cells sit a step back until hovered. The kit's keyboard ring is pulled
+  // inside the title row, or the cell's overflow clips it.
   return (
     <div
       role="group"
@@ -847,21 +852,28 @@ function SplitCell({ pane, focused, screen, box, onFocus, onMeasure }: {
       data-pane={pane.key}
       onClick={focused ? undefined : onFocus}
       style={box}
-      className={`absolute flex flex-col overflow-hidden bg-bg ${pane.x ? 'border-l border-border' : ''} ${pane.y ? 'border-t border-border' : ''} ${focused ? '' : 'cursor-pointer'}`}
+      className={`group/cell absolute flex flex-col overflow-hidden bg-bg ${pane.x ? 'border-l border-border' : ''} ${pane.y ? 'border-t border-border' : ''} ${focused ? '' : 'cursor-pointer'}`}
     >
       <button
         type="button"
         onClick={focused ? undefined : onFocus}
         tabIndex={focused ? -1 : 0}
         aria-label={focused ? undefined : `Focus ${pane.title}`}
-        className={`flex h-6 shrink-0 items-center gap-1.5 border-b border-border px-2 text-left text-[11px] ${focused ? 'cursor-default font-medium text-fg' : 'text-muted'}`}
+        className={`flex h-6 shrink-0 items-center gap-1.5 border-b border-border px-2 text-left text-[11px] transition-colors focus-visible:-outline-offset-2! ${
+          focused ? 'cursor-default font-medium text-fg shadow-[inset_0_-2px_0_var(--accent)]' : 'text-muted group-hover/cell:text-fg'
+        }`}
       >
         <Dot status={pane.status} size={6} seen={!unseen(pane)} />
         <span className="min-w-0 truncate">{pane.title}</span>
         <span className="shrink-0 text-muted">{pane.agent ?? 'shell'}</span>
       </button>
-      <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={focused} forceFit onMeasure={focused ? onMeasure : undefined} />
-      {focused && <span aria-hidden className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-accent" />}
+      {focused && content ? (
+        content
+      ) : (
+        <div className={`flex min-h-0 flex-1 flex-col transition-opacity duration-150 motion-reduce:transition-none ${focused ? '' : 'opacity-90 group-hover/cell:opacity-100 group-focus-within/cell:opacity-100'}`}>
+          <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={focused} forceFit onMeasure={focused ? onMeasure : undefined} />
+        </div>
+      )}
     </div>
   );
 }
@@ -870,12 +882,14 @@ function SplitCell({ pane, focused, screen, box, onFocus, onMeasure }: {
  * A split Tab at `lg` (ADR 0006): every Pane's grid placed at the Mux's own rect, as a
  * proportion of the Tab. The route is the focus; a click on another cell only moves it,
  * and sends nothing to the program. View-only cells have no Affordances, no mouse.
+ * `focusedContent` replaces the focused cell's grid (the Chat lens); the others stay Screen.
  */
-function SplitView({ panes, focusKey, screens, held, onMeasure }: {
+function SplitView({ panes, focusKey, screens, held, focusedContent, onMeasure }: {
   panes: StatePane[];
   focusKey: string;
   screens: Record<string, ScreenEvent>;
   held: ScreenEvent | null;
+  focusedContent?: ReactNode;
   onMeasure: (measure: GridMeasure) => void;
 }) {
   const { W, H } = extent(panes);
@@ -887,6 +901,7 @@ function SplitView({ panes, focusKey, screens, held, onMeasure }: {
           pane={p}
           focused={p.key === focusKey}
           screen={screens[p.key] ?? held}
+          content={focusedContent}
           onMeasure={onMeasure}
           onFocus={() => navigate(`#/pane/${encodeURIComponent(p.key)}`, { replace: true, transition: false })}
           box={{ left: `${(p.x! / W) * 100}%`, top: `${(p.y! / H) * 100}%`, width: `${(p.cols! / W) * 100}%`, height: `${(p.rows! / H) * 100}%` }}
@@ -987,7 +1002,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [desktop, lens]);
+  }, [desktop]);
 
   // What PaneGrid last measured (see GridMeasure): zero until its first effect runs, which
   // is one paint later than the grid's own view of itself.
@@ -1003,9 +1018,10 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const [phoneWidth, setPhoneWidth] = useState(() => holdsLease(streamId, paneKey));
   useEffect(() => { setPhoneWidth(holdsLease(streamId, paneKey)); }, [paneKey, streamId]); // the Hub's reaper releases on leave
   // The rule: lg, 2-4 Panes with rects, not zoomed (no x/y), toggle on, no Phone width lease,
-  // not the Chat lens, and every cell at least CELL_MIN in the slot. A split never takes a lease.
+  // and every cell at least CELL_MIN in the slot. Either lens: in Chat the focused cell shows
+  // the Chat view and the others their Screen. A split never takes a lease.
   const showSplit = (() => {
-    if (!desktop || !splitPref || !set || phoneWidth || lens === 'chat' || !slotSize.w) return false;
+    if (!desktop || !splitPref || !set || phoneWidth || !slotSize.w) return false;
     const { W, H } = extent(set);
     return set.every((p) => (p.cols! / W) * slotSize.w >= CELL_MIN.w && (p.rows! / H) * slotSize.h >= CELL_MIN.h);
   })();
@@ -1380,27 +1396,30 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         </div>
       )}
 
-      {agent && lens === 'chat' ? (
-        <Chat
-          key={paneKey}
-          paneKey={paneKey}
-          revision={pane?.revision ?? 0}
-          onUnavailable={showScreen}
-          agent={agent}
-          status={status}
-          lines={current ? lines : null}
-          profile={profile}
-          onReview={explain ? review : undefined}
-        />
-      ) : (
-        <div ref={slot} data-split={showSplit ? 'on' : 'off'} className="flex min-h-0 flex-1 flex-col">
-          {showSplit && set ? (
-            <SplitView panes={set} focusKey={paneKey} screens={screens} held={last} onMeasure={onGridMeasure} />
-          ) : (
-            <PaneGrid paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
-          )}
-        </div>
-      )}
+      {(() => {
+        const chat = agent && lens === 'chat' && (
+          <Chat
+            key={paneKey}
+            paneKey={paneKey}
+            revision={pane?.revision ?? 0}
+            onUnavailable={showScreen}
+            agent={agent}
+            status={status}
+            lines={current ? lines : null}
+            profile={profile}
+            onReview={explain ? review : undefined}
+          />
+        );
+        return (
+          <div ref={slot} data-split={showSplit ? 'on' : 'off'} className="flex min-h-0 flex-1 flex-col">
+            {showSplit && set ? (
+              <SplitView panes={set} focusKey={paneKey} screens={screens} held={last} focusedContent={chat || undefined} onMeasure={onGridMeasure} />
+            ) : (
+              chat || <PaneGrid paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
+            )}
+          </div>
+        );
+      })()}
 
       <Composer
         paneKey={paneKey}

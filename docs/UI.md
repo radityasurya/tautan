@@ -159,12 +159,15 @@ stop work asks first, and any other Tab closes at once.
   holds; when the rule breaks, the chips row comes back.
 
 **Split view, desktop.** From 1024 px up, the open Tab's 2 to 4 Panes draw side by side at
-the Mux's own proportions: 1 px dividers, a 24 px title row per cell (Dot, title, agent),
-and a 2 px accent ring on the focused cell. Each cell renders its Pane's grid, forced to
-Fit the cell whatever the Fit setting says. The chips row takes over when the Tab is
-zoomed — a zoomed Tab reports no cell origins — when this view holds a Phone width lease,
-when the lens is Chat, or when a cell would measure under 420×180 px in the space the
-composer leaves. **Split view** in ⋯ turns it off; it is on by default (`tautan.split`).
+the Mux's own proportions: 1 px dividers and a 24 px title row per cell (Dot, title, agent).
+Focus is quiet: the focused cell's title row is in the body colour with a 2 px accent
+underline, like the open Tab; the other cells' titles are muted and their content sits at
+90 % opacity until you hover the cell. Keyboard focus on a title row draws the kit's ring
+inside the row. Each cell renders its Pane's grid, forced to Fit the cell whatever the Fit
+setting says. In the Chat lens the focused cell shows the Chat view and the other cells keep
+their Screen; switching the lens keeps the split. The chips row takes over when the Tab is
+zoomed — a zoomed Tab reports no cell origins — when this view holds a Phone width lease, or
+when a cell would measure under 420×180 px in the space the composer leaves. **Split view** in ⋯ turns it off; it is on by default (`tautan.split`).
 
 Focus is the route. A click on a cell, or Enter on its title, navigates with `replace` and
 sends nothing to the program, so the stream stays open. The other cells are view-only: no
