@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
-import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { extname, isAbsolute, resolve, sep } from 'node:path';
 import type { DiffResult, DiffScope, HostConfig, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SuggestSettingBody } from '../shared/types.ts';
 import { parseUnifiedDiff } from '../shared/diff.ts';
 import { promptId } from '../shared/blocked.ts';
@@ -11,6 +11,7 @@ import { LeaseError, LeaseHolder } from './lease.ts';
 import { ChatLens } from './chat.ts';
 import { EmptyBody, sanitizeName, TooLarge, writeAttachment } from './attach.ts';
 import { CompleteError, paneCompletion } from './complete.ts';
+import { fileList, fileRaw, FilesError, inside, quoteShell } from './files.ts';
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 const tautanVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
@@ -22,7 +23,6 @@ const plainObject = (value: unknown): value is Record<string, unknown> => typeof
 const validLabel = (value: unknown, required = false) => value === undefined ? !required : typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 80;
 const validCwd = (value: unknown) => value === undefined || typeof value === 'string' && isAbsolute(value);
 const nonEmpty = (value: unknown) => typeof value === 'string' && value.trim().length > 0;
-const quoteShell = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 type GitResult = { stdout: string; stderr: string; code: number };
 
 class FileRouteError extends Error {
@@ -47,11 +47,6 @@ const previewHeaders = {
   'cache-control': 'private, max-age=86400',
   'referrer-policy': 'no-referrer',
 };
-const inside = (root: string, path: string) => {
-  const pathFromRoot = relative(root, path);
-  return pathFromRoot === '' || !isAbsolute(pathFromRoot) && !pathFromRoot.startsWith('..');
-};
-
 async function localFile(cwd: string, path: string, cap: number): Promise<Response> {
   let root: string; let target: string;
   try { root = await realpath(cwd); } catch { throw new FileRouteError(404, 'not found'); }
@@ -381,6 +376,33 @@ export function startHttp(hub: Hub, opts: {
           if (!found) return json({ error: 'no-session' }, 404);
           if (found.html === undefined) return json({ error: 'no-preview' }, 404);
           return new Response(found.html, { headers: previewHeaders });
+        }
+        if (req.method === 'GET' && url.pathname === '/api/files/list') {
+          try {
+            return json(await fileList(hub, {
+              host: url.searchParams.get('host') ?? '',
+              path: url.searchParams.get('path') ?? undefined,
+              pane: url.searchParams.get('pane') ?? undefined,
+              q: url.searchParams.get('q') ?? '',
+              hidden: url.searchParams.get('hidden') === '1',
+            }));
+          } catch (error) {
+            if (error instanceof FilesError) return Response.json({ error: error.message }, { status: error.status, headers: error.headers });
+            throw error;
+          }
+        }
+        if (req.method === 'GET' && url.pathname === '/api/files/raw') {
+          try {
+            return await fileRaw(hub, {
+              host: url.searchParams.get('host') ?? '',
+              path: url.searchParams.get('path') ?? undefined,
+              pane: url.searchParams.get('pane') ?? undefined,
+              download: url.searchParams.get('download') === '1',
+            }, req.headers.get('range'));
+          } catch (error) {
+            if (error instanceof FilesError) return Response.json({ error: error.message }, { status: error.status, headers: error.headers });
+            throw error;
+          }
         }
         const fileMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/file$/);
         if (req.method === 'GET' && fileMatch) {
