@@ -8,14 +8,14 @@ import type {
 } from '../shared/types.ts';
 import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordances.tsx';
 
-import { api, haptic, navigate, opensWith, post, reducedMotion, useDesktop } from './app.tsx';
+import { api, haptic, navigate, opensWith, post, reducedMotion, setSplitOn, splitSet, useDesktop, useSplitPref } from './app.tsx';
 import { yesNoKeys } from '../shared/blocked.ts';
 import { fetchExplain, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
 import { Chat, readLens, writeLens, type LensMode } from './chat.tsx';
 import { Composer, FADE } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
-import { commonAgent, Dot, markSeen } from './home.tsx';
+import { commonAgent, Dot, markSeen, unseen } from './home.tsx';
 import { ChevronDown, Down, Plus } from './icons.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
@@ -561,12 +561,15 @@ function PaneGrid({
   pane,
   screen,
   interactive = true,
+  forceFit = false,
   onMeasure,
 }: {
   paneKey: string;
   pane?: StatePane;
   screen: ScreenEvent | null;
   interactive?: boolean;
+  /** A split cell: fit the grid to the box whatever the Fit pref says, and never reflow. */
+  forceFit?: boolean;
   onMeasure?: (measure: GridMeasure) => void;
 }) {
   // A switch keeps the last Pane's Screen on the grid until this Pane's first `screen`
@@ -588,7 +591,7 @@ function PaneGrid({
   // Fit is off until the user asks for it: the column grows to the grid's own width on a
   // desktop, so scaling is a phone answer, not the default. The scale is min(1, …), so a
   // grid that already fits is left alone even then.
-  const fit = localStorage.getItem('tautan.fit') === 'on';
+  const fit = forceFit || localStorage.getItem('tautan.fit') === 'on';
   const [scale, setScale] = useState(1);
   const [fade, setFade] = useState(false);
   const [fresh, setFresh] = useState(false);
@@ -651,7 +654,7 @@ function PaneGrid({
   // Auto reads the App profile first (a program tautan forwards the mouse to is full-screen),
   // then the Screen itself, so an unknown TUI still keeps its grid.
   const wrap = wrapChoice === 'auto' ? !profile.mouse && !tuiScreen(screenText, pane?.cols) : wrapChoice === 'on';
-  const effectiveWrap = wrap && !fits;
+  const effectiveWrap = wrap && !fits && !forceFit;
   const kinds = useMemo(
     () => effectiveWrap
       ? {
@@ -791,7 +794,117 @@ function PaneGrid({
   );
 }
 
-export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state: State | null; screen: ScreenEvent | null }) {
+/** What the Pane column's grid slot measured last. Module-level because a focus move
+ *  remounts PaneScreen (the route is its key), and a fresh mount would flash the chips row. */
+let lastSlot = { w: 0, h: 0 };
+/** The Pane chips row's height, added back so the split rule never sees its own chips row. */
+const CHIPS_H = 45;
+const CELL_MIN = { w: 420, h: 180 };
+/** Leases this stream holds. A focus move remounts PaneScreen but keeps the stream, so the
+ *  toggle is seeded from here; a new stream id (Tab change, reconnect) means the Hub released. */
+const leased = { stream: '', keys: new Set<string>() };
+const holdsLease = (stream: string | null, key: string) => !!stream && leased.stream === stream && leased.keys.has(key);
+
+/** The Tab's extent in cells, from the Panes' rects. */
+const extent = (panes: StatePane[]) => ({
+  W: Math.max(...panes.map((p) => p.x! + p.cols!)),
+  H: Math.max(...panes.map((p) => p.y! + p.rows!)),
+});
+
+/** 3 s of dwell for a view-only cell (the focused Pane keeps its 1 s in PaneScreen). */
+function useCellSeen(paneKey: string, revision: number | undefined) {
+  const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
+  useEffect(() => {
+    const on = () => setVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', on);
+    return () => document.removeEventListener('visibilitychange', on);
+  }, []);
+  useEffect(() => {
+    if (!visible || revision === undefined) return;
+    const t = setTimeout(() => {
+      markSeen(paneKey, revision);
+      void post(paneKey, 'seen', { revision } satisfies SeenBody);
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [paneKey, revision, visible]);
+}
+
+function SplitCell({ pane, focused, screen, box, onFocus, onMeasure }: {
+  pane: StatePane;
+  focused: boolean;
+  screen: ScreenEvent | null;
+  box: CSSProperties;
+  onFocus: () => void;
+  onMeasure?: (measure: GridMeasure) => void;
+}) {
+  useCellSeen(focused ? '' : pane.key, focused ? undefined : screen?.revision);
+  return (
+    <div
+      role="group"
+      aria-label={pane.title}
+      aria-current={focused ? 'true' : undefined}
+      data-testid="split-cell"
+      data-pane={pane.key}
+      onClick={focused ? undefined : onFocus}
+      style={box}
+      className={`absolute flex flex-col overflow-hidden bg-bg ${pane.x ? 'border-l border-border' : ''} ${pane.y ? 'border-t border-border' : ''} ${focused ? '' : 'cursor-pointer'}`}
+    >
+      <button
+        type="button"
+        onClick={focused ? undefined : onFocus}
+        tabIndex={focused ? -1 : 0}
+        aria-label={focused ? undefined : `Focus ${pane.title}`}
+        className={`flex h-6 shrink-0 items-center gap-1.5 border-b border-border px-2 text-left text-[11px] ${focused ? 'cursor-default font-medium text-fg' : 'text-muted'}`}
+      >
+        <Dot status={pane.status} size={6} seen={!unseen(pane)} />
+        <span className="min-w-0 truncate">{pane.title}</span>
+        <span className="shrink-0 text-muted">{pane.agent ?? 'shell'}</span>
+      </button>
+      <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={focused} forceFit onMeasure={focused ? onMeasure : undefined} />
+      {focused && <span aria-hidden className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-accent" />}
+    </div>
+  );
+}
+
+/**
+ * A split Tab at `lg` (ADR 0006): every Pane's grid placed at the Mux's own rect, as a
+ * proportion of the Tab. The route is the focus; a click on another cell only moves it,
+ * and sends nothing to the program. View-only cells have no Affordances, no mouse.
+ */
+function SplitView({ panes, focusKey, screens, held, onMeasure }: {
+  panes: StatePane[];
+  focusKey: string;
+  screens: Record<string, ScreenEvent>;
+  held: ScreenEvent | null;
+  onMeasure: (measure: GridMeasure) => void;
+}) {
+  const { W, H } = extent(panes);
+  return (
+    <div data-testid="split-view" className="relative min-h-0 flex-1">
+      {panes.map((p) => (
+        <SplitCell
+          key={p.key}
+          pane={p}
+          focused={p.key === focusKey}
+          screen={screens[p.key] ?? held}
+          onMeasure={onMeasure}
+          onFocus={() => navigate(`#/pane/${encodeURIComponent(p.key)}`, { replace: true, transition: false })}
+          box={{ left: `${(p.x! / W) * 100}%`, top: `${(p.y! / H) * 100}%`, width: `${(p.cols! / W) * 100}%`, height: `${(p.rows! / H) * 100}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: {
+  paneKey: string;
+  state: State | null;
+  /** the last Screen event of any watched Pane: held until this Pane's own arrives */
+  screen: ScreenEvent | null;
+  screens: Record<string, ScreenEvent>;
+  streamId: string | null;
+}) {
+  const screen = screens[paneKey] ?? last;
   const pane = state?.panes.find((p) => p.key === paneKey);
   const ws = state?.workspaces.find((w) => w.muxKey === pane?.muxKey && w.id === pane?.workspaceId);
   const mux = state?.muxes.find((m) => m.key === pane?.muxKey);
@@ -855,6 +968,27 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   }, [paneKey]);
   const showScreen = useCallback(() => setLens('screen'), [setLens]);
 
+  // ---- split view (ADR 0006) ----
+  // The slot is the Pane column's grid area. Every cell must reach 420 x 180 px there, or the
+  // chips row stays. ponytail: the Composer's height (a blocked card is taller) moves the
+  // slot's height; revisit if a card flips the split off.
+  const splitPref = useSplitPref();
+  const slot = useRef<HTMLDivElement>(null);
+  const [slotSize, setSlotSize] = useState(lastSlot);
+  const set = splitSet(state, pane);
+  useEffect(() => {
+    const el = slot.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      const next = { w: el.clientWidth, h: el.clientHeight };
+      // ponytail: constant row height; a measured one would make the rule flip-flop.
+      lastSlot = { w: next.w, h: next.h + (el.dataset.split === 'on' ? 0 : CHIPS_H) };
+      setSlotSize(lastSlot);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [desktop, lens]);
+
   // What PaneGrid last measured (see GridMeasure): zero until its first effect runs, which
   // is one paint later than the grid's own view of itself.
   const [gridMeasure, setGridMeasure] = useState<GridMeasure>(() => ({ cell: { cw: 0, rh: 0 }, room: 0, effectiveWrap: false }));
@@ -866,12 +1000,20 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
   const profile = useMemo(() => profileFor(pane), [pane?.agent, pane?.command]);
   const affordances = useMemo(() => findAffordances(lines, profile), [lines, profile]);
   // ---- phone width (ADR 0004) ----
-  const [phoneWidth, setPhoneWidth] = useState(false);
-  useEffect(() => { setPhoneWidth(false); }, [paneKey]); // the Hub's reaper releases on leave
+  const [phoneWidth, setPhoneWidth] = useState(() => holdsLease(streamId, paneKey));
+  useEffect(() => { setPhoneWidth(holdsLease(streamId, paneKey)); }, [paneKey, streamId]); // the Hub's reaper releases on leave
+  // The rule: lg, 2-4 Panes with rects, not zoomed (no x/y), toggle on, no Phone width lease,
+  // not the Chat lens, and every cell at least CELL_MIN in the slot. A split never takes a lease.
+  const showSplit = (() => {
+    if (!desktop || !splitPref || !set || phoneWidth || lens === 'chat' || !slotSize.w) return false;
+    const { W, H } = extent(set);
+    return set.every((p) => (p.cols! / W) * slotSize.w >= CELL_MIN.w && (p.rows! / H) * slotSize.h >= CELL_MIN.h);
+  })();
   const togglePhoneWidth = async () => {
     haptic();
     if (phoneWidth) {
       setPhoneWidth(false);
+      leased.keys.delete(paneKey);
       await fetch(`/api/panes/${encodeURIComponent(paneKey)}/lease`, { method: 'DELETE' }).catch(() => {});
       return;
     }
@@ -879,9 +1021,13 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
     const cols = Math.max(10, Math.min(500, Math.floor((gridMeasure.room || 374) / Math.max(4, gridMeasure.cell.cw))));
     const rows = Math.max(4, Math.min(200, Math.floor(window.innerHeight / Math.max(8, gridMeasure.cell.rh)) - 8));
     const response = await fetch(`/api/panes/${encodeURIComponent(paneKey)}/lease`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cols, rows }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ cols, rows, ...(streamId ? { stream: streamId } : null) }),
     }).catch(() => null);
-    if (response?.ok) setPhoneWidth(true);
+    if (response?.ok) {
+      if (leased.stream !== streamId) { leased.stream = streamId ?? ''; leased.keys.clear(); }
+      leased.keys.add(paneKey);
+      setPhoneWidth(true);
+    }
   };
   // The ⋯ menu's Wrap line names what auto resolved to. PaneGrid applies the same rule.
   const screenText = useMemo(() => lines.map(textOf).join('\n'), [lines]);
@@ -1152,8 +1298,8 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
               )}
             </span>
           </div>
-          {/* ponytail: lane 10.8 deferred split Panes side by side; desktop keeps the chips row. */}
-          {active && active.panes.length > 1 && (
+          {/* The split view replaces the chips row when it shows (see showSplit). */}
+          {active && active.panes.length > 1 && !showSplit && (
             <PaneChips panes={active.panes} paneKey={paneKey} className="border-b border-border px-4 py-2" />
           )}
         </div>
@@ -1247,7 +1393,13 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
           onReview={explain ? review : undefined}
         />
       ) : (
-        <PaneGrid paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
+        <div ref={slot} data-split={showSplit ? 'on' : 'off'} className="flex min-h-0 flex-1 flex-col">
+          {showSplit && set ? (
+            <SplitView panes={set} focusKey={paneKey} screens={screens} held={last} onMeasure={onGridMeasure} />
+          ) : (
+            <PaneGrid paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
+          )}
+        </div>
       )}
 
       <Composer
@@ -1357,6 +1509,9 @@ export function PaneScreen({ paneKey, state, screen }: { paneKey: string; state:
             hint: 'the pane draws at your columns',
             onClick: () => void togglePhoneWidth(),
           },
+          ...(desktop
+            ? [{ label: splitPref ? 'Split view: on' : 'Split view: off', hint: 'Panes side by side', onClick: () => setSplitOn(!splitPref) }]
+            : []),
           { label: fit ? 'Fit to width: on' : 'Fit to width: off', hint: grid, onClick: () => setFit(!fit) },
           {
             label: themedOn ? 'Theme colors: on' : 'Theme colors: off',

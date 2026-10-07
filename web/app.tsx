@@ -1,7 +1,7 @@
 import { Component, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { AnchorHTMLAttributes, ReactNode } from 'react';
-import type { ScreenEvent, State } from '../shared/types.ts';
+import type { ScreenEvent, State, StatePane } from '../shared/types.ts';
 import { NeedsCard } from './alert.tsx';
 import { Diff } from './diff.tsx';
 import { FileScreen } from './file.tsx';
@@ -99,22 +99,69 @@ export function haptic() {
 
 // ---- events ----
 
-/** One EventSource for the whole app. It reopens when the watched Pane changes. */
-export function useEvents(paneKey?: string) {
+// ---- split view (ADR 0006) ----
+
+const SPLIT_KEY = 'tautan.split';
+export const splitOn = () => {
+  try { return localStorage.getItem(SPLIT_KEY) !== 'off'; } catch { return true; }
+};
+export function setSplitOn(on: boolean) {
+  try { localStorage.setItem(SPLIT_KEY, on ? 'on' : 'off'); } catch {}
+  dispatchEvent(new Event('tautan:split'));
+}
+/** "Split view" in the ⋯ sheet, as state, so the App's watched set follows the toggle. */
+export function useSplitPref() {
+  const [on, setOn] = useState(splitOn);
+  useEffect(() => {
+    const change = () => setOn(splitOn());
+    addEventListener('tautan:split', change);
+    return () => removeEventListener('tautan:split', change);
+  }, []);
+  return on;
+}
+
+/** The Panes a split view could draw: this Pane's Tab when it holds 2-4 Panes that all carry
+ *  `x` and `y` (herdr omits both for a zoomed Tab). Size and the toggle are the caller's. */
+export function splitSet(state: State | null, pane: StatePane | undefined): StatePane[] | null {
+  if (!state || !pane) return null;
+  const tab = state.panes.filter((p) => p.muxKey === pane.muxKey && p.workspaceId === pane.workspaceId && p.tabId === pane.tabId);
+  return tab.length >= 2 && tab.length <= 4 && tab.every((p) => p.x !== undefined && p.y !== undefined && p.cols && p.rows) ? tab : null;
+}
+
+// ---- events ----
+
+const watchKeys = (state: State | null, paneKey: string, split: boolean) => {
+  const set = split ? splitSet(state, state?.panes.find((p) => p.key === paneKey)) : null;
+  return set ? set.map((p) => p.key).sort() : [paneKey];
+};
+
+/**
+ * One EventSource for the whole app. It reopens when the watched set changes: a Tab change
+ * does, a focus move inside a split Tab does not (the key is the same sorted set).
+ */
+export function useEvents(pick: (state: State | null) => string[]) {
   const [state, setState] = useState<State | null>(null);
+  const [screens, setScreens] = useState<Record<string, ScreenEvent>>({});
   const [screen, setScreen] = useState<ScreenEvent | null>(null);
+  const [streamId, setStreamId] = useState<string | null>(null);
   const [connected, setConnected] = useState(true);
   const [attempt, setAttempt] = useState(0);
+  const keys = pick(state);
+  const watched = keys.join(',');
 
   // Pane to Pane keeps the last Screen until the new Pane's first `screen` event, so the grid
   // swaps instead of blanking; PaneScreen matches `screen.key` to tell the two apart. Leaving
   // the Pane screens drops it, so the next Pane opened from Home never shows a stranger's grid.
-  useEffect(() => { if (!paneKey) setScreen(null); }, [paneKey]);
+  // The per-key map keeps only the watched keys, so a Tab change never shows a stale cell.
+  useEffect(() => {
+    if (!watched) setScreen(null);
+    setScreens((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => keys.includes(k))));
+  }, [watched]);
 
   useEffect(() => {
     // The Hub still serves `mode=recent`; tautan's UI only ever shows the visible grid, and
     // Wrap reflows it client-side. See docs/DESIGN.md "Terminal width on a phone".
-    const url = paneKey ? `/api/events?pane=${encodeURIComponent(paneKey)}&mode=visible` : '/api/events';
+    const url = keys.length ? `/api/events?${keys.map((k) => `pane=${encodeURIComponent(k)}`).join('&')}&mode=visible` : '/api/events';
     const es = new EventSource(url);
     let retry: ReturnType<typeof setTimeout>;
     const on = <T,>(name: string, set: (v: T) => void) =>
@@ -122,8 +169,12 @@ export function useEvents(paneKey?: string) {
         setConnected(true);
         set(JSON.parse((e as MessageEvent<string>).data) as T);
       });
+    on<{ stream: string }>('hello', (v) => setStreamId(v.stream));
     on<State>('state', value => { seedSeen(value.panes); setState(value); });
-    on<ScreenEvent>('screen', setScreen);
+    on<ScreenEvent>('screen', (value) => {
+      setScreen(value);
+      setScreens((prev) => ({ ...prev, [value.key]: value }));
+    });
     es.onopen = () => { setConnected(true); debug.opens++; debug.log('open'); };
     es.addEventListener('state', () => { debug.events++; debug.log('state'); });
     es.onerror = () => {
@@ -137,9 +188,9 @@ export function useEvents(paneKey?: string) {
       clearTimeout(retry);
       es.close();
     };
-  }, [paneKey, attempt]);
+  }, [watched, attempt]);
 
-  return { state, screen, connected };
+  return { state, screen, screens, streamId, connected };
 }
 
 // ---- ?debug overlay: stream diagnostics readable on a phone with no devtools ----
@@ -186,10 +237,11 @@ const screenOf = (hash: string) => hash.replace(/^#?\/?/, '').split('/')[0];
  * The push plays only when the kind of screen changes (Home ↔ Pane): Pane to Pane swaps
  * the content in place, so the header, the Tab strip and the dock never move.
  */
-export function navigate(to: string, { transition = screenOf(to) !== screenOf(location.hash) } = {}) {
+export function navigate(to: string, { transition = screenOf(to) !== screenOf(location.hash), replace = false } = {}) {
   if (to === location.hash) return;
   const run = () => {
-    history.pushState(null, '', to);
+    if (replace) history.replaceState(null, '', to);
+    else history.pushState(null, '', to);
     flushSync(() => apply?.(path()));
   };
   const start = (document as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
@@ -475,8 +527,15 @@ export function App() {
   const [encodedFileKey, fileQuery = ''] = fileRoute.split('?', 2);
   const fileKey = encodedFileKey ? safeDecode(encodedFileKey) : undefined;
   const filePath = fileKey ? (new URLSearchParams(fileQuery).get('path') ?? '') : '';
-  const { state, screen, connected } = useEvents(paneKey);
   const desktop = useDesktop();
+  const splitPref = useSplitPref();
+  // The watched set must not depend on the layout: a lease belongs to its stream, so taking
+  // or dropping one (or a resize back to the chips row) may not reopen it. The set is the
+  // Tab's Panes whenever a split could show; focus moves inside it keep one sorted key.
+  // ponytail: state is unknown before the first event, so a desktop opens twice at load.
+  const { state, screen, screens: paneScreens, streamId, connected } = useEvents(
+    (s) => (paneKey ? watchKeys(s, paneKey, desktop && splitPref) : []),
+  );
   const sidebar = useSidebar(desktop);
   const needsYou = state?.panes.filter((p) => p.status === 'blocked' && unseen(p)).length ?? 0;
   const wakeLock = useRef<{ release(): Promise<void> } | null>(null);
@@ -552,7 +611,7 @@ export function App() {
     <Home state={state} />
   );
   const screens = paneKey ? (
-        <PaneScreen paneKey={paneKey} state={state} screen={screen} />
+        <PaneScreen paneKey={paneKey} state={state} screen={screen} screens={paneScreens} streamId={streamId} />
       ) : diffKey ? (
         <Diff workspaceKey={diffKey} state={state} />
       ) : fileKey ? (

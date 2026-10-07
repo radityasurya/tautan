@@ -355,6 +355,63 @@ try {
     await desktop.getByRole('region', { name: /^herdr / }).getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
     return 'three tabs, Hosts apart from Settings, Host detail at both widths';
   });
+  await flow('split view: both cells render, a click moves focus without a new EventSource, chips return at 1100 px', async () => {
+    const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-split' });
+    const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
+    // herdr splits the focused Workspace whatever pane_id says, so focus ours first (throwaway server).
+    await herdrRpc(fixture.sock, 'workspace.focus', { workspace_id: workspace.id });
+    await herdrRpc(fixture.sock, 'pane.split', { pane_id: first, direction: 'right' });
+    // herdr aliases pane ids (the split result's id is not the tree's), so read both from the tree.
+    let both = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id);
+    for (let i = 0; i < 20 && both.length < 2; i++) { await Bun.sleep(250); both = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id); }
+    both.sort((l, r) => (l.x ?? 0) - (r.x ?? 0));
+    assert(both.length === 2, `panes=${both.length}`);
+    const [a, b] = [both[0]!.id, both[1]!.id];
+    const keyA = `HireOpz/default/${a}`;
+    const keyB = `HireOpz/default/${b}`;
+    await report(a, 'idle');
+    await report(b, 'idle');
+    await print(a, ['SPLIT-MARK-A']);
+    await print(b, ['SPLIT-MARK-B']);
+    const wide = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    try {
+      // Count every EventSource the page constructs.
+      await wide.addInitScript(() => {
+        const Native = window.EventSource;
+        (window as unknown as { __es: number }).__es = 0;
+        window.EventSource = class extends Native {
+          constructor(url: string | URL, init?: EventSourceInit) { super(url, init); (window as unknown as { __es: number }).__es++; }
+        };
+      });
+      await wide.goto(`${BASE}/#/pane/${encodeURIComponent(keyA)}`, { waitUntil: 'networkidle' });
+      const cells = wide.getByTestId('split-cell');
+      await cells.nth(1).waitFor({ timeout: 8_000 });
+      assert(await cells.count() === 2, `cells=${await cells.count()}`);
+      const cellA = wide.locator(`[data-pane="${keyA}"]`);
+      const cellB = wide.locator(`[data-pane="${keyB}"]`);
+      await cellB.getByText('SPLIT-MARK-B').waitFor({ timeout: 8_000 });
+      await cellA.getByText('SPLIT-MARK-A').waitFor({ timeout: 8_000 });
+      assert(await cellA.getByText('SPLIT-MARK-B').count() === 0, 'marker B leaked into cell a');
+      assert(await wide.getByRole('group', { name: 'Panes in this Tab' }).count() === 0, 'chips hidden in split');
+      const composer = wide.getByRole('textbox', { name: /Reply to/i });
+      assert(await cellA.getAttribute('aria-current') === 'true' && await composer.count() === 1, 'cell a focused, one Composer');
+      const opened = await wide.evaluate(() => (window as unknown as { __es: number }).__es);
+      await cellB.locator('pre').click();
+      await wide.waitForFunction((k: string) => decodeURIComponent(location.hash).endsWith(k), b, { timeout: 8_000 });
+      await wide.waitForTimeout(600);
+      assert(await composer.count() === 1 && await cellA.getAttribute('aria-current') === null, 'Composer and focus moved to b');
+      assert(await wide.getByTestId('split-cell').count() === 2, 'still split after the click');
+      assert(await cellB.getAttribute('aria-current') === 'true', 'cell b focused');
+      const reopened = await wide.evaluate(() => (window as unknown as { __es: number }).__es);
+      assert(reopened === opened, `EventSource constructions ${opened} -> ${reopened}`);
+      await wide.setViewportSize({ width: 1100, height: 900 });
+      await wide.getByRole('group', { name: 'Panes in this Tab' }).waitFor({ timeout: 8_000 });
+      assert(await wide.getByTestId('split-view').count() === 0, 'split gone at 1100 px');
+      return 'two cells, focus by click, one stream, chips at 1100 px';
+    } finally {
+      await wide.close().catch(() => {});
+    }
+  });
 } finally {
   await browser.close().catch(() => {});
   try { process.kill(-hub.pid!, 'SIGTERM'); } catch {}
