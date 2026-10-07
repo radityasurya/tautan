@@ -180,3 +180,27 @@ test('a change on one key re-polls only that key', async () => {
     expect(f.reads.a.slice(1).every(at => at - f.reads.a[0]! >= 240)).toBe(true);
   } finally { off(); f.hub.close(); }
 }, 5_000);
+
+test('a long-blank Pane backs off to the quiet ceiling, and a change re-reads it at once', async () => {
+  const f = watchFixture();
+  f.textFor('a', () => ''); // a Pane that stays blank; b is a quiet prompt
+  const off = f.hub.subscribe({ paneKeys: ['local/fake/a', 'local/fake/b'], onState: () => {}, onScreen: () => {} });
+  try {
+    // Grace window: the blank key still reads at the fast 250 ms cadence (the behaviour a
+    // not-yet-drawn program depends on) \u2014 about 4 reads/s, the old permanent rate.
+    await Bun.sleep(1_600);
+    const readsDuringGrace = f.reads.a.length;
+    // Past the 2 s grace the key backs off 250 \u00d71.5 \u2192 \u2026 \u2192 2 s: over the next 3 s the old
+    // code read ~12 times, the backoff reads at most ~5.
+    await Bun.sleep(3_000);
+    const backedOff = f.reads.a.length - readsDuringGrace;
+    expect(readsDuringGrace).toBeGreaterThanOrEqual(5);
+    expect(backedOff).toBeLessThanOrEqual(6);
+    const gap = f.reads.a.at(-1)! - f.reads.a.at(-2)!;
+    expect(gap).toBeGreaterThan(700); // clearly off the 250 ms cadence
+    // A pane.updated for the backed-off key re-reads it at once (~150 ms).
+    const before = f.reads.a.length;
+    f.fire(['a']);
+    await until(() => f.reads.a.length, n => n > before, 500);
+  } finally { off(); f.hub.close(); }
+}, 10_000);

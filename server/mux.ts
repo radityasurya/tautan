@@ -42,8 +42,10 @@ export class Hub {
   // off while quiet. ponytail: drop this if herdr gains a surface stream.
   private static readonly WATCH_FAST = 250;
   private static readonly WATCH_SLOW = 2_000;
+  // How long a blank Screen stays fast before it backs off like a quiet one.
+  private static readonly WATCH_BLANK_GRACE = 2_000;
   // One watch per (listener, key), so each watched Pane backs off on its own (ADR 0006).
-  private watchers = new Map<HubListener, Map<string, { timer?: ReturnType<typeof setTimeout>; delay: number; last?: string }>>();
+  private watchers = new Map<HubListener, Map<string, { timer?: ReturnType<typeof setTimeout>; delay: number; last?: string; blankSince?: number }>>();
   private streamEndCallbacks = new Set<(stream: string) => void>();
   private cached?: State;
   private statuses = new Map<string, { status: string; at: number }>();
@@ -486,16 +488,21 @@ export class Hub {
     if (!watch || !this.listeners.has(listener) || !listener.onScreen) return;
     try {
       const screen = await this.read(paneKey, listener.mode ?? 'visible');
+      const blank = !screen.text.trim();
+      if (blank) watch.blankSince ??= Date.now(); else watch.blankSince = undefined;
+      const blankSince = watch.blankSince ?? 0;
+      const blankPastGrace = blank && Date.now() - blankSince > Hub.WATCH_BLANK_GRACE;
       if (screen.text !== watch.last) {
         watch.last = screen.text;
         watch.delay = Hub.WATCH_FAST;
         listener.onScreen({ key: paneKey, ...screen });
-      } else if (screen.text.trim()) {
+      } else if (!blank || blankPastGrace) {
         watch.delay = Math.min(Hub.WATCH_SLOW, Math.round(watch.delay * 1.5));
       }
-      // An empty Screen does not back off: it is a program that has not drawn yet (a fresh
-      // htop reads empty until it paints), and backing off showed its first frame up to 2 s
-      // late. ponytail: a Pane that stays blank costs 4 reads/s while watched; cap it if seen.
+      // A blank Screen keeps the fast cadence for the grace window only: a program that has
+      // not drawn yet (a fresh htop reads empty until it paints) still shows its first frame
+      // on the next read. Past the grace it backs off like a quiet one, and a `pane.updated`
+      // re-reads at once (`changed`), so a Pane that later draws is never missed.
     } catch { watch.delay = Hub.WATCH_SLOW; }
     if (this.watchers.get(listener)?.has(paneKey)) this.scheduleWatch(listener, paneKey, watch.delay);
   }
