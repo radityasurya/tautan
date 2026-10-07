@@ -722,8 +722,14 @@ export function Chat({
       try {
         const response = await fetch(`${base}${encodeURIComponent(cursor)}${agentQuery}`, { signal: controller.signal, cache: 'no-store' });
         if (!response.ok) throw Object.assign(new Error(String(response.status)), { gone: response.status === 404 || response.status === 501 });
-        const delta = (await response.json()) as ChatDelta;
-        if (!Array.isArray(delta.upserts)) throw new Error('invalid chat');
+        // A Hub that predates ?since= ignores it and answers the full ChatResponse (version
+        // skew across an upgrade): its turns are a reset with no cursor, so the next ask
+        // starts over instead of failing the view.
+        const answer = (await response.json()) as ChatDelta & Pick<ChatResponse, 'turns'>;
+        const delta: ChatDelta | null = Array.isArray(answer.upserts) ? answer
+          : Array.isArray(answer.turns) ? { sessionId: answer.sessionId, cursor: '', reset: true, upserts: answer.turns, subagents: answer.subagents, agent: answer.agent }
+          : null;
+        if (!delta) throw new Error('invalid chat');
         const merged = mergeTurns(turns, delta);
         cursor = delta.cursor;
         if (merged === turns && loaded && !delta.subagents) quiet++;
