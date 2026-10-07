@@ -518,6 +518,9 @@ const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, '');
 type WrapChoice = 'on' | 'off' | 'auto';
 /** The widest Wrap reflows to, in columns: a terminal's common wide width, still readable. */
 const WRAP_MEASURE = 120;
+/** The smallest scale a split cell's grid takes: 0.75 of text-caption still reads. */
+// ponytail: one floor for every font and DPI; make it a setting if a 4K screen wants less.
+const SPLIT_FLOOR = 0.75;
 
 
 /** The last block the agent printed, for read-aloud. */
@@ -560,15 +563,16 @@ function PaneGrid({
   pane,
   screen,
   interactive = true,
-  forceFit = false,
+  split = false,
   onMeasure,
 }: {
   paneKey: string;
   pane?: StatePane;
   screen: ScreenEvent | null;
   interactive?: boolean;
-  /** A split cell: fit the grid to the box whatever the Fit pref says, and never reflow. */
-  forceFit?: boolean;
+  /** A split cell (ADR 0006): the same Wrap rules, but a grid wider than the cell scales
+   *  down to it, never below SPLIT_FLOOR; past that the cell scrolls sideways. */
+  split?: boolean;
   onMeasure?: (measure: GridMeasure) => void;
 }) {
   // A switch keeps the last Pane's Screen on the grid until this Pane's first `screen`
@@ -590,8 +594,10 @@ function PaneGrid({
   // Fit is off until the user asks for it: the column grows to the grid's own width on a
   // desktop, so scaling is a phone answer, not the default. The scale is min(1, …), so a
   // grid that already fits is left alone even then.
-  const fit = forceFit || localStorage.getItem('tautan.fit') === 'on';
+  const fitPref = localStorage.getItem('tautan.fit') === 'on';
   const [scale, setScale] = useState(1);
+  /** What the scale takes off the `<pre>`'s layout box, so the scroller ends where the grid does. */
+  const [shrink, setShrink] = useState({ w: 0, h: 0 });
   const [fade, setFade] = useState(false);
   const [fresh, setFresh] = useState(false);
 
@@ -647,13 +653,18 @@ function PaneGrid({
   // grid narrower than the viewport stays reflowed because wrap shrank its own measuring
   // stick (the column sizes to the longest line while wrapped).
   const potentialRoom = Math.max(room, (viewportW || 0) - 32);
-  const gridWidth = pane?.cols ? pane.cols * cell.cw + 34 : 0;
-  const fits = !!gridWidth && !!potentialRoom && gridWidth <= potentialRoom + 34;
   const screenText = useMemo(() => lines.map(textOf).join('\n'), [lines]);
+  // The widest line counts too: a Pane whose rect and terminal disagree (a throwaway herdr
+  // with no client) prints past `cols`, and that grid does not fit however small `cols` is.
+  const widest = useMemo(() => Math.max(0, ...screenText.split('\n').map((l) => l.trimEnd().length)), [screenText]);
+  const gridWidth = pane?.cols ? Math.max(pane.cols, widest) * cell.cw + 34 : 0;
+  const fits = !!gridWidth && !!potentialRoom && gridWidth <= potentialRoom + 34;
   // Auto reads the App profile first (a program tautan forwards the mouse to is full-screen),
   // then the Screen itself, so an unknown TUI still keeps its grid.
   const wrap = wrapChoice === 'auto' ? !profile.mouse && !tuiScreen(screenText, pane?.cols) : wrapChoice === 'on';
-  const effectiveWrap = wrap && !fits && !forceFit;
+  const effectiveWrap = wrap && !fits;
+  // A split cell's grid (a TUI, or Wrap off) fits its cell; a single Pane only on the Fit pref.
+  const fit = fitPref || (split && !effectiveWrap);
   const kinds = useMemo(
     () => effectiveWrap
       ? {
@@ -682,16 +693,23 @@ function PaneGrid({
 
   useEffect(() => {
     const el = pre.current;
-    if (!el || !el.parentElement) return setScale(1);
+    if (!el || !el.parentElement) {
+      setScale(1);
+      return;
+    }
     // The scroller carries the grid's padding, so the room the `<pre>` actually has is
     // narrower than the scroller. Measuring against `clientWidth` alone left Fit on and the
     // last column still cut off.
     const pad = getComputedStyle(el.parentElement);
     const nextRoom = el.parentElement.clientWidth - parseFloat(pad.paddingLeft || '0') - parseFloat(pad.paddingRight || '0');
     setRoom((prev) => (Math.abs(prev - nextRoom) < 0.01 ? prev : nextRoom));
-    setScale(fit ? Math.min(1, nextRoom / el.scrollWidth) : 1);
+    const fitted = fit ? Math.min(1, nextRoom / el.scrollWidth) : 1;
+    const next = split ? Math.max(SPLIT_FLOOR, fitted) : fitted;
+    setScale(next);
+    // A transform keeps the unscaled box, so the scroller would run on into blank space.
+    setShrink(next < 1 ? { w: el.offsetWidth * (1 - next), h: el.offsetHeight * (1 - next) } : { w: 0, h: 0 });
     measure();
-  }, [fit, effectiveWrap, lines, viewportW, fonts, cell.cw]);
+  }, [fit, split, effectiveWrap, lines, viewportW, fonts, cell.cw]);
 
   // The grid is the only place these can be measured; the ⋯ menu and the strip live above it.
   useEffect(() => {
@@ -738,7 +756,7 @@ function PaneGrid({
             // nor past a reading measure: a 244-column Pane on a wide desktop is ~150
             // characters a line, too long to read.
             maxWidth: effectiveWrap ? `min(${pane?.cols ?? WRAP_MEASURE}ch, ${WRAP_MEASURE}ch)` : undefined,
-            ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left' } : null),
+            ...(scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left', marginRight: -shrink.w, marginBottom: -shrink.h } : null),
           }}
         >
           {effectiveWrap && kinds ? (
@@ -870,7 +888,7 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onMeasure }: 
         content
       ) : (
         <div className={`flex min-h-0 flex-1 flex-col transition-opacity duration-150 motion-reduce:transition-none ${focused ? '' : 'opacity-90 group-hover/cell:opacity-100 group-focus-within/cell:opacity-100'}`}>
-          <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={focused} forceFit onMeasure={focused ? onMeasure : undefined} />
+          <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={focused} split onMeasure={focused ? onMeasure : undefined} />
         </div>
       )}
     </div>

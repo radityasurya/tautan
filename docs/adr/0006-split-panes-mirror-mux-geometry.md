@@ -39,6 +39,12 @@ to 4 Panes. A Screen payload was 3–9 KB.
   a lease while *any* listener watched its Pane, so a desktop showing that Pane in a split
   kept a phone's lease alive after the phone left. The lease now records the owner stream's
   id, and the reaper releases it when that stream ends, whoever else is watching.
+- A cell sizes its Screen by the single Pane's Wrap rules, measured against the cell's own
+  width: an agent Pane wraps, a shell wraps line output and keeps the grid for a full-screen
+  program, and the user's Wrap and Fit choices still win. A grid wider than its cell scales
+  down to it, never below 0.75; past that the cell scrolls sideways inside itself. The
+  10.8c build forced Fit on every cell, which scaled a 122-column `pnpm dev` to about half
+  size in a 490 px cell; this replaces it (2026-10-07).
 - ADR 0001 holds: every cell renders the Mux's snapshot. A split view never takes a Phone
   width lease (ADR 0004).
 
@@ -55,5 +61,7 @@ to 4 Panes. A Screen payload was 3–9 KB.
 - A lease request must name its stream, so the client sends the id the stream announced. A
   request without one falls back to the old rule (kept while any listener watches) so older
   clients keep working.
+- Wrapped text in a cell keeps the single Pane's font size, so a narrow cell shows fewer
+  characters a line, not smaller ones. A wide TUI in a narrow cell needs a sideways scroll.
 - Split ratios cannot differ from the Mux until a later version adds a ratio kept only in
   tautan.

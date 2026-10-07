@@ -453,6 +453,9 @@ try {
       await cellB.getByText('SPLIT-MARK-B').waitFor({ timeout: 8_000 });
       await cellA.getByText('SPLIT-MARK-A').waitFor({ timeout: 8_000 });
       assert(await cellA.getByText('SPLIT-MARK-B').count() === 0, 'marker B leaked into cell a');
+      // A cell's grid never scales under the readable floor (SPLIT_FLOOR, 0.75).
+      const scales = await wide.locator('[data-testid="split-cell"] pre').evaluateAll((pres: HTMLElement[]) => pres.map((p) => Number(/matrix\(([\d.]+)/.exec(getComputedStyle(p).transform)?.[1] ?? 1)));
+      assert(scales.every((v: number) => v >= 0.75), `scales=${scales.join()}`);
       assert(await wide.getByRole('group', { name: 'Panes in this Tab' }).count() === 0, 'chips hidden in split');
       const composer = wide.getByRole('textbox', { name: /Reply to/i });
       assert(await cellA.getAttribute('aria-current') === 'true' && await composer.count() === 1, 'cell a focused, one Composer');

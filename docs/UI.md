@@ -173,8 +173,11 @@ the Mux's own proportions: 1 px dividers and a 24 px title row per cell (Dot, ti
 Focus is quiet: the focused cell's title row is in the body colour with a 2 px accent
 underline, like the open Tab; the other cells' titles are muted and their content sits at
 90 % opacity until you hover the cell. Keyboard focus on a title row draws the kit's ring
-inside the row. Each cell renders its Pane's grid, forced to Fit the cell whatever the Fit
-setting says. In the Chat lens the focused cell shows the Chat view and the other cells keep
+inside the row. Each cell renders its Pane's Screen by the single Pane's Wrap rules, measured
+against the cell's own width: an agent Pane wraps, a shell wraps line output at the normal
+font size and keeps the grid for a full-screen program, and the Wrap and Fit settings still
+win. A grid wider than its cell scales down to fit, never below 0.75 (`SPLIT_FLOOR`); past
+that the cell scrolls sideways inside itself, never the page. In the Chat lens the focused cell shows the Chat view and the other cells keep
 their Screen; switching the lens keeps the split. The chips row takes over when the Tab is
 zoomed — a zoomed Tab reports no cell origins — when this view holds a Phone width lease, or
 when a cell would measure under 420×180 px in the space the composer leaves. **Split view** in ⋯ turns it off; it is on by default (`tautan.split`).
