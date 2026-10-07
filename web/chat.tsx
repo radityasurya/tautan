@@ -7,6 +7,7 @@ import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
 import { pendingTool, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
 import { CHAT_EVENT, mergeTurns } from '../shared/chat-merge.ts';
+import { toolLabel, type AgentKind } from '../shared/tool-label.ts';
 import type { Span, Status } from '../shared/types.ts';
 import { deliver, dropPending, pendingSnapshot, settled, subscribePending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
@@ -45,16 +46,7 @@ export function LensSwitch({ value, onChange }: { value: LensMode; onChange: (mo
   );
 }
 
-type AgentKind = NonNullable<ChatResponse['agentKind']>;
 const AGENT_NAME: Record<AgentKind, string> = { claude: 'Claude', pi: 'pi', codex: 'Codex', omp: 'omp' };
-
-// Codex names its calls after the harness, not the user's idea of the work; the raw name stays in the tooltip.
-const CODEX_LABEL: Record<string, string> = {
-  exec: 'shell', exec_command: 'shell', shell: 'shell', local_shell_call: 'shell', write_stdin: 'stdin',
-  apply_patch: 'patch', update_plan: 'plan', view_image: 'image', web_search: 'web search', web_search_call: 'web search',
-  tool_search: 'tool search', tool_search_call: 'tool search',
-};
-const toolLabel = (name: string, kind?: AgentKind) => (kind === 'codex' ? CODEX_LABEL[name] ?? name.replace(/_/g, ' ') : name);
 
 /** Where a tool's image loads from, its label, and the full-size view; undefined when it is unsafe. */
 function toolImage(paneKey: string, tool: Tool, agent?: string): { src: string; alt: string; href?: string } | undefined {
@@ -348,7 +340,7 @@ const SENT_MS = 10_000;
  * with the choices under it, or the full blocked card when no tool row matches (a question).
  * After an answer it says so until the Status moves on and the row turns back into a tool row.
  */
-function ApprovalItem({ approval, agent, tool, at }: { approval: Approval; agent: string; tool?: Tool; at?: number }) {
+function ApprovalItem({ approval, agent, tool, at, kind }: { approval: Approval; agent: string; tool?: Tool; at?: number; kind?: AgentKind }) {
   const { explain, stale, desktop, onAnswer, onReread, ref } = approval;
   const promptId = explain.promptId ?? '';
   const [sent, setSent] = useState<string | null>(null);
@@ -392,10 +384,10 @@ function ApprovalItem({ approval, agent, tool, at }: { approval: Approval; agent
   }
   const input = tool.detail || tool.brief;
   return (
-    <li ref={ref} data-approval aria-label={`${tool.name} needs your approval`} className="min-w-0 scroll-my-4 rounded-chip border border-warn/40 bg-warn/8">
+    <li ref={ref} data-approval aria-label={`${toolLabel(tool.name, kind)} needs your approval`} className="min-w-0 scroll-my-4 rounded-chip border border-warn/40 bg-warn/8">
       <div className="flex min-h-11 items-center gap-2 px-2 py-1 lg:min-h-8">
         <span className="max-w-32 shrink-0 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] leading-none text-fg">
-          {tool.name}
+          {toolLabel(tool.name, kind)}
         </span>
         <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold text-warn">
           <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-warn" />
@@ -924,7 +916,7 @@ export function Chat({
         <div>
           {view?.agentKind && !selected && (
             <p className="mb-3">
-              <Badge style={{ textTransform: 'none', letterSpacing: 0 }}>{AGENT_NAME[view.agentKind] ?? view.agentKind}</Badge>
+              <Badge style={{ textTransform: 'none', letterSpacing: 0 }}>{AGENT_NAME[view.agentKind]}</Badge>
             </p>
           )}
           {!view ? (
@@ -969,6 +961,7 @@ export function Chat({
                             approval={approval}
                             agent={agent}
                             tool={tool}
+                            kind={view?.agentKind}
                             at={toolIndex === tools.length - 1 ? turn.at : undefined}
                           />
                         ) : (
@@ -977,6 +970,7 @@ export function Chat({
                             paneKey={paneKey}
                             agent={selected}
                             tool={tool}
+                            kind={view?.agentKind}
                             at={toolIndex === tools.length - 1 ? turn.at : undefined}
                             subagent={tool.subagentId ? byId.get(tool.subagentId) : undefined}
                             onOpenSubagent={pick}
