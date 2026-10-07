@@ -48,8 +48,9 @@ to 4 Panes. A Screen payload was 3–9 KB.
   worst case. Only changed Screens are sent.
 - Focus moves inside the watched set, so it does not reconnect the stream. A Tab change
   reconnects, as it did before.
-- A resize made in herdr reaches tautan on the next tree refresh (at most 15 s), because
-  herdr emits no layout event.
+- A zoom, split or resize made in herdr 0.9 fires `layout.updated`, and the Hub refreshes
+  the tree on it. On herdr 0.8, and on tmux, a layout change reaches tautan on the next
+  tree refresh (at most 15 s).
 - A lease request must name its stream, so the client sends the id the stream announced. A
   request without one falls back to the old rule (kept while any listener watches) so older
   clients keep working.

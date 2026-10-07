@@ -19,6 +19,8 @@ export class HerdrMux implements Mux {
   private rows = new Map<string, number>();
   private listeners = new Set<(paneIds: string[] | 'all') => void>();
   private stream?: Socket;
+  // herdr 0.9 has the `layout.updated` event; 0.8 rejects the variant and closes the socket.
+  private layoutEvents = true;
   private stopped = false;
   private retry?: ReturnType<typeof setTimeout>;
   private paneTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -250,6 +252,9 @@ export class HerdrMux implements Mux {
     socket.on('connect', () => socket.write(`${JSON.stringify({ id: crypto.randomUUID(), method: 'events.subscribe', params: { subscriptions: [
       'pane.updated', 'pane.created', 'pane.closed', 'pane.exited', 'pane.agent_detected', 'workspace.created', 'workspace.updated',
       'workspace.renamed', 'workspace.closed', 'tab.created', 'tab.closed', 'tab.renamed',
+      // 0.9 fires `layout.updated` on zoom, split and resize. Without it a Mux-side layout
+      // change reaches the Hub only on its slow poll, so a zoomed Tab keeps its stale x/y.
+      ...(this.layoutEvents ? ['layout.updated'] : []),
     ].map(type => ({ type })) } })}\n`));
     socket.on('data', chunk => {
       data += chunk;
@@ -258,6 +263,14 @@ export class HerdrMux implements Mux {
         if (!line) continue;
         try {
           const message = JSON.parse(line);
+          if (message.error) {
+            // Any error reply refuses the subscription set: drop the 0.9-only `layout.updated`
+            // variant (0.8 answers `unknown variant …` and closes the socket) without matching
+            // the wording, so the reconnect subscribes without it instead of looping.
+            this.layoutEvents = false;
+            fail();
+            continue;
+          }
           if (message.result?.type === 'subscription_started') { started = true; if (backoff > 1_000) this.emit('all'); continue; }
           if (message.event === 'pane_updated') {
             const pane = message.data?.pane; if (!pane?.pane_id) continue;

@@ -37,6 +37,14 @@ beforeAll(async () => {
       if (end < 0) return;
       const request = JSON.parse(buffer.slice(0, end));
       seen.push(request.params);
+      if (request.method === 'events.subscribe') {
+        // Reject any subscribe that still asks for `layout.updated`, worded unlike real 0.8
+        // so the test proves the fallback does not match on the error text.
+        if (request.params.subscriptions.some((s: any) => s.type === 'layout.updated'))
+          socket.end(`${JSON.stringify({ id: request.id, error: { code: -32602, message: 'nope' } })}\n`);
+        else socket.write(`${JSON.stringify({ id: request.id, result: { type: 'subscription_started' } })}\n`);
+        return;
+      }
       const result = request.method === 'session.snapshot' ? snapshot : { read: { text: 'hi\r\n', revision: 9, truncated: false } };
       socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
     });
@@ -69,6 +77,17 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.re
     expect(seen.at(-1)).toEqual({ pane_id: 'w1:p1', source: 'visible', format: 'ansi', strip_ansi: false });
     mux.close();
   });
+});
+
+describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux events fallback', () => {
+  test('drops layout.updated after any error reply and reconnects without it', async () => {
+    const mux = new HerdrMux('test', socketPath);
+    mux.onChange(() => {});
+    const subscribes = () => seen.filter(params => params?.subscriptions);
+    while (subscribes().length < 2) await new Promise(resolve => setTimeout(resolve, 50));
+    expect(subscribes().at(-1)!.subscriptions.map((s: any) => s.type)).not.toContain('layout.updated');
+    mux.close();
+  }, 10_000);
 });
 
 describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tree geometry', () => {
