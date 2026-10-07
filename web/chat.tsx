@@ -177,6 +177,11 @@ const SUMMARY = 'cursor-pointer list-none rounded-chip [&::-webkit-details-marke
 /** The open part of a tool row: the image, the page preview, the input, and the output. */
 function ToolBody({ tool, image, preview, full, wholeDetail }: { tool: Tool; image?: ReturnType<typeof toolImage>; preview?: { src: string; title: string }; full?: string; wholeDetail?: string }) {
   const input = wholeDetail ?? tool.detail;
+  // The cut detail's size line, ToolResult's mirrored: "first 6 of 240 lines" while the
+  // whole text loads, then just the count. An uncut detail needs none.
+  const size = tool.detailTruncated
+    ? wholeDetail === undefined ? `first ${input.split('\n').length} of ${count(tool.detailLines ?? 1, 'line')}` : count(tool.detailLines ?? 1, 'line')
+    : undefined;
   return (
     <>
       {image && (
@@ -190,6 +195,9 @@ function ToolBody({ tool, image, preview, full, wholeDetail }: { tool: Tool; ima
         </div>
       )}
       <div className="relative border-t border-border">
+        {size && (
+          <p className="flex min-h-6 items-center px-3 pt-1.5 pr-16 text-[10px] tabular-nums text-muted">Input · {size}</p>
+        )}
         {(input || tool.brief) && (
           <pre className="max-h-72 overflow-auto overscroll-contain whitespace-pre-wrap break-words px-2 py-2 pr-16 font-mono text-caption text-fg">
             {input || tool.brief}
@@ -820,7 +828,12 @@ export function Chat({
           else onUnavailable();
           return;
         }
-      } finally { busy = false; }
+      } finally {
+        busy = false;
+        // run's tail, mirrored (the review's B2): a poll or `chat` event that landed during
+        // this page set `again`; leaving it unconsumed arms no timer and kills the loop.
+        if (again) { again = false; void run(); } else next();
+      }
     };
     poke.current = () => void run();
     back.current = () => void earlier();

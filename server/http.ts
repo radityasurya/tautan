@@ -371,12 +371,18 @@ export function startHttp(hub: Hub, opts: {
           }
           const since = url.searchParams.get('since');
           const before = url.searchParams.get('before');
+          const limitRaw = url.searchParams.get('limit');
+          // The windowing parameters name a `since` or `before` ask, never both and never
+          // the plain GET: an unplaceable one is a 400, not a silently ignored parameter.
+          if (limitRaw !== null && since === null && before === null) return json({ error: 'limit' }, 400);
+          if (since !== null && before !== null) return json({ error: 'since+before' }, 400);
           if (since !== null || before !== null) {
             // The amendment's windowing: `limit` caps a reset's upserts to the newest turns,
             // `after` names the client's oldest held Turn, `before` asks for the earlier page.
-            const limitRaw = url.searchParams.get('limit');
-            const parsedLimit = Number(limitRaw);
-            if (limitRaw !== null && (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 500)) return json({ error: 'limit' }, 400);
+            // An absent limit means the page default on a `before` ask and no window on a
+            // `since` ask — `Number(null)` is 0, which must not reach either.
+            const limit = limitRaw === null ? undefined : Number(limitRaw);
+            if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 500)) return json({ error: 'limit' }, 400);
             const after = url.searchParams.get('after');
             if (after !== null && !nativeId.test(after)) return json({ error: 'after' }, 400);
             if (before !== null && !nativeId.test(before)) return json({ error: 'before' }, 400);
@@ -384,8 +390,8 @@ export function startHttp(hub: Hub, opts: {
             // changed is {cursor, reset: false, upserts: []}. A `?before=` page answers the
             // same shape, so the client merges it with the same code.
             const found = before !== null
-              ? await chats.earlier(key, before, agent, parsedLimit ?? CHAT_PAGE_TURNS)
-              : await chats.delta(key, since!, agent, { limit: parsedLimit, after: after ?? undefined });
+              ? await chats.earlier(key, before, agent, limit ?? CHAT_PAGE_TURNS)
+              : await chats.delta(key, since!, agent, { limit, after: after ?? undefined });
             if (!found) return json({ error: 'no-session' }, 404);
             return zipped(req, JSON.stringify(found), { ...jsonHeaders, 'cache-control': 'no-cache' });
           }

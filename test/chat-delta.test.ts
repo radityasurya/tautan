@@ -184,6 +184,19 @@ describe('ChatLens deltas (ADR 0007)', () => {
     lens.close();
   });
 
+  test('a reset whose Turns lack ids is never windowed', async () => {
+    const { lens } = fixture(Array.from({ length: 3 }, (_, n) =>
+      line({ type: n % 2 ? 'assistant' : 'user', message: { content: `Turn ${n + 1}.` } })).join('\n'));
+    const whole = await lens.delta(paneKey, 'unknown', undefined, { limit: 2 });
+    expect(whole).toMatchObject({ reset: true });
+    expect(whole!.total).toBeUndefined(); // no total: Load earlier would hide turns it cannot name
+    expect(whole!.upserts).toHaveLength(3); // the whole list, not the newest two
+    const gone = await lens.earlier(paneKey, 'gone', undefined, 2);
+    expect(gone!.reset).toBe(true); // an unknown before answers a reset…
+    expect(gone!.upserts).toHaveLength(3); // …served whole for the same reason
+    lens.close();
+  });
+
   test('a transient stat miss keeps the remembered generations', async () => {
     const { state, io, lens } = fixture(line({ uuid: 'run1', type: 'user', message: { content: 'hi' } }));
     const old = (await lens.delta(paneKey, 'unknown'))!.cursor;
@@ -396,9 +409,18 @@ describe('chat delta routes', () => {
       const reset = await (await chat(`?since=${encodeURIComponent(start.cursor)}&limit=4&after=zz9`)).json();
       expect(reset).toMatchObject({ reset: true, total: 9 }); // an unknown after cannot be diffed against
       expect(reset.upserts).toHaveLength(4);
-      for (const bad of ['0', 'abc', '501']) expect((await chat(`?since=nope&limit=${bad}`)).status).toBe(400);
+      const pageDefault = await (await chat('?before=w2')).json(); // no limit: the page default applies
+      expect(pageDefault).toMatchObject({ reset: false, total: 9 });
+      expect(pageDefault.upserts.map((turn: { id?: string }) => turn.id)).toEqual(['run1', 'run2', 'run4', 'w0', 'w1']);
+      const plainDelta = await (await chat('?since=nope')).json(); // no limit: no window, no total
+      expect(plainDelta).toMatchObject({ reset: true });
+      expect(plainDelta.total).toBeUndefined();
+      expect(plainDelta.upserts).toHaveLength(9);
+      for (const bad of ['0', '2.5', 'abc', '501']) expect((await chat(`?since=nope&limit=${bad}`)).status).toBe(400);
       expect((await chat('?since=nope&limit=4&after=bad%20id')).status).toBe(400);
       expect((await chat('?before=bad%20id')).status).toBe(400);
+      expect((await chat('?limit=4')).status).toBe(400); // limit names no ask
+      expect((await chat('?since=nope&before=w2')).status).toBe(400); // the two asks never combine
     } finally { state.main = before; }
   });
 

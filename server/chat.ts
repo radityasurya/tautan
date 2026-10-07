@@ -539,13 +539,20 @@ export class ChatLens {
    *  windowed form: `limit` caps a reset's upserts to the newest turns and reports
    *  `total`, and `after` names the oldest Turn the client holds, so a diff considers only
    *  turns from it on — the client never receives an upsert it cannot place, and a Turn it
-   *  holds outside the window never goes stale. */
+   *  holds outside the window never goes stale. A parse whose Turns lack ids is never
+   *  windowed: it keeps the whole-list answer and reports no `total`. */
   async delta(paneKey: string, since: string, agent?: string, opts?: { limit?: number; after?: string }): Promise<ChatDelta | undefined> {
     const value = await this.value(paneKey, agent);
     if (!value) return undefined;
     const gen = this.generations.get(agent ? `${paneKey}\u0000${agent}` : paneKey)?.find(item => item.cursor === since);
-    const total = opts?.limit !== undefined ? value.turns.length : undefined;
-    const window = opts?.limit !== undefined ? value.turns.slice(-opts.limit) : value.turns;
+    // One id set for the shrink rule and the window rule: a reset whose Turns lack ids is
+    // never windowed — `Load earlier` names the oldest held Turn, and an id-less one cannot
+    // be named, so the older Turns would go silently missing. Such a parse keeps today's
+    // whole-list answer, `total` and all.
+    const ids = new Set(value.turns.map(turn => turn.id));
+    const cap = opts?.limit !== undefined && !ids.has(undefined) ? opts.limit : undefined;
+    const total = cap !== undefined ? value.turns.length : undefined;
+    const window = cap !== undefined ? value.turns.slice(-cap) : value.turns;
     // An `after` that names no Turn of this parse (a truncation, a switched branch) cannot
     // be diffed against — not even quietly: the reset below replaces the client's list.
     const from = opts?.after === undefined ? undefined : value.turns.findIndex(turn => turn.id === opts.after);
@@ -564,7 +571,6 @@ export class ChatLens {
         ...(agent ? { agent } : {}),
       };
     }
-    const ids = new Set(value.turns.map(turn => turn.id));
     // One uniform shrink rule: a remembered id that ceased to exist (a pi branch switch, a
     // truncation) cannot be expressed as upserts. So can a Turn without a native id.
     const reset = !gen || from === -1 || ids.has(undefined) || [...gen.prints.keys()].some(id => !ids.has(id));
@@ -588,11 +594,14 @@ export class ChatLens {
     if (!value) return undefined;
     const index = value.turns.findIndex(turn => turn.id === before);
     const page = index >= 0 ? value.turns.slice(Math.max(0, index - limit), index) : undefined;
+    // The same rule as `delta`: a reset whose Turns lack ids is never windowed — the whole
+    // list rides, so no Turn goes missing behind an unnameable oldest one.
+    const whole = value.turns.some(turn => turn.id === undefined);
     return {
       sessionId: value.sessionId,
       cursor: value.cursor,
       reset: page === undefined,
-      upserts: page ?? value.turns.slice(-limit),
+      upserts: page ?? (whole ? value.turns : value.turns.slice(-limit)),
       agentKind: value.agentKind,
       total: value.turns.length,
       ...(page === undefined ? { subagents: value.subagents } : {}),

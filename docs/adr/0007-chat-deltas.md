@@ -199,10 +199,19 @@ overhead (312 KB) are irreducible. So the first load is windowed:
   against the current cursor — answers a reset.
 - `?before=<oldest held Turn id>&limit=N` — `Load earlier` fetches the page before it,
   shaped as a delta (`reset: false`, `upserts` prepend; `before` gone from the parse
-  answers a reset so the client replaces its list). `limit` validates as an integer
-  1..500; `after`/`before` use the output route's id allow-list. Absent parameters keep
+  answers a reset so the client replaces its list). `after`/`before` use the output
+  route's id allow-list.
+- Route rules, from the review: `limit` rides a `since` or `before` ask only — with
+  neither, or with `since` and `before` together, the answer is a 400, not a silently
+  ignored parameter. A `before` ask without `limit` takes the page default
+  (`CHAT_PAGE_TURNS`); a `since` ask without it stays unwindowed and reports no `total`.
+  A `limit` that is not an integer 1..500 is a 400. Otherwise absent parameters keep
   today's behaviour, so an old client against a new Hub is unchanged apart from the
   shorter details.
+- A parse whose Turns lack ids is never windowed, whatever `limit` says: `Load earlier`
+  names the oldest held Turn, an id-less one cannot be named, and the older Turns would
+  go silently missing. Such a reset keeps today's whole-list answer and reports no
+  `total`.
 
 N is 100 (`CHAT_PAGE_TURNS`, shared by client and Hub): the busiest Claude Pane's last
 100 Turns, head cap applied, serialise to 568 789 B — 43% under the 1 MB budget —
@@ -222,4 +231,6 @@ Tests for the amendment, beside 11.2's: a long detail keeps its head, marker and
 text by `part=detail` (200/400/404 as for `result`); the pending tool keeps its whole
 detail; a windowed reset serves the newest Turns with `total`; a diff honours `after`;
 `earlier` serves the page before an id and answers a reset for an unknown one; a
-later Turn changes nothing about a cut row.
+later Turn changes nothing about a cut row; a reset whose Turns lack ids is never
+windowed; `limit` without an ask, `since` with `before`, and `before` without `limit`
+follow the route rules above.
