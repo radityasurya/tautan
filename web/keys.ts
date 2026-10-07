@@ -144,3 +144,54 @@ export function capInput(cap: Cap, mod: Modifier | null): { keys?: string[]; raw
 
 /** A typed letter or symbol while a modifier is armed: `ctrl+r`, `alt+.`. */
 export const modified = (mod: Modifier, ch: string): string => `${mod}+${ch.toLowerCase()}`;
+
+// ---- the editable key bar ----
+
+/** The caps the user chose: `order` is every label in the user's order, `hidden` the ones off. */
+export interface KeyPrefs { order: string[]; hidden: string[] }
+
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []);
+
+/** A saved choice, or null for the defaults. Anything malformed is the defaults. */
+export function parseKeyPrefs(raw: string | null): KeyPrefs | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw) as { order?: unknown; hidden?: unknown } | null;
+    return v && typeof v === 'object' ? { order: strings(v.order), hidden: strings(v.hidden) } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every cap of the tray in the user's order, with a flag for whether it shows. A cap the
+ *  choice never saw (a new key, another Pane's profile) goes last, shown. */
+export function editableCaps(groups: CapGroup[], prefs: KeyPrefs | null): { cap: Cap; on: boolean }[] {
+  const all = groups.flatMap((g) => g.caps);
+  const rank = (cap: Cap) => {
+    const i = prefs?.order.indexOf(cap.label) ?? -1;
+    return i < 0 ? Infinity : i;
+  };
+  const sorted = prefs ? [...all].sort((a, b) => rank(a) - rank(b)) : all; // stable: unknowns keep default order
+  return sorted.map((cap) => ({ cap, on: !prefs?.hidden.includes(cap.label) }));
+}
+
+/** The groups the tray draws: the defaults, or one flat group of the chosen caps. */
+export function applyKeyPrefs(groups: CapGroup[], prefs: KeyPrefs | null): CapGroup[] {
+  if (!prefs) return groups;
+  return [{ label: 'Your keys', caps: editableCaps(groups, prefs).filter((r) => r.on).map((r) => r.cap) }];
+}
+
+/** The choice after an edit: `rows` is the list as the editor shows it. */
+export const toKeyPrefs = (rows: { cap: Cap; on: boolean }[]): KeyPrefs => ({
+  order: rows.map((r) => r.cap.label),
+  hidden: rows.filter((r) => !r.on).map((r) => r.cap.label),
+});
+
+/** Move row `i` by `by` places; a move off either end changes nothing. */
+export function moveRow<T>(rows: T[], i: number, by: -1 | 1): T[] {
+  const j = i + by;
+  if (j < 0 || j >= rows.length) return rows;
+  const next = [...rows];
+  [next[i], next[j]] = [next[j]!, next[i]!];
+  return next;
+}

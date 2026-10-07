@@ -4,7 +4,8 @@ import { hintPills } from './affordances.tsx';
 import { haptic, post, reducedMotion } from './app.tsx';
 import { Blocked, type ExplainResponse } from './blocked.tsx';
 import { Attach, Keyboard, Mic, Send } from './icons.tsx';
-import { capInput, modified, MODIFIERS, trayGroups, type Cap, type Modifier } from './keys.ts';
+import { applyKeyPrefs, capInput, editableCaps, modified, MODIFIERS, moveRow, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
+import { applyPick, Picker, tokenAt, useComplete, type Item } from './complete.tsx';
 import { CYCLE_MODE_KEYS, toolbarFromScreen, type Profile } from './profiles.ts';
 import { quickReplies, type Pill } from './replies.ts';
 import { deliver, dropPending, holdPending, trackPending } from './pending.ts';
@@ -37,8 +38,22 @@ const readTray = (kind: 'agent' | 'shell', tray: Tray): boolean => {
   return v === null ? TRAY_DEFAULT[kind][tray] : v === 'on';
 };
 
-// ponytail: drafts live in memory only, so a reload loses them; sessionStorage if that bites.
-const drafts = new Map<string, string>();
+/** sessionStorage that never throws: a blocked store loses the draft, never the typing. A
+ *  draft survives a reload and dies with the tab. */
+const draftKey = (paneKey: string) => `tautan.draft.${paneKey}`;
+const readDraft = (paneKey: string): string => {
+  try { return sessionStorage.getItem(draftKey(paneKey)) ?? ''; } catch { return ''; }
+};
+const writeDraft = (paneKey: string, text: string) => {
+  try {
+    if (text) sessionStorage.setItem(draftKey(paneKey), text);
+    else sessionStorage.removeItem(draftKey(paneKey));
+  } catch {}
+};
+
+/** The key bar the user chose, per kind. */
+const keysKey = (kind: 'agent' | 'shell') => `tautan.keys.${kind}`;
+const readKeyPrefs = (kind: 'agent' | 'shell'): KeyPrefs | null => parseKeyPrefs(store.get(keysKey(kind)));
 
 /** `id` is the pending entry's (web/pending.ts), so the Chat view shows it held as well. */
 interface HeldMessage { id: number; text: string }
@@ -309,16 +324,15 @@ export function Composer({
 
   // The frame changes tree shape at 1024 px, so a resize remounts the Composer: the draft
   // lives outside it, per Pane, and a Pane switch brings back that Pane's own draft.
-  const [text, setText] = useState(() => drafts.get(paneKey) ?? '');
+  const [text, setText] = useState(() => readDraft(paneKey));
   const draftPane = useRef(paneKey);
   useEffect(() => {
     if (draftPane.current !== paneKey) {
       draftPane.current = paneKey;
-      setText(drafts.get(paneKey) ?? '');
+      setText(readDraft(paneKey));
       return;
     }
-    if (text) drafts.set(paneKey, text);
-    else drafts.delete(paneKey); // a send clears the field, and with it the draft
+    writeDraft(paneKey, text); // a send clears the field, and with it the draft
   }, [paneKey, text]);
   const [heldMessages, setHeldMessages] = useState<HeldMessage[]>([]);
   const [sendingHeld, setSendingHeld] = useState(false);
@@ -339,6 +353,41 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, desktop ? 184 : 96)}px`;
   }, [text, desktop, kind]);
 
+  // ctrl and alt are one-shot: armed, the next cap or typed character goes out with it.
+  const [armed, setArmed] = useState<Modifier | null>(null);
+  useEffect(() => setArmed(null), [paneKey, kind]);
+
+  // ---- completion ----
+  // `/` at the start and `@` anywhere complete from the Hub; a shell has neither. Esc closes
+  // the picker for as long as the text stays as it was.
+  const [caret, setCaret] = useState(0);
+  const [closedAt, setClosedAt] = useState<string | null>(null);
+  const [active, setActive] = useState(0);
+  const token = agent && !armed && closedAt !== text ? tokenAt(text, caret) : null;
+  const found = useComplete(paneKey, token);
+  const items = token ? found : [];
+  const open = items.length > 0;
+  useEffect(() => { setClosedAt(null); }, [paneKey]);
+  useEffect(() => { setActive(0); }, [found, token?.kind]);
+  const place = useRef<number | null>(null);
+  useEffect(() => {
+    const at = place.current;
+    place.current = null;
+    if (at === null) return;
+    input.current?.setSelectionRange(at, at);
+    setCaret(at);
+  }, [text]);
+  const pick = (item: Item) => {
+    if (!token) return;
+    haptic();
+    if (token.kind === 'model') return send(`/model ${item.value}`);
+    const next = applyPick(text, token, item);
+    place.current = next.caret;
+    setText(next.text);
+    input.current?.focus();
+  };
+  const pickerId = 'composer-complete';
+
   // ---- attachments ----
   // `post()` is JSON only. An upload wants progress and an abort, so it goes out on XHR:
   // the browser sets Origin either way, which is what the Hub checks.
@@ -346,20 +395,24 @@ export function Composer({
   const picker = useRef<HTMLInputElement>(null);
   const running = useRef(new Map<number, XMLHttpRequest>());
 
-  const send = () => {
-    const sent = text.trim();
+  const send = (override?: string) => {
+    const body = override ?? text;
+    const sent = body.trim();
     if (!sent) return;
+    // A bare `/model` opens the card first; the same text with a space sends it as typed.
+    if (override === undefined && agent && body === '/model') return setText('/model ');
     haptic();
     // An Agent's reply also goes to the Chat view as a pending turn; a shell has no transcript.
     if (status === 'working') {
-      setHeldMessages((list) => [...list, { id: trackPending(paneKey, text, true), text }]);
+      setHeldMessages((list) => [...list, { id: trackPending(paneKey, body, true), text: body }]);
     } else if (agent) {
-      void deliver(trackPending(paneKey, text));
+      void deliver(trackPending(paneKey, body));
     } else {
-      void post(paneKey, 'input', { text, keys: ['enter'] } satisfies InputBody);
+      void post(paneKey, 'input', { text: body, keys: ['enter'] } satisfies InputBody);
     }
     if (!agent && mayRemember(screenText)) setHistory(remember(sent));
     setText('');
+    writeDraft(paneKey, '');
     // The paths went with the text. A chip still uploading keeps its place.
     setUploads((list) => list.filter((u) => u.status === 'uploading'));
     input.current?.focus();
@@ -392,9 +445,6 @@ export function Composer({
     void post(paneKey, 'input', { keys: names } satisfies InputBody);
   };
 
-  // ctrl and alt are one-shot: armed, the next cap or typed character goes out with it.
-  const [armed, setArmed] = useState<Modifier | null>(null);
-  useEffect(() => setArmed(null), [paneKey, kind]);
   const arm = (mod: Modifier) => {
     haptic();
     setArmed((a) => (a === mod ? null : mod));
@@ -411,6 +461,7 @@ export function Composer({
     haptic();
     setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}${reply}`);
     input.current?.focus();
+    setCaret(Infinity); // the reply lands at the end
   };
 
   /** `/` and `@` type their character at the caret and send nothing: the Agent's own TUI
@@ -421,6 +472,7 @@ export function Composer({
     el.focus();
     el.setRangeText(ch, el.selectionStart, el.selectionEnd, 'end');
     setText(el.value);
+    setCaret(el.selectionStart);
   };
 
   // A path is only good on the Host that wrote it, so nothing follows a Pane switch.
@@ -602,10 +654,26 @@ export function Composer({
   ];
   const commands = agent ? [] : history;
   // Control, the App profile's own keys, Navigate, Edit; the Modifiers are drawn here.
-  const groups = useMemo(
+  const defaults = useMemo(
     () => trayGroups({ shell: !agent, claude: !!agent?.toLowerCase().includes('claude'), profileKeys: profile.keys.all }),
     [agent, profile],
   );
+  // The user's own bar, per kind; null is the defaults.
+  const [keyPrefs, setKeyPrefs] = useState(() => ({ agent: readKeyPrefs('agent'), shell: readKeyPrefs('shell') }));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { setEditing(false); }, [paneKey, kind]);
+  const prefs = keyPrefs[kind];
+  const groups = useMemo(() => applyKeyPrefs(defaults, prefs), [defaults, prefs]);
+  const rows = editableCaps(defaults, prefs);
+  const saveRows = (next: typeof rows) => {
+    const chosen = toKeyPrefs(next);
+    store.set(keysKey(kind), JSON.stringify(chosen));
+    setKeyPrefs((k) => ({ ...k, [kind]: chosen }));
+  };
+  const resetKeys = () => {
+    try { localStorage.removeItem(keysKey(kind)); } catch {}
+    setKeyPrefs((k) => ({ ...k, [kind]: null }));
+  };
   const waiting = pills.length + commands.length;
   const gutter = desktop ? '' : 'px-4';
 
@@ -717,6 +785,45 @@ export function Composer({
     </button>
   );
 
+  // Edit keys: every cap in a list, a switch for whether it shows and two buttons to move
+  // it. Each change saves at once; Reset puts the defaults back.
+  const smallBtn = `press flex size-9 shrink-0 items-center justify-center rounded-chip border border-border text-fg ${RING} disabled:opacity-40`;
+  const keysEditor = (
+    <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <span className={`${groupLabel} flex-1`}>Edit keys</span>
+        <button type="button" onClick={() => { haptic(); resetKeys(); }} disabled={!prefs} className="press min-h-8 px-1 text-caption font-medium text-muted disabled:opacity-40">
+          Reset
+        </button>
+        <button type="button" onClick={() => { haptic(); setEditing(false); }} className="press min-h-8 px-1 text-caption font-semibold text-accent">
+          Done
+        </button>
+      </div>
+      <ul className="flex flex-col">
+        {rows.map((row, i) => (
+          <li key={row.cap.label} className="flex min-h-10 items-center gap-2 border-t border-border/60 first:border-t-0">
+            <label className="flex min-h-10 min-w-0 flex-1 items-center gap-2.5">
+              <input
+                type="checkbox"
+                checked={row.on}
+                onChange={() => saveRows(rows.map((r, j) => (j === i ? { ...r, on: !r.on } : r)))}
+                className="size-4 shrink-0 accent-[var(--accent)]"
+              />
+              <span className="shrink-0 font-mono text-[13px] text-fg">{row.cap.label}</span>
+              <span className="min-w-0 truncate text-caption text-muted">{row.cap.name}</span>
+            </label>
+            <button type="button" aria-label={`Move ${row.cap.name} up`} disabled={i === 0} onClick={() => saveRows(moveRow(rows, i, -1))} className={smallBtn}>
+              ▲
+            </button>
+            <button type="button" aria-label={`Move ${row.cap.name} down`} disabled={i === rows.length - 1} onClick={() => saveRows(moveRow(rows, i, 1))} className={smallBtn}>
+              ▼
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
   // Groups with a tiny label each: one wrapping row on desktop, a six-column grid per group
   // on the phone, which scrolls inside the tray past 38% of the screen.
   const keysTray = (
@@ -730,6 +837,7 @@ export function Composer({
           : 'flex max-h-[38vh] flex-col gap-2 overflow-y-auto overscroll-contain px-4'
       }`}
     >
+      {editing ? keysEditor : <>
       {groups.map((group) => (
         <div key={group.label} role="group" aria-label={group.label} className="flex min-w-0 flex-col gap-1">
           <span aria-hidden className={groupLabel}>{group.label}</span>
@@ -753,6 +861,10 @@ export function Composer({
           ))}
         </div>
       </div>
+      <button type="button" onClick={() => { haptic(); setEditing(true); }} className={`press self-start text-caption font-medium text-muted ${HOVER} min-h-8 px-1`}>
+        Edit keys
+      </button>
+      </>}
     </div>
   );
 
@@ -824,7 +936,7 @@ export function Composer({
   const sendButton = agent || !desktop ? (
     <button
       type="button"
-      onClick={send}
+      onClick={() => send()}
       disabled={!hasText}
       aria-label={agent ? 'Send' : 'Run'}
       title={desktop ? undefined : agent ? 'Send' : 'Run'}
@@ -835,7 +947,7 @@ export function Composer({
   ) : (
     <button
       type="button"
-      onClick={send}
+      onClick={() => send()}
       disabled={!hasText}
       className={`${sendLook} h-8 gap-1.5 px-3 text-[12px] ${hasText ? 'font-medium' : ''}`}
     >
@@ -880,16 +992,42 @@ export function Composer({
           void post(paneKey, 'input', { keys: [modified(armed, el.value[at - 1]!)] } satisfies InputBody);
           return;
         }
+        setCaret(at);
         setText(el.value);
       }}
+      onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
       // Enter sends and Shift+Enter breaks the line; every other key, Ctrl included, is the
       // field's own.
       onKeyDown={(e) => {
+        if (open && !e.nativeEvent.isComposing) {
+          const item = items[active]!;
+          const typed = token?.kind === 'slash' && item.value === text.trim(); // already typed in full: Enter sends it
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            setActive((a) => (a + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length);
+            return;
+          }
+          if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !typed)) {
+            e.preventDefault();
+            pick(item);
+            return;
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            setClosedAt(text);
+            return;
+          }
+        }
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault();
           send();
         }
       }}
+      role={open ? 'combobox' : undefined}
+      aria-expanded={open ? true : undefined}
+      aria-controls={open ? pickerId : undefined}
+      aria-activedescendant={open ? `${pickerId}-${active}` : undefined}
+      aria-autocomplete={open ? 'list' : undefined}
       enterKeyHint={agent ? 'send' : 'go'}
       autoCapitalize={agent ? undefined : 'off'}
       autoCorrect={agent ? undefined : 'off'}
@@ -915,7 +1053,10 @@ export function Composer({
   // right end. The phone gives the toolbar its own line rather than squeezing six controls
   // beside the field, which left 60 px to type into while ^C showed.
   const box = (
-    <div className="flex flex-col rounded-card border border-border bg-bg focus-within:border-accent/60">
+    <div className="relative flex flex-col rounded-card border border-border bg-bg focus-within:border-accent/60">
+      {open && token && desktop && (
+        <Picker id={pickerId} kind={token.kind} items={items} active={active} desktop onActive={setActive} onPick={pick} />
+      )}
       <div className={`flex ${desktop ? 'gap-2.5 px-3 pt-3 pb-1.5' : 'gap-2 px-3 pt-1'}`}>
         {glyph}
         {textarea}
@@ -1017,6 +1158,9 @@ export function Composer({
 
         {showSuggest && suggestTray}
         {showKeys && keysTray}
+        {open && token && !desktop && (
+          <Picker id={pickerId} kind={token.kind} items={items} active={active} desktop={false} onActive={setActive} onPick={pick} />
+        )}
 
         {heldMessages.length > 0 && (
           <section aria-label="Held messages" className={`overflow-hidden rounded-composer border border-border bg-bg ${desktop ? '' : 'mx-4'}`}>
