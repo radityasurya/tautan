@@ -481,7 +481,7 @@ function TabPicker({
 }
 
 /** The open Tab's Panes, shown for a split Tab when the split view does not. A zoomed Tab
- *  marks its zoomed Pane and ends the row with the Zoomed pill and its Unzoom button. */
+ *  marks its zoomed Pane and ends the row with one "Zoomed" button that unzooms it. */
 function PaneChips({ panes, paneKey, className, zoom }: {
   panes: StatePane[];
   paneKey: string;
@@ -516,22 +516,19 @@ function PaneChips({ panes, paneKey, className, zoom }: {
         </button>
       ))}
       {zoomed && zoom && (
-        <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
-          <span className="flex h-7 items-center gap-1 px-1.5 text-[12px] text-muted">
-            <ZoomIn size={12} className="text-accent" />
-            Zoomed
-          </span>
-          <button
-            type="button"
-            disabled={zoom.busy}
-            aria-busy={zoom.busy || undefined}
-            onClick={zoom.onUnzoom}
-            className="press flex h-7 shrink-0 items-center gap-1 rounded-chip border border-border px-2.5 text-[12px] font-medium text-accent hover:bg-surface disabled:opacity-50"
-          >
-            <ZoomOut size={12} />
-            Unzoom
-          </button>
-        </span>
+        // One control: it says the Tab is zoomed and is the way out.
+        <button
+          type="button"
+          disabled={zoom.busy}
+          aria-busy={zoom.busy || undefined}
+          aria-label="Zoomed. Unzoom to show every Pane in this Tab"
+          title="Unzoom"
+          onClick={zoom.onUnzoom}
+          className="press ml-auto flex h-7 shrink-0 items-center gap-1 rounded-chip border border-border px-2.5 text-[12px] font-medium text-accent hover:bg-surface disabled:opacity-50"
+        >
+          <ZoomOut size={12} />
+          Zoomed
+        </button>
       )}
     </div>
   );
