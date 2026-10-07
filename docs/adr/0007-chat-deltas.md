@@ -176,7 +176,9 @@ behaviour. The Hub keeps full text only for cut rows, in the same cached value a
 `sliced results, so the memory ceiling argument is unchanged. Rows without a native id
 (z.ai's, id-less transcripts) keep their whole detail, as before. The one pending tool
 (the approval row's target) keeps its whole detail inline — the lens restores what the
-parser cut — so an approval row shows the whole command or diff with no fetch.
+parser cut — so an approval row shows the whole command or diff with no fetch. 18.4
+widened that sentence: every pending tool keeps its whole detail inline, because each
+now gets its own approval row, not only the one the Blocked card sat on.
 
 Head size, from the measurement: Claude detail lengths ran p50 559 B, p90 2 103 B,
 p99 4 000 B (18 of 1 529 rows at the old cap). A 6-line/300-character head keeps every

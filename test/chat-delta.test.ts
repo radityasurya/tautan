@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatLens, type ChatHub, type TranscriptIo } from '../server/chat.ts';
@@ -265,7 +266,7 @@ describe('ChatLens deltas (ADR 0007)', () => {
 });
 
 // 18.3: an Edit's preview serves the file on disk at the Pane's cwd — bounded to that cwd,
-// through symlinks too — so the transcript never carries the source.
+// through symlinks too, on either Host — so the transcript never carries the source.
 describe('disk-backed previews', () => {
   const html = '<html><body>edited page</body></html>';
   const secret = '<html><body>outside the cwd</body></html>';
@@ -287,8 +288,11 @@ describe('disk-backed previews', () => {
     writeFileSync(join(cwd, 'page.html'), html);
     writeFileSync(join(root, 'secret.html'), secret); // one directory above the cwd, and the symlink's target
     symlinkSync(join(root, 'secret.html'), join(cwd, 'link.html'));
+    writeFileSync(join(cwd, 'notes.txt'), 'not a page'); // inside the cwd, but no .html target
+    symlinkSync(join(cwd, 'notes.txt'), join(cwd, 'alias.html'));
     writeFileSync(join(cwd, 'big.html'), big);
     files.set(join(cwd, 'page.html'), html);
+    files.set(join(cwd, 'notes.txt'), 'not a page');
     files.set(join(cwd, 'big.html'), big);
   });
   afterAll(() => { rmSync(root, { recursive: true, force: true }); });
@@ -300,6 +304,7 @@ describe('disk-backed previews', () => {
       edit('e3', '../secret.html'),
       edit('e4', 'link.html'),
       edit('e5', 'big.html'),
+      edit('e6', 'alias.html'),
     ].join('\n');
     const io: TranscriptIo = {
       stat: async path => { const value = files.get(path) ?? main; return { inode: '1', size: value.length, mtime: Bun.hash(value).toString(36) }; },
@@ -307,13 +312,49 @@ describe('disk-backed previews', () => {
     };
     const lens = new ChatLens(hub(), io, '/home/tama');
     const chat = await lens.query(paneKey);
-    expect(chat!.turns[0]!.tools.map(tool => tool.previewId)).toEqual([0, 1, 2, 3, 4]);
+    expect(chat!.turns[0]!.tools.map(tool => tool.previewId)).toEqual([0, 1, 2, 3, 4, 5]);
     expect((await lens.preview(paneKey, 0))?.html).toBe(html); // a relative name, inside the cwd
     expect((await lens.preview(paneKey, 1))?.html).toBe(html); // an absolute name of the same file
     expect((await lens.preview(paneKey, 2))?.html).toBeUndefined(); // `..` leaves the cwd, though the file exists
     expect((await lens.preview(paneKey, 3))?.html).toBeUndefined(); // a symlink pointing outside the cwd
     expect((await lens.preview(paneKey, 4))?.html).toBeUndefined(); // past PREVIEW_MAX
+    expect((await lens.preview(paneKey, 5))?.html).toBeUndefined(); // resolves to a non-.html file
     expect(await lens.preview(paneKey, 99)).toEqual({ html: undefined }); // an unknown id, as before
+    lens.close();
+  });
+
+  test('a remote Host resolves symlinks over the ssh io: an escape or a non-.html target answers none', async () => {
+    const main = [
+      edit('r1', 'page.html'),
+      edit('r2', 'link.html'), // the symlink's target sits outside the cwd
+      edit('r3', 'alias.html'), // resolves inside the cwd, but not to an .html file
+      edit('r4', 'big.html'),
+    ].join('\n');
+    const reads: string[] = [];
+    // The stub speaks for the remote Host — readlink resolution and the capped read — with the
+    // real fixture standing in for its filesystem.
+    const io: TranscriptIo = {
+      stat: async path => { const value = files.get(path) ?? main; return { inode: '1', size: value.length, mtime: Bun.hash(value).toString(36) }; },
+      read: async path => files.get(path) ?? main,
+      realpaths: async (dir, path) => {
+        const [base, real] = await Promise.all([realpath(dir), realpath(path)].map(promise => promise.catch(() => undefined)));
+        return base && real ? [base, real] : undefined;
+      },
+      first: async (path, bytes) => { reads.push(path); return Buffer.from(files.get(path) ?? '', 'utf8').subarray(0, bytes).toString('utf8'); },
+    };
+    const remoteHub = (): ChatHub => ({
+      resolvePane: () => ({ paneId: 'p1', entry: { mux: { kind: 'herdr' }, tree: { panes: [{ id: 'p1', agentSession: id }] } } }),
+      state: async () => ({ panes: [{ key: paneKey, cwd }] }) as State,
+      paneHost: async () => 'r1', host: () => ({ id: 'r1', label: 'Remote', online: true, target: 'user@remote' }), watchedPaneKeys: () => new Set(),
+    });
+    const lens = new ChatLens(remoteHub(), io, '/home/tama');
+    const chat = await lens.query(paneKey);
+    expect(chat!.turns[0]!.tools.map(tool => tool.previewId)).toEqual([0, 1, 2, 3]);
+    expect((await lens.preview(paneKey, 0))?.html).toBe(html); // resolved inside the remote cwd, .html
+    expect((await lens.preview(paneKey, 1))?.html).toBeUndefined(); // the escape never reaches a read
+    expect((await lens.preview(paneKey, 2))?.html).toBeUndefined(); // a resolved non-.html target
+    expect((await lens.preview(paneKey, 3))?.html).toBeUndefined(); // the remote read caps at PREVIEW_MAX
+    expect(reads).toEqual([join(cwd, 'page.html'), join(cwd, 'big.html')]); // only the passing paths read
     lens.close();
   });
 });

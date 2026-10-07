@@ -1052,6 +1052,10 @@ export function Chat({
                       <ul className="mt-1.5 flex w-[min(92%,42rem)] flex-col gap-1">
                         {tools.map((tool, toolIndex) => {
                           const pending = targets.find(item => item.turn === turnIndex && item.tool === toolIndex);
+                          // The Stamp rides the row with the Blocked card — the first pending
+                          // tool — not the last queued one; a turn with pending tools stamps no
+                          // tool row, so the turn stamps exactly once.
+                          const lastRow = !targets.some(item => item.turn === turnIndex) && toolIndex === tools.length - 1;
                           return pending && approval ? (
                             <ApprovalItem
                               key={tool.id ?? `${tool.name}-${toolIndex}`}
@@ -1059,7 +1063,7 @@ export function Chat({
                               agent={agent}
                               tool={tool}
                               kind={view?.agentKind}
-                              at={toolIndex === tools.length - 1 ? turn.at : undefined}
+                              at={pending === targets[0] ? turn.at : undefined}
                               queued={pending !== targets[0]}
                             />
                           ) : (
@@ -1069,7 +1073,7 @@ export function Chat({
                             agent={selected}
                             tool={tool}
                             kind={view?.agentKind}
-                            at={toolIndex === tools.length - 1 ? turn.at : undefined}
+                            at={lastRow ? turn.at : undefined}
                             subagent={tool.subagentId ? byId.get(tool.subagentId) : undefined}
                             onOpenSubagent={pick}
                           />

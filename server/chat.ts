@@ -1,7 +1,7 @@
 import { open, readFile, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { CHAT_PAGE_TURNS, PREVIEW_MAX, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, HTML_FILE, PREVIEW_MAX, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
 import { codexHome, resolveCodexPath } from './codex-chat.ts';
 import type { State, StateHost } from '../shared/types.ts';
 
@@ -25,6 +25,12 @@ export interface TranscriptIo {
   /** A file's first complete line (the head window grows to its cap), for Codex's
    *  `session_meta` id check. */
   head?(path: string, target?: string): Promise<string | undefined>;
+  /** Both paths resolved through symlinks in one ssh round trip (a remote preview's
+   *  containment check): `undefined` when either fails to resolve. */
+  realpaths?(cwd: string, path: string, target: string): Promise<[string, string] | undefined>;
+  /** The file's first `bytes` (a remote preview's read, capped at read time): `undefined`
+   *  only when the file is unreadable — judging the cap is the caller's. */
+  first?(path: string, bytes: number, target: string): Promise<string | undefined>;
 }
 
 type Process = { pid?: number; name?: string; argv?: string[] };
@@ -65,10 +71,14 @@ function remotePath(path: string): string {
   return `"$HOME/"${quoteShell(path.slice('$HOME/'.length))}`;
 }
 
-async function ssh(target: string, command: string): Promise<{ stdout: string; code: number }> {
+async function ssh(target: string, command: string, timeoutMs?: number): Promise<{ stdout: string; code: number }> {
   const child = Bun.spawn(['ssh', '-o', 'BatchMode=yes', target, '--', command], { stdout: 'pipe', stderr: 'ignore' });
-  const [stdout, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  return { stdout, code };
+  // A remote command that never ends (a read on a swapped-in FIFO) must not hang the caller.
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => child.kill(), timeoutMs);
+  try {
+    const [stdout, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    return { stdout, code };
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 // ponytail: the head window doubles until the first line is complete, capped at 8 MB — a first
@@ -221,6 +231,20 @@ const remoteIo: TranscriptIo = {
     const result = await ssh(target, `head -c ${HEAD_CAP} -- ${remotePath(path)} | head -n 1`);
     if (result.code) throw new Error('remote transcript head failed');
     return result.stdout.split('\n', 1)[0] ?? '';
+  },
+  realpaths: async (cwd, path, target) => {
+    const result = await ssh(target, `command -v readlink >/dev/null 2>&1 || exit 15; readlink -f -- ${quoteShell(cwd)} ${quoteShell(path)} || exit 10`);
+    if (result.code) return undefined;
+    // A resolved name with a newline in it would split its own line: anything but two whole
+    // lines refuses, so a hostile name cannot counterfeit containment.
+    const lines = result.stdout.trimEnd().split('\n');
+    return lines.length === 2 && lines[0] && lines[1] ? [lines[0]!, lines[1]!] : undefined;
+  },
+  first: async (path, bytes, target) => {
+    // The read stops at `bytes` on the Host itself, and the adapter's 10 s RPC ceiling ends
+    // a read that never would (a swapped-in FIFO).
+    const result = await ssh(target, `head -c ${bytes} -- ${quoteShell(path)}`, 10_000);
+    return result.code === 0 ? result.stdout : undefined;
   },
 };
 
@@ -641,9 +665,9 @@ export class ChatLens {
   }
 
   /** A disk-backed preview (18.3): an Edit's .html, or a Write past PREVIEW_MAX. The path
-   *  must resolve inside the Pane's cwd — through symlinks too, on a local Host — and the
-   *  file caps at PREVIEW_MAX. Nothing is retained: every request reads it again, so the
-   *  cap bounds one request, never the cache. */
+   *  must resolve inside the Pane's cwd — through symlinks too, on either Host — and the
+   *  resolved file must end .html/.htm. The read caps itself at PREVIEW_MAX, so nothing is
+   *  retained: every request reads again, and the cap bounds one request, never the cache. */
   private async diskPreview(paneKey: string, file: string | undefined): Promise<string | undefined> {
     if (!file) return undefined;
     const cwd = (await this.hub.state()).panes.find(item => item.key === paneKey)?.cwd;
@@ -651,17 +675,20 @@ export class ChatLens {
     const path = resolve(cwd, file);
     if (path !== cwd && !path.startsWith(`${cwd}/`)) return undefined; // `..`, or an absolute path outside
     const target = await this.target(paneKey);
-    if (!target) {
-      // A symlink that points outside the cwd must not serve, so compare real paths.
-      const [base, real] = await Promise.all([realpath(cwd), realpath(path)].map(promise => promise.catch(() => undefined)));
-      if (!base || !real || (real !== base && !real.startsWith(`${base}/`))) return undefined;
-    }
-    // ponytail: a remote Host's symlinks are not resolved (no realpath over the ssh io); the
-    //  string check above still bounds `..` and absolute paths. readlink -f over ssh if a
-    //  remote symlink escape ever matters.
+    // A symlink that points outside the cwd must not serve, so compare real paths: readlink
+    // over ssh on a remote Host, realpath locally — the same comparison for both.
+    let base: string | undefined, real: string | undefined;
+    if (target) [base, real] = await this.io.realpaths?.(cwd, path, target) ?? [];
+    else [base, real] = await Promise.all([realpath(cwd), realpath(path)].map(promise => promise.catch(() => undefined)));
+    if (!base || !real || (real !== base && !real.startsWith(`${base}/`)) || !HTML_FILE.test(real)) return undefined;
     try {
-      const info = await this.io.stat(path, target);
-      return info && info.size <= PREVIEW_MAX ? await this.io.read(path, target) : undefined;
+      // The cap holds at read time, not stat time: the read stops at PREVIEW_MAX + 1 and a
+      // file that reached the extra byte refuses (server/http.ts's localFile reads the same
+      // way), so a file swapped in after the check cannot stream past the cap.
+      const body = target
+        ? await this.io.first?.(real, PREVIEW_MAX + 1, target)
+        : new TextDecoder().decode(await Bun.file(real).slice(0, PREVIEW_MAX + 1).arrayBuffer());
+      return body !== undefined && Buffer.byteLength(body) <= PREVIEW_MAX ? body : undefined;
     } catch { return undefined; }
   }
 

@@ -31,7 +31,8 @@ export interface Tool {
    *  `GET /api/panes/:key/chat/preview/:previewId` as text/html under a sandbox CSP, for a
    *  sandboxed preview. Never inlined in the chat JSON. A Write's source (or an Artifact's)
    *  rides the cached parse; an Edit's row, or a Write past PREVIEW_MAX, names the file on
-   *  disk, which the Hub reads at the Pane's cwd. */
+   *  disk, which the Hub serves only when the path resolves inside the Pane's cwd and ends
+   *  .html or .htm. */
   previewId?: number;
   /** The subagent this tool started (Task/Agent): its turns come from
    *  `GET /api/panes/:key/chat?agent=<subagentId>`. */
@@ -279,7 +280,7 @@ function liftZai(text: string, pending: Tool[]): { text: string; tools: Tool[] }
 
 // The Hub's file route serves these four as images; anything else would arrive as text.
 const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp)$/i;
-const HTML_FILE = /\.html?$/i;
+export const HTML_FILE = /\.html?$/i;
 // The cap on one preview source: a Write's content over this never rides the cached parse,
 // and a disk read over this answers no preview. A request reads at most this much and
 // retains nothing, so the cap holds per request, not per cache.
