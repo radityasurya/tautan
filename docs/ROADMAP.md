@@ -433,9 +433,19 @@ the chip follows. On a shell Pane, the `$` prompt and history chips show instead
 Verify: answer a blocked prompt from the Pane list without opening the Pane. Open Hosts,
 tap a Host, and see each Mux with its Workspaces and their Status.
 
+## Phase 23 — layout editing
+
+Wave 15 ([WAVES-PARITY](./WAVES-PARITY.md#wave-15--layout-editing-split-move-swap-and-a-workspace-order)).
+Design: [ADR 0008](./adr/0008-layout-editing.md).
+
+- [ ] Split, swap, move and resize Panes from tautan, on herdr 0.9 and tmux; a Workspace
+      order in the Home list that belongs to tautan and survives a reload
+
+Verify: split a Pane from the phone and see the new shell; drag a split divider on desktop
+and see herdr follow; drag a Workspace up the list and see the order survive a reload.
+
 ## Later (explicitly out of v1)
 
-- Split / move / layout editing
 - Split Panes side by side on desktop (Wave 10, lane 10.8) until the SSE stream can watch more than one Pane
 - Per-agent prompt grammars (native widgets for select lists)
 - Passcode or SSO in front of the Hub
