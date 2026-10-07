@@ -512,6 +512,7 @@ export function startHttp(hub: Hub, opts: {
               for (const pane of state.panes) if (pane.muxKey === muxKey && wanted.has(pane.tabId)) await leases.release(pane.key);
             };
             const sourceTab = state.panes.find(pane => pane.key === key)?.tabId;
+            const sourceMux = state.panes.find(pane => pane.key === key)?.muxKey;
             if (action === 'split') {
               if (body.direction !== 'right' && body.direction !== 'down' || !validRatio(body.ratio) || !validCwd(body.cwd)) return json({ error: 'body' }, 400);
               await releaseLeases(sourceTab);
@@ -519,7 +520,7 @@ export function startHttp(hub: Hub, opts: {
             }
             if (action === 'swap') {
               if (!nonEmpty(body.target)) return json({ error: 'body' }, 400);
-              await releaseLeases(sourceTab, state.panes.find(pane => pane.key === body.target)?.tabId);
+              await releaseLeases(sourceTab, (p => p?.muxKey === sourceMux ? p?.tabId : undefined)(state.panes.find(pane => pane.key === body.target)));
               await hub.swapPanes(key, body.target as string); return new Response(null, { status: 204 });
             }
             if (action === 'move') {
@@ -531,7 +532,7 @@ export function startHttp(hub: Hub, opts: {
                 if (!nonEmpty(body.tab) || body.split !== 'right' && body.split !== 'down' || !validRatio(body.ratio)) return json({ error: 'body' }, 400);
               } else if (body[target!] !== true) return json({ error: 'body' }, 400);
               if (body.label !== undefined && target !== 'newWorkspace' || !validLabel(body.label)) return json({ error: 'body' }, 400);
-              await releaseLeases(sourceTab, target === 'tab' ? state.tabs.find(tab => tab.key === body.tab)?.id : undefined);
+              await releaseLeases(sourceTab, (t => t?.muxKey === sourceMux ? t?.id : undefined)(target === 'tab' ? state.tabs.find(tab => tab.key === body.tab) : undefined));
               return json(await hub.movePane(key, body as unknown as MoveBody), 201);
             }
             if (body.direction !== 'left' && body.direction !== 'right' && body.direction !== 'up' && body.direction !== 'down'
