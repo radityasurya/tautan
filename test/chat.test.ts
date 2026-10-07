@@ -95,7 +95,7 @@ describe('parseTranscript', () => {
     expect(parseTranscript(jsonl)[0]!.tools.map(t => t.image)).toEqual(['https://x.test/a.png?sig=1', '/repo/shots/home.PNG', undefined, undefined]);
   });
 
-  test('pasted images become data URLs within the caps; the rest become placeholders', () => {
+  test('pasted images number out of band in file order; the rest become placeholders', () => {
     const image = (data: string, media_type = 'image/png') => ({ type: 'image', source: { type: 'base64', media_type, data } });
     const jsonl = [
       { type: 'user', message: { content: [
@@ -103,30 +103,37 @@ describe('parseTranscript', () => {
         image('iVBORw0KGgo='),
         image('PHN2Zz4=', 'image/svg+xml'),
         image('not base64!'),
-        image('A'.repeat(1_400_001)),
-        image('AAAA'), image('AAAA'), image('AAAA'), image('AAAA'),
+        image('A'.repeat(8_000_001)),
+        image('AAAA'),
       ] } },
     ].map(entry => JSON.stringify(entry)).join('\n');
-    const [turn] = parseTranscript(jsonl);
+    const images: TranscriptImage[] = [];
+    const [turn] = parseTranscript(jsonl, { images });
     expect(turn!.text).toBe('Look [Image #1]');
-    expect(turn!.images!.map(i => i.src)).toEqual([
-      'data:image/png;base64,iVBORw0KGgo=', undefined, undefined, undefined,
-      'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA', undefined,
-    ]);
+    expect(turn!.images).toEqual([{ imageId: 0 }, {}, {}, {}, { imageId: 1 }]);
+    expect(images).toEqual([{ mediaType: 'image/png', data: 'iVBORw0KGgo=' }, { mediaType: 'image/png', data: 'AAAA' }]);
+    expect(JSON.stringify(turn)).not.toContain('data:image'); // no bytes ride in the turns
   });
 
-  test('pasted images over the transcript budget keep the newest', () => {
-    const big = 'A'.repeat(1_400_000);
-    const turn = { type: 'user', message: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: big } }] } };
-    const reply = { type: 'assistant', message: { content: 'ok' } };
-    const jsonl = [turn, reply, turn, reply, turn, reply, turn, reply, turn].map(entry => JSON.stringify(entry)).join('\n');
-    const kept = parseTranscript(jsonl).filter(t => t.role === 'user').map(t => Boolean(t.images![0]!.src));
-    expect(kept).toEqual([false, true, true, true, true]);
+  test('a pasted image and a tool-result image number together in file order', () => {
+    const image = (data: string) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } });
+    const jsonl = [
+      { type: 'user', message: { content: [image('AAAA')] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: '/tmp/a.png' } }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [image('BBBB')] }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const images: TranscriptImage[] = [];
+    const turns = parseTranscript(jsonl, { images });
+    expect(turns[0]!.images).toEqual([{ imageId: 0 }]);
+    expect(turns[1]!.tools[0]!.imageId).toBe(1);
+    expect(images.map(item => item.data)).toEqual(['AAAA', 'BBBB']);
   });
 
   test('an image-only user turn is kept', () => {
     const jsonl = JSON.stringify({ type: 'user', message: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/gif', data: 'R0lG' } }] } });
-    expect(parseTranscript(jsonl)).toEqual([{ role: 'user', text: '', tools: [], images: [{ src: 'data:image/gif;base64,R0lG' }] }]);
+    const images: TranscriptImage[] = [];
+    expect(parseTranscript(jsonl, { images })).toEqual([{ role: 'user', text: '', tools: [], images: [{ imageId: 0 }] }]);
+    expect(images).toEqual([{ mediaType: 'image/gif', data: 'R0lG' }]);
   });
 
   test('leaves a plain Output heading in the text', () => {
@@ -167,15 +174,19 @@ describe('parseTranscript', () => {
       expect(turn!.tools[0]!.result).toBe('✓ pass\n 100%\n\tdone');
     });
 
-    test('a long result keeps its tail, whole lines, after a … marker, with the full line count', () => {
+    test('a long result keeps its last 40 lines after a … marker, whole, with the full text out of band', () => {
       const lines = Array.from({ length: 1_240 }, (_, n) => `line ${n + 1}`);
-      const [turn] = parse({ type: 'assistant', message: { content: [use('t1', 'seq')] } }, result('t1', lines.join('\n')));
+      const jsonl = [
+        { type: 'assistant', message: { content: [use('t1', 'seq')] } },
+        result('t1', lines.join('\n')),
+      ].map(entry => JSON.stringify(entry)).join('\n');
+      const outputs = new Map<string, string>();
+      const [turn] = parseTranscript(jsonl, { outputs });
       const tool = turn!.tools[0]!;
       expect(tool.resultLines).toBe(1_240);
-      expect(tool.result!.length).toBeLessThanOrEqual(4_000);
-      expect(tool.result!.startsWith('…\nline ')).toBe(true);
-      expect(tool.result!.endsWith('line 1240')).toBe(true);
-      expect(tool.result!.split('\n')[1]).toMatch(/^line \d+$/); // no half line after the marker
+      expect(tool.resultTruncated).toBe(true);
+      expect(tool.result).toBe(`…\n${lines.slice(1_200).join('\n')}`); // no half line after the marker
+      expect(outputs).toEqual(new Map([['t1', lines.join('\n')]]));
     });
 
     test('a subagent transcript pairs its sidechain results too', () => {

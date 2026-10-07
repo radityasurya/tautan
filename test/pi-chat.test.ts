@@ -32,12 +32,12 @@ describe('parsePiTranscript', () => {
       entry('a2', 't1', { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'It passes now.' }] } }),
     ]);
     expect(parsePiTranscript(source)).toEqual([
-      { role: 'user', text: 'Check the failing test.', tools: [], at: Date.parse('2026-10-05T21:16:32.763Z') },
-      { role: 'assistant', text: 'I will inspect it.\n\nIt passes now.', at: Date.parse('2026-10-05T21:16:32.763Z'), tools: [
-        { name: 'bash', brief: 'bun test chat', detail: 'bun test chat', result: 'test output', resultLines: 1 },
-        { name: 'read', brief: 'shared/chat.ts', detail: 'shared/chat.ts' },
-        { name: 'edit', brief: 'server/chat.ts', detail: 'server/chat.ts\n\n- one\n- two\n+ three' },
-        { name: 'grep', brief: 'TODO', detail: 'TODO\nin web' },
+      { id: 'u1', role: 'user', text: 'Check the failing test.', tools: [], at: Date.parse('2026-10-05T21:16:32.763Z') },
+      { id: 'a1', role: 'assistant', text: 'I will inspect it.\n\nIt passes now.', at: Date.parse('2026-10-05T21:16:32.763Z'), tools: [
+        { id: 'call_1', name: 'bash', brief: 'bun test chat', detail: 'bun test chat', result: 'test output', resultLines: 1 },
+        { id: 'call_2', name: 'read', brief: 'shared/chat.ts', detail: 'shared/chat.ts' },
+        { id: 'call_3', name: 'edit', brief: 'server/chat.ts', detail: 'server/chat.ts\n\n- one\n- two\n+ three' },
+        { id: 'call_4', name: 'grep', brief: 'TODO', detail: 'TODO\nin web' },
       ] },
     ]);
   });
@@ -95,7 +95,7 @@ describe('parsePiTranscript', () => {
       entry('a2', 'a1', { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'b'.repeat(3_000) }] } }),
     ]);
     const turns = parsePiTranscript(source);
-    expect(turns[0]).toEqual({ role: 'user', text: 'plain string prompt', tools: [], at: Date.parse('2026-10-05T21:16:32.763Z') });
+    expect(turns[0]).toEqual({ id: 'u1', role: 'user', text: 'plain string prompt', tools: [], at: Date.parse('2026-10-05T21:16:32.763Z') });
     expect(turns[1]!.text).toHaveLength(4_000);
     expect(turns[1]!.text.endsWith('…')).toBe(true);
   });
@@ -167,5 +167,34 @@ describe('ChatLens (pi)', () => {
     expect(await lens.image(paneKey, 0)).toBeUndefined();
     lens.close();
     expect(reads()).toBe(0);
+  });
+
+  test('a branch switch answers a reset, a new leaf answers its diff', async () => {
+    let text = jsonl([
+      entry('u1', null, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'First attempt.' }] } }),
+      entry('a1', 'u1', { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'old answer' }] } }),
+    ]);
+    const io: TranscriptIo = {
+      stat: async () => ({ inode: '1', size: text.length, mtime: Bun.hash(text).toString(36) }),
+      read: async () => text,
+    };
+    const lens = new ChatLens(hub(piPath), io, '/home/tama');
+    const first = await lens.delta(paneKey, 'unknown');
+    expect(first?.reset).toBe(true);
+    expect(first?.upserts.map(turn => [turn.id, turn.text])).toEqual([['u1', 'First attempt.'], ['a1', 'old answer']]);
+
+    text += '\n' + jsonl([ // pi appends a fork's new leaf after the branch it replaces
+      entry('u2', 'u1', { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Second attempt.' }] } }),
+      entry('a2', 'u2', { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'new answer' }] } }),
+    ]);
+    const switched = await lens.delta(paneKey, first!.cursor);
+    expect(switched?.reset).toBe(true); // a1 ceased to exist: the shrink rule
+    expect(switched?.upserts.map(turn => turn.text)).toEqual(['First attempt.', 'Second attempt.', 'new answer']);
+
+    text += '\n' + jsonl([entry('a3', 'a2', { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'more' }] } })]);
+    const grown = await lens.delta(paneKey, switched!.cursor);
+    expect(grown?.reset).toBe(false); // the active branch only grew
+    expect(grown?.upserts.map(turn => [turn.id, turn.text])).toEqual([['a2', 'new answer\n\nmore']]);
+    lens.close();
   });
 });

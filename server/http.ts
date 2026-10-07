@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
 import type { DiffResult, DiffScope, HostConfig, InputBody, MouseBody, MoveBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SplitBody, SuggestSettingBody } from '../shared/types.ts';
+import type { ChatEvent } from '../shared/chat.ts';
 import { parseUnifiedDiff } from '../shared/diff.ts';
 import { promptId } from '../shared/blocked.ts';
 import { HerdrMux } from './herdr.ts';
@@ -127,7 +128,10 @@ export function startHttp(hub: Hub, opts: {
   const root = resolve(opts.staticDir);
   const retries = new Set<string>(); let probes = 0;
   const leases = new LeaseHolder(hub);
+  // ADR 0007: a `chat` wake-up goes to every event stream that watches the moved Pane.
+  const chatWatchers = new Set<{ panes: Set<string>; send: (value: ChatEvent) => void }>();
   const chats = opts.chats ?? new ChatLens(hub);
+  chats.onChat = event => { for (const watch of chatWatchers) if (watch.panes.has(event.pane)) watch.send(event); };
   hub.onClose?.(() => { void leases.releaseAll(); chats.close(); });
   return Bun.serve({
     port: opts.port, hostname: opts.hostname,
@@ -334,8 +338,11 @@ export function startHttp(hub: Hub, opts: {
               send('hello', { stream: streamId });
               send('state', await hub.state());
               const unsubscribe = hub.subscribe({ paneKeys: paneKeys.length ? paneKeys : undefined, mode, stream: streamId, onState: state => send('state', state), onScreen: screen => send('screen', screen) });
+              // ADR 0007: chat wake-ups ride only the streams that watch the Pane that moved.
+              const chatWatch = paneKeys.length ? { panes: new Set(paneKeys), send: (value: ChatEvent) => send('chat', value) } : undefined;
+              if (chatWatch) chatWatchers.add(chatWatch);
               const ping = setInterval(() => { if (!closed) { try { controller.enqueue(encoder.encode(': ping\n\n')); } catch { cleanup(); } }  }, 25_000);
-              cleanup = () => { if (closed) return; closed = true; unsubscribe(); clearInterval(ping); try { controller.close(); } catch {} };
+              cleanup = () => { if (closed) return; closed = true; unsubscribe(); if (chatWatch) chatWatchers.delete(chatWatch); clearInterval(ping); try { controller.close(); } catch {} };
             },
             cancel() { cleanup(); },
           });
@@ -352,6 +359,14 @@ export function startHttp(hub: Hub, opts: {
           if (agent !== undefined) {
             const list = await chats.subagentList(key);
             if (list && !list.some(item => item.id === agent)) return json({ error: 'no-agent' }, 404);
+          }
+          const since = url.searchParams.get('since');
+          if (since !== null) {
+            // ADR 0007: a `?since=` GET always answers 200, If-None-Match ignored; nothing
+            // changed is {cursor, reset: false, upserts: []}.
+            const found = await chats.delta(key, since, agent);
+            if (!found) return json({ error: 'no-session' }, 404);
+            return Response.json(found, { headers: { 'cache-control': 'no-cache' } });
           }
           const found = await chats.tagged(key, agent);
           if (!found) return json({ error: 'no-session' }, 404);
@@ -372,6 +387,20 @@ export function startHttp(hub: Hub, opts: {
           if (!found) return json({ error: 'no-session' }, 404);
           if (!found.image) return json({ error: 'no-image' }, 404);
           return new Response(found.image.bytes, { headers: { 'content-type': found.image.mediaType, 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
+        }
+        const chatOutputMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat\/output\/([^/]+)$/);
+        if (req.method === 'GET' && chatOutputMatch) {
+          let key: string;
+          try { key = decodeURIComponent(chatOutputMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          // ADR 0007: the tool's native id, validated like an agent id; it never names a path.
+          if (!agentId.test(chatOutputMatch[2]!)) return json({ error: 'id' }, 400);
+          if (!await hub.hasPane(key)) return json({ error: 'no-session' }, 404);
+          const agent = url.searchParams.get('agent') ?? undefined;
+          if (agent !== undefined && (!agentId.test(agent) || !(await chats.subagentList(key))?.some(item => item.id === agent))) return json({ error: 'no-agent' }, 404);
+          const found = await chats.output(key, chatOutputMatch[2]!, agent);
+          if (!found) return json({ error: 'no-session' }, 404);
+          if (found.text === undefined) return json({ error: 'no-output' }, 404);
+          return new Response(found.text, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
         }
         const chatPreviewMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/chat\/preview\/([^/]+)$/);
         if (req.method === 'GET' && chatPreviewMatch) {

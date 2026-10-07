@@ -1,4 +1,8 @@
 export interface Tool {
+  /** The row's native id (Claude's tool_use `toolu_…`, pi's `toolCallId`): when
+   *  `resultTruncated` is set, the whole text serves from
+   *  `GET /api/panes/:key/chat/output/<id>`. Absent on z.ai rows, which have no native id. */
+  id?: string;
   name: string;
   brief: string;
   detail: string;
@@ -26,7 +30,10 @@ export interface Tool {
    *  text, ANSI and control characters stripped, newlines kept. Over RESULT_CHARS it keeps the
    *  tail, whole lines, after a leading `…` line. Absent when the tool returned no text. */
   result?: string;
-  /** Lines in the whole result before the cap, so a capped one can say "last 80 of 1 240". */
+  /** The inline `result` keeps only the last 40 lines; the whole text serves from
+   *  `GET /api/panes/:key/chat/output/<id>`. */
+  resultTruncated?: boolean;
+  /** Lines in the whole result, so a sliced one can say "last 40 of 1 240". */
   resultLines?: number;
   /** The tool reported a failure (Claude's `is_error`, pi's `isError`). */
   isError?: boolean;
@@ -59,10 +66,39 @@ export interface ChatResponse {
   agent?: string;
 }
 
-/** An image pasted into a user turn, as a data URL; no `src` when it is over the cap. */
-export interface Pasted { src?: string }
+/** `GET /api/panes/:key/chat?since=<cursor>[&agent=<id>]` (ADR 0007): only what changed
+ *  since the cursor. Merge `upserts` by `Turn.id`; on `reset` replace the whole list. */
+export interface ChatDelta {
+  sessionId: string;      // as today
+  cursor: string;         // names this parse; send it back as ?since next time
+  reset: boolean;         // true: upserts is the whole conversation, replace the list
+  upserts: Turn[];        // transcript order; merge by id
+  subagents?: Subagent[]; // the whole tree, when it changed, and always on a reset
+  /** Set when the response is a subagent's own conversation, as today. */
+  agent?: string;
+}
+
+/** The `chat` event on `/api/events`: a watched Pane's conversation moved to a new
+ *  generation. A wake-up, not the data — the client then makes the same idempotent
+ *  `?since=` GET, and a missed event only delays it. */
+export interface ChatEvent {
+  pane: string;
+  cursor: string;
+  /** Set when the generation is a `?agent=` view's own conversation. */
+  agent?: string;
+}
+
+/** An image pasted into a user turn: served by `GET /api/panes/:key/chat/image/:imageId`,
+ *  numbered in file order with tool-result images, never inlined. `imageId` is absent when
+ *  the image was over the per-image memory bound. `src` (a data URL) is the pre-11.2 shape;
+ *  this Hub never sets it. */
+export interface Pasted { imageId?: number; src?: string }
 
 export interface Turn {
+  /** The native id of the run's first contributing entry — Claude's entry `uuid`, pi's
+   *  entry `id` (ADR 0007). Stable across re-parses; absent when the transcript carries no
+   *  native ids, which makes every `?since=` answer a reset. */
+  id?: string;
   role: 'user' | 'assistant';
   text: string;
   tools: Tool[];
@@ -236,42 +272,42 @@ const resultText = (content: unknown): string =>
     : '';
 const PASTED_TYPE = /^image\/(?:png|jpeg|gif|webp)$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
-// ponytail: pasted images ride inside the chat JSON, which is refetched on every revision. Caps:
-// about 1 MB each, 4 per turn, 4 MB per transcript (newest kept). Serve them from a route if that bites.
-const PASTED_MAX = 1_400_000; // base64 characters, about 1 MB decoded
-const PASTED_PER_TURN = 4;
-const PASTED_TOTAL = 5_700_000; // four full-size images and their data: prefixes
 
 /** An image a tool returned, handed back out of band so no base64 rides inside the turns. */
 export interface TranscriptImage { mediaType: string; data: string }
 
 export interface ParseOpts {
+  /** Tool-result images and pasted images, numbered in file order as their `imageId`s. */
   images?: TranscriptImage[];
   /** HTML sources the Agent wrote, numbered as their `previewId`s. */
   previews?: string[];
+  /** tool id → the tool's whole result text, kept only for results past the inline slice. */
+  outputs?: Map<string, string>;
   /** tool_use id → subagent id: a Task/Agent call whose id is in it gets `subagentId`. */
   subagentIds?: Map<string, string>;
   /** Keep isSidechain entries; every entry of a subagent's own file carries the flag. */
   sidechain?: boolean;
 }
-// ponytail: every result rides in the chat JSON, refetched on each revision; 4 000 characters
-// each is the ceiling. Serve full output from a per-tool route if transcripts outgrow it.
-const RESULT_CHARS = 4_000;
+// ADR 0007: a result past this many lines keeps only its tail inline; the whole text moves
+// out of band to /chat/output/:id, so no large result rides in the turns.
+const RESULT_LINES = 40;
 const ESCAPES = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
 const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f]/g;
 
 /** Pin a tool's result text and its failure flag on the row. A carriage return keeps only what
- *  followed it on its line, as a terminal would show a progress bar. */
-function attachResult(tool: Tool | undefined, content: unknown, isError: unknown) {
+ *  followed it on its line, as a terminal would show a progress bar. Over RESULT_LINES lines
+ *  only the tail rides inline (`resultTruncated`); the whole text lands in `outputs`. */
+function attachResult(tool: Tool | undefined, content: unknown, isError: unknown, outputs?: Map<string, string>) {
   if (!tool) return;
   if (isError === true) tool.isError = true;
   const text = resultText(content).replace(ESCAPES, '').replace(/\r\n/g, '\n').replace(/[^\n]*\r/g, '').replace(CONTROLS, '').replace(/\s+$/, '');
   if (!text.trim()) return;
-  tool.resultLines = text.split('\n').length;
-  if (text.length <= RESULT_CHARS) { tool.result = text; return; }
-  const tail = text.slice(-(RESULT_CHARS - 2));
-  const cut = tail.indexOf('\n');
-  tool.result = `…\n${cut >= 0 && cut < tail.length - 1 ? tail.slice(cut + 1) : tail}`;
+  const lines = text.split('\n');
+  tool.resultLines = lines.length;
+  if (lines.length <= RESULT_LINES) { tool.result = text; return; }
+  tool.result = `…\n${lines.slice(-RESULT_LINES).join('\n')}`;
+  tool.resultTruncated = true;
+  if (tool.id !== undefined) outputs?.set(tool.id, text);
 }
 
 // ponytail: a tool_result image over this is skipped whole (no id consumed); serve oversized reads from a file route if they appear.
@@ -283,11 +319,13 @@ function readImage(input: unknown): string | undefined {
   return path && IMAGE_FILE.test(path) ? path : undefined;
 }
 
-function pasted(source: unknown): Pasted {
+/** An image source valid for out-of-band serving: over RESULT_MAX it is skipped whole, so no
+ *  id is consumed (ADR 0007 keeps RESULT_MAX as the Hub's per-image memory bound). */
+function imageSource(source: unknown): { mediaType: string; data: string } | undefined {
   const { type, media_type: media, data } = source && typeof source === 'object' ? source as Record<string, unknown> : {};
-  return type === 'base64' && typeof media === 'string' && PASTED_TYPE.test(media) && typeof data === 'string' && data.length <= PASTED_MAX && BASE64.test(data)
-    ? { src: `data:${media};base64,${data}` }
-    : {};
+  return type === 'base64' && typeof media === 'string' && PASTED_TYPE.test(media) && typeof data === 'string' && data.length <= RESULT_MAX && BASE64.test(data)
+    ? { mediaType: media, data }
+    : undefined;
 }
 
 /** Parse Claude Code's JSONL into display-safe turns; raw transcript lines never leave this module.
@@ -297,7 +335,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   const turns: Turn[] = [];
   const pending: Tool[] = [];
   const toolUses = new Map<string, Tool>();
-  let resultImages = 0;
+  let imageSeq = 0; // result and pasted images number together, in file order
   let previewCount = 0;
   const written = new Map<string, { previewId: number; html: string }>(); // file_path → its preview slot
   const artifactHtml = new Map<string, string>(); // Artifact tool_use id → the source its file_path matched
@@ -328,7 +366,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       }
       if (block.type === 'tool_use' && typeof block.name === 'string') {
         const image = block.name === 'Read' ? readImage(block.input) : undefined;
-        const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(image ? { image } : {}) };
+        const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
         const input = block.input && typeof block.input === 'object' && !Array.isArray(block.input) ? block.input as Record<string, unknown> : {};
         if (block.name === 'Write') {
           const filePath = str(input.file_path);
@@ -359,7 +397,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       }
       if (block.type === 'tool_result') {
         const tool = typeof block.tool_use_id === 'string' ? toolUses.get(block.tool_use_id) : undefined;
-        attachResult(tool, block.content, block.is_error);
+        attachResult(tool, block.content, block.is_error, opts?.outputs);
         if (tool?.name === 'Artifact' && tool.link === undefined) {
           const url = resultText(block.content).match(ARTIFACT_URL)?.[0];
           if (url) {
@@ -369,34 +407,29 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         }
         if (Array.isArray(block.content)) for (const item of block.content) {
           if (!item || typeof item !== 'object' || Array.isArray(item) || (item as Block).type !== 'image') continue;
-          const source = (item as Block).source;
-          const { type, media_type: media, data } = source && typeof source === 'object' ? source as Record<string, unknown> : {};
-          if (type !== 'base64' || typeof media !== 'string' || !PASTED_TYPE.test(media) || typeof data !== 'string' || data.length > RESULT_MAX || !BASE64.test(data)) continue;
-          const imageId = resultImages++;
-          opts?.images?.push({ mediaType: media, data });
+          const found = imageSource((item as Block).source);
+          if (!found) continue;
+          const imageId = imageSeq++;
+          opts?.images?.push(found);
           if (tool && tool.imageId === undefined) tool.imageId = imageId; // the first image only when a result carries several
         }
       }
       if (block.type === 'image' && role === 'user') {
-        images.push(pasted(block.source));
+        const found = imageSource(block.source);
+        if (found) { opts?.images?.push(found); images.push({ imageId: imageSeq++ }); }
+        else images.push({}); // malformed or over the memory bound: a placeholder, no id consumed
       }
     }
     if (role === 'user' && wrapper(text)) continue;
     if (!text && !tools.length && !images.length) continue;
     const at = time(entry.timestamp);
+    const uuid = typeof entry.uuid === 'string' ? entry.uuid : undefined;
     const previous = turns.at(-1);
     if (previous?.role === role) {
       previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
       previous.tools.push(...tools);
       if (images.length) previous.images = [...previous.images ?? [], ...images];
-    } else turns.push({ role, text: cap(text), tools, ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
-  }
-  let budget = PASTED_TOTAL;
-  for (const turn of [...turns].reverse()) {
-    let kept = 0;
-    for (const image of turn.images ?? []) {
-      if (image.src && (++kept > PASTED_PER_TURN || (budget -= image.src.length) < 0)) delete image.src;
-    }
+    } else turns.push({ role, text: cap(text), tools, ...(uuid ? { id: uuid } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
   }
   return turns;
 }
@@ -425,7 +458,7 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   }
   const turns: Turn[] = [];
   const toolUses = new Map<string, Tool>();
-  let resultImages = 0;
+  let imageSeq = 0;
   let forked = false; // a message from another branch sat between two active ones: no merging across it
   for (const [index, entry] of entries.entries()) {
     if (entry.type !== 'message') continue;
@@ -436,12 +469,12 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     const role = record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : undefined;
     if (!role) {
       if (record.role !== 'toolResult' || !Array.isArray(record.content)) continue;
-      attachResult(typeof record.toolCallId === 'string' ? toolUses.get(record.toolCallId) : undefined, record.content, record.isError);
+      attachResult(typeof record.toolCallId === 'string' ? toolUses.get(record.toolCallId) : undefined, record.content, record.isError, opts?.outputs);
       for (const item of record.content) {
         if (!item || typeof item !== 'object' || Array.isArray(item) || (item as Block).type !== 'image') continue;
         const block = item as Block;
         if (typeof block.mimeType !== 'string' || !PASTED_TYPE.test(block.mimeType) || typeof block.data !== 'string' || block.data.length > RESULT_MAX || !BASE64.test(block.data)) continue;
-        const imageId = resultImages++;
+        const imageId = imageSeq++;
         opts?.images?.push({ mediaType: block.mimeType, data: block.data });
         const tool = typeof record.toolCallId === 'string' ? toolUses.get(record.toolCallId) : undefined;
         if (tool && tool.imageId === undefined) tool.imageId = imageId; // the first image only when a result carries several
@@ -457,7 +490,7 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       if (block.type === 'text' && typeof block.text === 'string') text += block.text;
       if (block.type === 'toolCall' && typeof block.name === 'string') {
         const image = block.name === 'read' ? readImage(block.arguments) : undefined;
-        const tool: Tool = { name: block.name, brief: brief(block.arguments), detail: detail(block.name, block.arguments), ...(image ? { image } : {}) };
+        const tool: Tool = { name: block.name, brief: brief(block.arguments), detail: detail(block.name, block.arguments), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
         if (typeof block.id === 'string') toolUses.set(block.id, tool);
         tools.push(tool);
       }
@@ -469,7 +502,7 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     if (previous?.role === role) {
       previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
       previous.tools.push(...tools);
-    } else turns.push({ role, text: cap(text), tools, ...(at !== undefined ? { at } : {}) });
+    } else turns.push({ role, text: cap(text), tools, ...(typeof entry.id === 'string' ? { id: entry.id } : {}), ...(at !== undefined ? { at } : {}) });
   }
   return turns;
 }

@@ -1,7 +1,7 @@
 import { open, readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { parsePiTranscript, parseTranscript, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { parsePiTranscript, parseTranscript, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
 import type { State, StateHost } from '../shared/types.ts';
 
 export interface TranscriptSignature { inode: string; size: number; mtime: string }
@@ -261,7 +261,24 @@ export async function resolveSession(hub: SessionHub, paneKey: string): Promise<
   }
 }
 
-type Cached = { sessionId: string; signature: TranscriptSignature; turns: Turn[]; images: TranscriptImage[]; previews: string[]; subagents: Subagent[]; at: number };
+type Cached = { sessionId: string; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; outputs: Map<string, string>; subagents: Subagent[]; at: number };
+/** One remembered generation (ADR 0007): the cursor that names it, every Turn's fingerprint,
+ *  and the subagents digest at parse time. The lens keeps the newest eight per conversation. */
+type Generation = { cursor: string; prints: Map<string, string>; subs: string };
+/** ADR 0007: how many generations back a `?since=` cursor can name. */
+const GENERATIONS = 8;
+
+/** ADR 0007's cursor: the strong ETag's ingredients minus its volatile parts (`at`, the
+ *  subagents digest), so it names exactly the parse its Turns came from. Never decoded. */
+const cursorOf = (sessionId: string, agent: string | undefined, signature: TranscriptSignature) =>
+  Bun.hash([sessionId, agent ?? '', signature.inode, signature.size, signature.mtime].join('\u0000')).toString(36);
+
+/** A Turn's fingerprint (ADR 0007): a short hash of its whole content. */
+const print = (turn: Turn) => Bun.hash(JSON.stringify(turn)).toString(36);
+
+/** The subagents' states and mtimes, which ride the ETag: they move while the transcript
+ *  stands still. */
+const subagentsDigest = (list: Subagent[]) => list.map((item) => `${item.id}\u0001${item.state ?? ''}\u0001${item.updatedAt ?? ''}`).join('\u0002');
 /** A Pane's subagent tree, re-listed only when the `subagents` directory's mtime moves. */
 type Subagents = { sessionId: string; signature: string; list: Subagent[] };
 
@@ -367,7 +384,11 @@ const STALE_MS = 90_000;
 const TAIL_BYTES = 16_384;
 
 export class ChatLens {
+  /** ADR 0007: called once per new generation of any conversation (its cursor moved) —
+   *  the `chat` wake-up on the event stream. */
+  onChat?: (event: ChatEvent) => void;
   private cache = new Map<string, Cached>();
+  private generations = new Map<string, Generation[]>();
   private subagents = new Map<string, Subagents>();
   /** The main transcript's completion records per Pane, re-derived only on a fresh parse. */
   private parents = new Map<string, { sessionId: string; parent: ParentDone }>();
@@ -387,12 +408,30 @@ export class ChatLens {
   async tagged(paneKey: string, agent?: string): Promise<{ chat: ChatResponse; etag: string } | undefined> {
     const value = await this.value(paneKey, agent);
     if (!value) return undefined;
-    const { inode, size, mtime } = value.signature;
-    // The subagents' states and mtimes ride the tag: they move while the transcript stands still.
-    const digest = value.subagents.map((item) => `${item.id}\u0001${item.state ?? ''}\u0001${item.updatedAt ?? ''}`).join('\u0002');
     return {
       chat: { sessionId: value.sessionId, turns: value.turns, at: value.at, subagents: value.subagents, ...(agent ? { agent } : {}) },
-      etag: `"${Bun.hash([value.sessionId, agent ?? '', inode, size, mtime, value.at, digest].join('\u0000')).toString(36)}"`,
+      etag: `"${Bun.hash([value.sessionId, agent ?? '', value.signature.inode, value.signature.size, value.signature.mtime, value.at, subagentsDigest(value.subagents)].join('\u0000')).toString(36)}"`,
+    };
+  }
+
+  /** ADR 0007: the conversation's change since a cursor it handed out. A `since` naming a
+   *  remembered generation answers its diff; anything else — unknown, older than eight
+   *  generations, from before a restart, or another transcript — answers a full `reset`. */
+  async delta(paneKey: string, since: string, agent?: string): Promise<ChatDelta | undefined> {
+    const value = await this.value(paneKey, agent);
+    if (!value) return undefined;
+    const gen = this.generations.get(agent ? `${paneKey}\u0000${agent}` : paneKey)?.find(item => item.cursor === since);
+    const ids = new Set(value.turns.map(turn => turn.id));
+    // One uniform shrink rule: a remembered id that ceased to exist (a pi branch switch, a
+    // truncation) cannot be expressed as upserts. So can a Turn without a native id.
+    const reset = !gen || ids.has(undefined) || [...gen.prints.keys()].some(id => !ids.has(id));
+    return {
+      sessionId: value.sessionId,
+      cursor: value.cursor,
+      reset,
+      upserts: !gen || reset ? value.turns : value.turns.filter(turn => gen.prints.get(turn.id!) !== print(turn)),
+      ...(!gen || reset || gen.subs !== subagentsDigest(value.subagents) ? { subagents: value.subagents } : {}),
+      ...(agent ? { agent } : {}),
     };
   }
 
@@ -424,6 +463,13 @@ export class ChatLens {
     return value ? { html: value.previews[id] } : undefined;
   }
 
+  /** A tool's whole result text (ADR 0007: kept only past the inline slice) from the cached
+   *  parse, under the same contract as `image`. */
+  async output(paneKey: string, toolId: string, agent?: string): Promise<{ text?: string } | undefined> {
+    const value = await this.value(paneKey, agent);
+    return value ? { text: value.outputs.get(toolId) } : undefined;
+  }
+
   private async value(paneKey: string, agent?: string): Promise<Cached | undefined> {
     const cacheKey = agent ? `${paneKey}\u0000${agent}` : paneKey;
     let request = this.reads.get(cacheKey);
@@ -442,7 +488,7 @@ export class ChatLens {
   private async refresh(paneKey: string, agent?: string): Promise<Cached | undefined> {
     const cacheKey = agent ? `${paneKey}\u0000${agent}` : paneKey;
     const resolved = await resolveSession(this.hub, paneKey);
-    if (!resolved) { this.cache.delete(cacheKey); return; }
+    if (!resolved) { this.cache.delete(cacheKey); this.generations.delete(cacheKey); return; }
     const target = this.hub.host(await this.hub.paneHost(paneKey))?.target;
     const session = resolved.agent === 'pi' ? piSessionId(resolved.path) : resolved.sessionId;
     let path: string | undefined;
@@ -458,7 +504,7 @@ export class ChatLens {
       path = agent ? join(dir, 'subagents', `agent-${agent}.jsonl`) : transcriptPath(cwd, resolved.sessionId, home);
     }
     const signature = await this.io.stat(path, target);
-    if (!signature) { this.cache.delete(cacheKey); return; }
+    if (!signature) { this.cache.delete(cacheKey); this.generations.delete(cacheKey); return; }
     const cached = this.cache.get(cacheKey);
     if (cached?.sessionId === session && sameSignature(cached.signature, signature)) {
       // The transcript stands still while a subagent runs; its own file keeps moving.
@@ -480,13 +526,30 @@ export class ChatLens {
     if (subagentDir && !agent) this.parents.set(paneKey, { sessionId: session, parent: parentFinished(jsonl) });
     const images: TranscriptImage[] = [];
     const previews: string[] = [];
+    const outputs = new Map<string, string>();
     const subagentIds = new Map<string, string>();
     for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
-    const opts: ParseOpts = { images, previews, subagentIds, ...(agent ? { sidechain: true } : {}) };
+    const opts: ParseOpts = { images, previews, outputs, subagentIds, ...(agent ? { sidechain: true } : {}) };
     if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
-    const value: Cached = { sessionId: session, signature, turns: (resolved.agent === 'pi' ? parsePiTranscript : parseTranscript)(jsonl, opts), images, previews, subagents: list, at: Date.now() };
+    const value: Cached = { sessionId: session, signature, cursor: cursorOf(session, agent, signature), turns: (resolved.agent === 'pi' ? parsePiTranscript : parseTranscript)(jsonl, opts), images, previews, outputs, subagents: list, at: Date.now() };
     this.cache.set(cacheKey, value);
+    this.remember(paneKey, agent, cacheKey, value);
     return value;
+  }
+
+  /** Keep the newest eight generations of a conversation (ADR 0007). One without native Turn
+   *  ids keeps none, so every `?since=` against it resets — today's behaviour, still correct. */
+  private remember(paneKey: string, agent: string | undefined, cacheKey: string, value: Cached): void {
+    if (!value.turns.every(turn => turn.id !== undefined)) return;
+    const list = this.generations.get(cacheKey) ?? [];
+    const fresh: Generation = { cursor: value.cursor, prints: new Map(value.turns.map(turn => [turn.id!, print(turn)])), subs: subagentsDigest(value.subagents) };
+    if (list[0]?.cursor === value.cursor) list[0] = fresh; // a re-parse of the same bytes (an eviction) is no new generation
+    else {
+      list.unshift(fresh);
+      this.onChat?.({ pane: paneKey, cursor: value.cursor, ...(agent ? { agent } : {}) });
+    }
+    list.length = Math.min(list.length, GENERATIONS);
+    this.generations.set(cacheKey, list);
   }
 
   /** The `subagents` directory listing, cached on the directory's mtime so polling stays a stat. */
