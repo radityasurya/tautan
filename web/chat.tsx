@@ -5,7 +5,7 @@ import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown } from './markdown.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
-import { CHAT_PAGE_TURNS, pendingTool, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
 import { CHAT_EVENT, mergeTurns } from '../shared/chat-merge.ts';
 import { toolLabel, type AgentKind } from '../shared/tool-label.ts';
 import type { Span, Status } from '../shared/types.ts';
@@ -350,8 +350,10 @@ const SENT_MS = 10_000;
  * The approval as a transcript item: the tool row it asks about (warn-tinted, its input open)
  * with the choices under it, or the full blocked card when no tool row matches (a question).
  * After an answer it says so until the Status moves on and the row turns back into a tool row.
+ * A `queued` row is one of several pending tools: same warn and whole input, but the choices
+ * sit on the first one only, because the on-screen prompt answers one tool at a time.
  */
-function ApprovalItem({ approval, agent, tool, at, kind }: { approval: Approval; agent: string; tool?: Tool; at?: number; kind?: AgentKind }) {
+function ApprovalItem({ approval, agent, tool, at, kind, queued }: { approval: Approval; agent: string; tool?: Tool; at?: number; kind?: AgentKind; queued?: boolean }) {
   const { explain, stale, desktop, onAnswer, onReread, ref } = approval;
   const promptId = explain.promptId ?? '';
   const [sent, setSent] = useState<string | null>(null);
@@ -395,14 +397,14 @@ function ApprovalItem({ approval, agent, tool, at, kind }: { approval: Approval;
   }
   const input = tool.detail || tool.brief;
   return (
-    <li ref={ref} data-approval aria-label={`${toolLabel(tool.name, kind)} needs your approval`} className="min-w-0 scroll-my-4 rounded-chip border border-warn/40 bg-warn/8">
+    <li ref={queued ? undefined : ref} data-approval aria-label={`${toolLabel(tool.name, kind)} ${queued ? 'also needs your approval' : 'needs your approval'}`} className="min-w-0 scroll-my-4 rounded-chip border border-warn/40 bg-warn/8">
       <div className="flex min-h-11 items-center gap-2 px-2 py-1 lg:min-h-8">
         <span className="max-w-32 shrink-0 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] leading-none text-fg">
           {toolLabel(tool.name, kind)}
         </span>
         <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold text-warn">
           <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-warn" />
-          <span className="truncate">Needs your approval</span>
+          <span className="truncate">{queued ? 'Also needs your approval' : 'Needs your approval'}</span>
         </span>
         <Stamp at={at} />
       </div>
@@ -411,7 +413,14 @@ function ApprovalItem({ approval, agent, tool, at, kind }: { approval: Approval;
           {input}
         </pre>
       )}
-      <div className="p-2">{card(true)}</div>
+      {queued ? (
+        <p className="flex min-h-9 items-center gap-2 px-2 pb-1 text-caption text-muted">
+          <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-warn" />
+          Waiting · {capital(agent)} asks about one tool at a time
+        </p>
+      ) : (
+        <div className="p-2">{card(true)}</div>
+      )}
     </li>
   );
 }
@@ -956,7 +965,9 @@ export function Chat({
   const running = useCallback((item: Subagent) => subagentRunning(item, subagents, finished, live), [subagents, finished, live]);
   const openRunning = open ? running(open) : false;
   const pendingShown = selected ? [] : waiting;
-  const target = approval && view ? pendingTool(view.turns) : null;
+  /** Every pending tool of the final turn, oldest first: the first is the one the on-screen
+   *  prompt asks about, the rest queue behind it (18.4). */
+  const targets = approval && view ? pendingTools(view.turns) : [];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1039,16 +1050,19 @@ export function Chat({
                     )}
                     {tools.length > 0 && (
                       <ul className="mt-1.5 flex w-[min(92%,42rem)] flex-col gap-1">
-                        {tools.map((tool, toolIndex) => approval && target?.turn === turnIndex && target.tool === toolIndex ? (
-                          <ApprovalItem
-                            key={tool.id ?? `${tool.name}-${toolIndex}`}
-                            approval={approval}
-                            agent={agent}
-                            tool={tool}
-                            kind={view?.agentKind}
-                            at={toolIndex === tools.length - 1 ? turn.at : undefined}
-                          />
-                        ) : (
+                        {tools.map((tool, toolIndex) => {
+                          const pending = targets.find(item => item.turn === turnIndex && item.tool === toolIndex);
+                          return pending && approval ? (
+                            <ApprovalItem
+                              key={tool.id ?? `${tool.name}-${toolIndex}`}
+                              approval={approval}
+                              agent={agent}
+                              tool={tool}
+                              kind={view?.agentKind}
+                              at={toolIndex === tools.length - 1 ? turn.at : undefined}
+                              queued={pending !== targets[0]}
+                            />
+                          ) : (
                           <ToolRow
                             key={tool.id ?? `${tool.name}-${toolIndex}`}
                             paneKey={paneKey}
@@ -1059,7 +1073,8 @@ export function Chat({
                             subagent={tool.subagentId ? byId.get(tool.subagentId) : undefined}
                             onOpenSubagent={pick}
                           />
-                        ))}
+                          );
+                        })}
                       </ul>
                     )}
                     {tools.length === 0 && (
@@ -1071,7 +1086,7 @@ export function Chat({
                 );
               })}
               {pendingShown.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} />)}
-              {approval && !target && <ApprovalItem approval={approval} agent={agent} />}
+              {approval && !targets.length && <ApprovalItem approval={approval} agent={agent} />}
             </ol>
             </>
           )}

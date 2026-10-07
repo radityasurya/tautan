@@ -1,7 +1,7 @@
 import { open, readFile, readdir, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { CHAT_PAGE_TURNS, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTool, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
 import { codexHome, resolveCodexPath } from './codex-chat.ts';
 import type { State, StateHost } from '../shared/types.ts';
 
@@ -729,10 +729,9 @@ export class ChatLens {
       : (resolved.agent === 'pi' || resolved.agent === 'omp' ? parsePiTranscript : parseTranscript)(jsonl, opts);
     // A Codex parse without stable identity (Wave 12.1) is no Chat: the Pane keeps its Screen.
     if (!parsed) { this.cache.delete(cacheKey); return; }
-    // The amendment: the pending tool's whole detail rides inline, so the approval row shows
+    // The amendment: every pending tool's whole detail rides inline, so each approval row shows
     // the whole command or diff with no fetch — the lens restores what the parser cut.
-    const pending = pendingTool(parsed);
-    if (pending) {
+    for (const pending of pendingTools(parsed)) {
       const tool = parsed[pending.turn]!.tools[pending.tool]!;
       const whole = tool.id !== undefined ? details.get(tool.id) : undefined;
       if (whole !== undefined) {

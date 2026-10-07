@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatLens, type ChatHub, type TranscriptIo } from '../server/chat.ts';
-import { pendingTool, type ChatEvent } from '../shared/chat.ts';
+import { pendingTools, type ChatEvent } from '../shared/chat.ts';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
 import type { Explain, Mux, Pane, Screen, ScreenMode, State, Tree, Workspace } from '../shared/types.ts';
@@ -149,15 +149,21 @@ describe('ChatLens deltas (ADR 0007)', () => {
     lens.close();
   });
 
-  test('the pending tool keeps its whole detail inline for the approval row', async () => {
+  test('every pending tool keeps its whole detail inline for its approval row', async () => {
     const command = Array.from({ length: 20 }, (_, n) => `echo step ${n + 1} ${'y'.repeat(30)}`).join('\n');
-    const { lens } = fixture(line({ uuid: 'run1', type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_p1', name: 'Bash', input: { command } }] } }));
+    const edit = 'w'.repeat(320); // one span past DETAIL_CHARS, under detail()'s 600-char preview cap
+    const { lens } = fixture(line({ uuid: 'run1', type: 'assistant', message: { content: [
+      { type: 'tool_use', id: 'toolu_p1', name: 'Bash', input: { command } },
+      { type: 'tool_use', id: 'toolu_p2', name: 'Edit', input: { file_path: '/repo/a.ts', old_string: 'x', new_string: edit } },
+    ] } }));
     const chat = await lens.query(paneKey);
-    const tool = chat!.turns[0]!.tools[0]!;
-    expect(pendingTool(chat!.turns)).toEqual({ turn: 0, tool: 0 });
-    expect(tool.detail).toBe(command); // whole: the approval row shows it with no fetch
-    expect(tool.detailTruncated).toBeUndefined();
-    expect(tool.detailLines).toBeUndefined();
+    expect(pendingTools(chat!.turns)).toEqual([{ turn: 0, tool: 0 }, { turn: 0, tool: 1 }]);
+    for (const tool of chat!.turns[0]!.tools) {
+      expect(tool.detailTruncated).toBeUndefined(); // whole: each approval row shows it with no fetch
+      expect(tool.detailLines).toBeUndefined();
+    }
+    expect(chat!.turns[0]!.tools[0]!.detail).toBe(command);
+    expect(chat!.turns[0]!.tools[1]!.detail.endsWith(edit)).toBe(true);
     lens.close();
   });
 

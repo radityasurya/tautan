@@ -7,8 +7,8 @@ export interface Tool {
   brief: string;
   /** The tool's whole input, or its head when it was cut: the first `DETAIL_LINES` lines
    *  within `DETAIL_CHARS` characters (ADR 0007's amendment), with `detailTruncated` set and
-   *  the whole text served from `GET /api/panes/:key/chat/output/<id>?part=detail`. A pending
-   *  tool keeps its whole detail inline, so the approval row needs no fetch. */
+   *  the whole text served from `GET /api/panes/:key/chat/output/<id>?part=detail`. Every
+   *  pending tool keeps its whole detail inline, so an approval row needs no fetch. */
   detail: string;
   /** The inline `detail` keeps only its head; the whole text serves by the row's id. */
   detailTruncated?: boolean;
@@ -122,21 +122,22 @@ export interface Turn {
 }
 
 /**
- * The tool row a blocked Agent is asking about: the last tool of the final turn, when that
- * turn is the assistant's and the tool has no result, output or error yet. Null otherwise,
- * so the caller shows the blocked card on its own (a question, not a tool).
+ * The tool rows a blocked Agent is asking about: every tool of the final turn, in call order,
+ * that has no result, output or error yet. The first is the one the on-screen prompt asks
+ * about, because the prompt answers one tool at a time; the rest queue behind it. Empty when
+ * the final turn is the user's or every tool finished, so the caller shows the blocked card on
+ * its own (a question, not a tool).
  */
-// ponytail: the last pending tool wins; parallel calls that each wait for approval would need
-// the prompt's own command matched against `detail`.
-export function pendingTool(turns: Turn[]): { turn: number; tool: number } | null {
+export function pendingTools(turns: Turn[]): { turn: number; tool: number }[] {
   const turn = turns.length - 1;
   const last = turns[turn];
-  if (last?.role !== 'assistant') return null;
-  for (let tool = last.tools.length - 1; tool >= 0; tool--) {
+  if (last?.role !== 'assistant') return [];
+  const out: { turn: number; tool: number }[] = [];
+  for (let tool = 0; tool < last.tools.length; tool++) {
     const t = last.tools[tool]!;
-    if (t.result === undefined && t.output === undefined && !t.isError) return { turn, tool };
+    if (t.result === undefined && t.output === undefined && !t.isError) out.push({ turn, tool });
   }
-  return null;
+  return out;
 }
 
 type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; image_url?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
