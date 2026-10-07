@@ -64,10 +64,12 @@ behind the two irreversible choices live in `docs/adr/`.
 - Chromium hands a horizontal touch drag to the nearest scroller and fires `pointercancel`,
   so `pointerup` never arrives. A swipe gesture must be built on `touchend`, not pointer
   events; the Tab strip swipe was mouse-only until this was found.
-- herdr's Workspace snapshot never carries `cwd` — only `workspace_id`, `number`, `label`,
-  `focused`, `pane_count`, `tab_count`, `active_tab_id`, `agent_status`. Only Panes carry
-  `cwd`, so `tree()` derives a Workspace's `cwd` from its first Pane, and `newWorkspace`
-  falls back to the root pane from the create result.
+- herdr's Workspace snapshot has no plain `cwd` field. Since 0.9.2 a Workspace that is a
+  linked git worktree reports `worktree.checkout_path`; others (and 0.9.0 and earlier) carry
+  only `workspace_id`, `number`, `label`, `focused`, `pane_count`, `tab_count`,
+  `active_tab_id`, `agent_status`. So `tree()` uses `worktree.checkout_path` when present and
+  otherwise the first Pane's `cwd`, and `newWorkspace` falls back to the root pane from the
+  create result.
 - `agent.start` requires `kind` (the agent id: `claude`, `pi`, `codex`) alongside `name`;
   `name` is only the display label, and omitting `kind` is a schema error. The adapter
   retries once after 1 s on `agent_not_ready`, then rethrows and leaves the new Tab in

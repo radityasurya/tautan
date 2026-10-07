@@ -2,8 +2,8 @@
 // output, so nothing here builds HTML from a string and raw HTML stays text.
 // ponytail: a line-based subset of CommonMark + GFM — ATX headings, paragraphs, lists nested
 // by indent, blockquotes, fences, rules, pipe tables, task lists; inline code, bold, italic,
-// strike, links (inline, bare URL, reference-style), images (https and data:image only, see
-// web/image.tsx). Reference definitions are message-global and the first one wins; an
+// strike, links (inline, bare URL, reference-style), images (https only; anything else stays
+// literal text, see web/image.tsx). Reference definitions are message-global and the first one wins; an
 // unresolved reference renders its span literally, markup inside included; a shortcut
 // reference only matches a label without emphasis characters. No setext headings, footnotes,
 // HTML, linked images, or image references. Add a real parser (micromark) when a transcript
