@@ -587,6 +587,10 @@ interface GridMeasure {
   effectiveWrap: boolean;
 }
 
+// ponytail: module-level, one entry per Pane key for the page's life (never pruned). Prune
+// on Pane close if the entry count ever matters. Survives the Chat lens unmounting the grid.
+const scrollMemo = new Map<string, { pinned: boolean; scrollTop: number }>();
+
 /**
  * One Pane's Screen grid (ADR 0003): the wrap/fit/mixed render, the scroller, the Affordance
  * overlay and mouse forwarding, measured against its own frame. The Chat lens and every
@@ -640,7 +644,8 @@ function PaneGrid({
   // Keep the view pinned to the bottom unless the user scrolled up.
   const box = useRef<HTMLDivElement>(null);
   const pre = useRef<HTMLPreElement>(null);
-  const pinned = useRef(true);
+  const pinned = useRef(scrollMemo.get(paneKey)?.pinned ?? true);
+  const restored = useRef(false);
   const [room, setRoom] = useState(0);
 
   const measure = () => {
@@ -652,7 +657,13 @@ function PaneGrid({
   useEffect(() => {
     const el = box.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
-    else if (lines.length) setFresh(true);
+    else if (lines.length) {
+      // A remount (Chat round trip) puts the user back where they scrolled to.
+      const saved = scrollMemo.get(paneKey);
+      if (el && !restored.current && saved) el.scrollTop = saved.scrollTop;
+      setFresh(true);
+    }
+    if (lines.length) restored.current = true;
     measure();
   }, [lines]);
 
@@ -763,6 +774,7 @@ function PaneGrid({
           const el = e.currentTarget;
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
           if (pinned.current) setFresh(false);
+          scrollMemo.set(paneKey, { pinned: pinned.current, scrollTop: el.scrollTop });
           setBand(Math.floor(el.scrollTop / Math.max(1, cell.rh * scale) / 10));
           measure();
         }}
@@ -835,6 +847,7 @@ function PaneGrid({
             const el = box.current;
             if (el) el.scrollTop = el.scrollHeight;
             pinned.current = true;
+            scrollMemo.set(paneKey, { pinned: true, scrollTop: 0 });
             setFresh(false);
           }}
           className="absolute inset-x-0 bottom-2 mx-auto flex w-max items-center gap-1.5 rounded-chip bg-elevated px-3 py-1.5 text-caption font-medium text-fg shadow-elevated"
