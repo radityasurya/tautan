@@ -67,7 +67,9 @@ const report = async (pane: string, state: string) => {
   await herdrRpc(fixture.sock, 'pane.report_agent', { pane_id: pane, source: `e2e-${++seq}`, agent: 'claude', state });
   for (let attempt = 0; attempt < 4; attempt++) {
     await Bun.sleep(700);
-    await fetch(`${BASE}/api/hosts/HireOpz/retry`, { method: 'POST' }).catch(() => {});
+    // The Hub 403s a POST without an Origin header (CSRF guard) and Bun's fetch sends none,
+    // so the retry must carry one like every contract test does, or it forces nothing.
+    await fetch(`${BASE}/api/hosts/HireOpz/retry`, { method: 'POST', headers: { origin: BASE } }).catch(() => {});
     await Bun.sleep(500);
     try {
       const hub = await (await fetch(`${BASE}/api/state`)).json();
@@ -520,7 +522,7 @@ try {
     both.sort((l, r) => (l.x ?? 0) - (r.x ?? 0));
     assert(both.length === 2, `panes=${both.length}`);
     const keyA = `HireOpz/default/${both[0]!.id}`;
-    await fetch(`${BASE}/api/hosts/HireOpz/retry`, { method: 'POST' }).catch(() => {});
+    await fetch(`${BASE}/api/hosts/HireOpz/retry`, { method: 'POST', headers: { origin: BASE } }).catch(() => {});
     const wide = await browser.newPage({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
     try {
       await wide.goto(`${BASE}/#/pane/${encodeURIComponent(keyA)}`, { waitUntil: 'networkidle' });
