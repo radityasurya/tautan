@@ -231,10 +231,8 @@ export function useEvents(pick: (state: State | null) => string[]) {
       setScreen(value);
       setScreens((prev) => ({ ...prev, [value.key]: value }));
     });
-    es.onopen = () => { setConnected(true); debug.opens++; debug.log('open'); };
-    es.addEventListener('state', () => { debug.events++; debug.log('state'); });
+    es.onopen = () => setConnected(true);
     es.onerror = () => {
-      debug.errors++; debug.log(`error readyState=${es.readyState}`);
       setConnected(false);
       // The browser only retries a dropped stream. An HTTP error (Hub restarting) closes
       // the EventSource for good, so reopen it ourselves.
@@ -247,36 +245,6 @@ export function useEvents(pick: (state: State | null) => string[]) {
   }, [watched, attempt, booted]);
 
   return { state, screen, screens, streamId, connected };
-}
-
-// ---- ?debug overlay: stream diagnostics readable on a phone with no devtools ----
-// ponytail: module-level counters, one fixed box; remove when Safari SSE is settled.
-export const debug = {
-  opens: 0, events: 0, errors: 0, lines: [] as string[],
-  log(line: string) { this.lines = [...this.lines.slice(-7), `${new Date().toISOString().slice(11, 19)} ${line}`]; debugTick?.(); },
-};
-let debugTick: (() => void) | undefined;
-export function DebugOverlay() {
-  const [, tick] = useState(0);
-  const [open, setOpen] = useState(false);
-  useEffect(() => { debugTick = () => tick((n) => n + 1); return () => { debugTick = undefined; }; }, []);
-  if (!new URLSearchParams(location.search).has('debug')) return null;
-  return (
-    <div className="fixed right-2 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-[60] flex flex-col items-end gap-1">
-      {open && (
-        <pre className="max-h-56 w-[min(420px,calc(100vw-1rem))] overflow-auto rounded-lg border border-border bg-elevated p-2 font-mono text-[11px] leading-snug text-fg shadow-lg">
-          {`ua ${navigator.userAgent.slice(0, 80)}\nsse opens=${debug.opens} state-events=${debug.events} errors=${debug.errors}\n${debug.lines.join('\n')}`}
-        </pre>
-      )}
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="rounded-chip border border-border bg-elevated px-2.5 py-1 font-mono text-[11px] text-muted shadow-elevated"
-      >
-        debug · {debug.events}/{debug.errors}
-      </button>
-    </div>
-  );
 }
 
 // ---- router ----
@@ -685,7 +653,6 @@ export function App() {
 
   return (
     <ThemeProvider theme={kitTheme}>
-      <DebugOverlay />
       <div
         role="status"
         className={`fixed inset-x-0 top-0 z-50 overflow-hidden ${connected ? 'h-0' : 'h-0.5 animate-pulse'}`}
