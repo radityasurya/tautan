@@ -5,6 +5,8 @@ import { SegmentedControl, Select } from './halaska-kit';
 import { getPaneList, setPaneList, usePref, type PaneList } from './spaces.ts';
 import type { Theme } from './app.tsx';
 import { GROUP, InstallHint, SectionTitle, Toggle, useHubSettings } from './hosts.tsx';
+import { UsageMeters } from './usage.tsx';
+import { PALETTES } from './palettes.ts';
 import { disablePush, enablePush, pushOn } from './push.ts';
 
 import type { ReactNode } from 'react';
@@ -14,53 +16,26 @@ const LABELS: Record<Theme, string> = {
   system: 'System',
   light: 'Light',
   dark: 'Dark',
+  ...Object.fromEntries(Object.entries(PALETTES).map(([id, p]) => [id, p.label])),
 };
 
-/** Each chip carries its theme's own `--bg` as the swatch. System has no colour of its own. */
-const SWATCH: Record<Theme, string | null> = {
-  system: null,
-  light: '#ffffff',
-  dark: '#0e0e11',
-};
+/** The chosen palette's own colours as a strip: surface, text, accent, then the three Status colours. */
+function Swatch({ id }: { id: string }) {
+  const p = PALETTES[id];
+  const colours = p
+    ? [p.bg, p.fg, p.accent, p.ok, p.warn, p.danger]
+    : id === 'light' ? ['#ffffff'] : id === 'dark' ? ['#0e0e11'] : null;
+  if (!colours) return null;
+  return (
+    <span aria-hidden className="flex shrink-0 overflow-hidden rounded-chip border border-border">
+      {colours.map((c, i) => (
+        <span key={i} className="size-5" style={{ background: c }} />
+      ))}
+    </span>
+  );
+}
 
 const android = /Android/.test(navigator.userAgent);
-
-type QuotaProvider = {
-  provider: string;
-  quotaSemantics?: {
-    effectiveAvailability?: {
-      scope: string;
-      effectivePercentRemaining?: number;
-      runway?: { status: string; usableRunwaySeconds?: number };
-    }[];
-  };
-};
-type QuotaReport = { providers: QuotaProvider[] };
-
-const PROVIDER_LABELS: Record<string, string> = {
-  claude: 'Claude', codex: 'Codex', cursor: 'Cursor', copilot: 'GitHub Copilot', grok: 'Grok', kimi: 'Kimi',
-  zai: 'Z.AI', agy: 'Antigravity', alibaba: 'Alibaba', 'opencode-go': 'OpenCode Go', commandcode: 'Command Code',
-  minimax: 'MiniMax', mimo: 'MiMo', deepseek: 'DeepSeek', openrouter: 'OpenRouter', elevenlabs: 'ElevenLabs',
-};
-
-function runway(seconds: number): string {
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ${minutes % 60}m`;
-  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
-}
-
-function quotaSummary(provider: QuotaProvider): string {
-  const scopes = provider.quotaSemantics?.effectiveAvailability ?? [];
-  const quota = scopes.find(item => item.scope === 'all_models') ?? scopes[0];
-  if (!quota || typeof quota.effectivePercentRemaining !== 'number') return 'not available';
-  const percent = `${Math.round(quota.effectivePercentRemaining)}% left`;
-  if (quota.runway?.status === 'projected_exhaustion' && typeof quota.runway.usableRunwaySeconds === 'number')
-    return `${percent} · ${runway(quota.runway.usableRunwaySeconds)} runway`;
-  if (quota.runway?.status === 'through_reset') return `${percent} · through reset`;
-  return `${percent} · runway unknown`;
-}
 
 /**
  * The theme picker: the kit Select, applied on pick. Settings owns the screen version and
@@ -70,7 +45,8 @@ function quotaSummary(provider: QuotaProvider): string {
 export function ThemePicker() {
   const [theme, choose] = useState(getTheme);
   return (
-    <div style={{ maxWidth: 220 }}>
+    <div className="flex items-center gap-3">
+      <div className="min-w-0" style={{ width: 220 }}>
       <Select
         value={theme}
         onChange={(t: string) => {
@@ -80,6 +56,8 @@ export function ThemePicker() {
         options={THEMES.map((t) => ({ value: t, label: LABELS[t] }))}
         aria-label="Theme"
       />
+      </div>
+      <Swatch id={theme} />
     </div>
   );
 }
@@ -113,7 +91,6 @@ export function Settings({ section }: { section?: string }) {
   const desktop = useDesktop();
   const { prefs, setPrefs, read } = useHubSettings();
   const [access, setAccess] = useState('');
-  const [quota, setQuota] = useState<QuotaReport | null>();
   const [haptics, setHaptics] = useState(() => localStorage.getItem('tautan.haptics') !== 'off');
   // Push state is the browser's, not the Hub's: the intent in localStorage plus a live
   // permission. `/api/settings` has no push field to read.
@@ -122,10 +99,6 @@ export function Settings({ section }: { section?: string }) {
   // Smart replies live in two places: the Hub decides whether to draft at all, this phone
   // decides whether to show the drafts. On means both, and the switch writes both.
   const [smart, setSmart] = useState(() => localStorage.getItem('tautan.smart') === 'on');
-
-  useEffect(() => {
-    void api<QuotaReport>('/api/settings/quota', undefined, 'GET').then(setQuota, () => setQuota(null));
-  }, []);
 
   // `#/settings/<section>` lands on that section; plain `#/settings` on the top.
   useEffect(() => {
@@ -273,22 +246,7 @@ export function Settings({ section }: { section?: string }) {
             </div>
           ))}
           <div className="ml-4 border-t border-border/60" />
-          <div aria-live="polite">
-            {quota === undefined ? (
-              <Row label="Quota" value="checking…" />
-            ) : quota === null ? (
-              <Row label="Quota" value="not available" />
-            ) : quota.providers.some(item => item.quotaSemantics?.effectiveAvailability?.length) ? (
-              quota.providers.filter(item => item.quotaSemantics?.effectiveAvailability?.length).map((item, index) => (
-                <div key={item.provider}>
-                  {index > 0 && <div className="ml-4 border-t border-border/60" />}
-                  <Row label={PROVIDER_LABELS[item.provider] ?? item.provider} value={quotaSummary(item)} />
-                </div>
-              ))
-            ) : (
-              <Row label="Quota" value="not available" />
-            )}
-          </div>
+          <UsageMeters />
         </div>
       </Section>
     </div>

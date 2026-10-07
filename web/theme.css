@@ -52,7 +52,8 @@
   font-display: swap;
 }
 
-/* ---- the grid's ANSI palettes. UI colours come from the kit at runtime (app.tsx). ---- */
+/* ---- the grid's ANSI palettes for plain light and dark. UI colours come from the kit at
+   runtime (app.tsx); a named palette (web/palettes.ts) overrides `--ansi-*` inline. ---- */
 :root,
 :root[data-theme="light"] {
   color-scheme: light;

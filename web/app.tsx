@@ -12,14 +12,16 @@ import { mockOpen } from './mock.ts';
 import { PaneScreen } from './pane.tsx';
 import { setBadge } from './push.ts';
 import { Settings } from './settings.tsx';
+import { UsageStrip } from './usage.tsx';
 import { ThemeProvider, tokens } from './halaska-kit';
+import { PALETTES, PALETTE_IDS } from './palettes.ts';
 
 // ---- theme ----
-// The UI is Halaska Kit: two palettes, light and dark, plus the accent context. The
-// terminal grid keeps its own ANSI palettes (`--ansi-*` in theme.css), so `data-theme`
-// still carries the resolved light/dark for it.
-export const THEMES = ['system', 'light', 'dark'] as const;
-export type Theme = (typeof THEMES)[number];
+// The UI is Halaska Kit: two bases, light and dark. A named palette (web/palettes.ts) sits
+// on one base and overrides the tokens and the grid's `--ansi-*`; plain light and dark use
+// the ANSI blocks in theme.css. `data-theme` carries the palette id, or the resolved base.
+export const THEMES = ['system', 'light', 'dark', ...PALETTE_IDS] as string[];
+export type Theme = string;
 type KitTheme = 'light' | 'dark';
 
 const dark = matchMedia('(prefers-color-scheme: dark)');
@@ -32,7 +34,8 @@ export function getTheme(): Theme {
   return t && THEMES.includes(t) ? t : 'system';
 }
 
-const resolve = (t: Theme): KitTheme => (t === 'system' ? (dark.matches ? 'dark' : 'light') : t);
+const resolve = (t: Theme): KitTheme =>
+  t === 'system' ? (dark.matches ? 'dark' : 'light') : (PALETTES[t]?.base ?? (t as KitTheme));
 
 export function setTheme(theme: Theme) {
   localStorage.setItem('tautan.theme', theme);
@@ -42,29 +45,41 @@ export function setTheme(theme: Theme) {
 
 function applyTheme(theme: Theme) {
   const kit = resolve(theme);
-  document.documentElement.dataset.theme = kit;
+  const named = PALETTES[theme];
+  // A named palette is its own `data-theme`, so the Pane's nearest-ANSI cache (keyed on it)
+  // rebuilds. Its colours go inline; the light and dark ANSI blocks in theme.css stay the
+  // fallback and are what plain light and dark use.
+  document.documentElement.dataset.theme = named ? theme : kit;
   // The kit palette is the one source of colour. tautan's CSS tokens are re-pointed at it
   // at runtime, so the custom rows, headers and bars follow Halaska without every one of
   // them carrying kit inline styles. Tailwind keeps layout only.
   const pal = tokens[kit];
   const root = document.documentElement.style;
   const set = (name: string, value: string) => root.setProperty(name, value);
-  set('--bg', pal.bg);
-  set('--fg', pal.text);
-  set('--muted', pal.textSecondary);
-  set('--surface', pal.bgSubtle);
-  set('--elevated', kit === 'dark' ? 'rgba(42,42,42,0.92)' : '#ffffff');
-  set('--border', pal.border);
-  set('--accent', pal.accent);
-  set('--ok', pal.success);
-  set('--warn', pal.warning);
-  set('--danger', pal.danger);
+  const bg = named?.bg ?? pal.bg;
+  const fg = named?.fg ?? pal.text;
+  const border = named?.border ?? pal.border;
+  set('--bg', bg);
+  set('--fg', fg);
+  set('--muted', named?.muted ?? pal.textSecondary);
+  set('--surface', named?.surface ?? pal.bgSubtle);
+  set('--elevated', named?.elevated ?? (kit === 'dark' ? 'rgba(42,42,42,0.92)' : '#ffffff'));
+  set('--border', border);
+  set('--accent', named?.accent ?? pal.accent);
+  set('--ok', named?.ok ?? pal.success);
+  set('--warn', named?.warn ?? pal.warning);
+  set('--danger', named?.danger ?? pal.danger);
   set(
     '--elevated-shadow',
-    kit === 'dark' ? '0 8px 40px rgba(0,0,0,0.5)' : `0 0 0 1px ${pal.border}, 0 8px 40px rgba(0,0,0,0.14)`,
+    kit === 'dark' ? '0 8px 40px rgba(0,0,0,0.5)' : `0 0 0 1px ${border}, 0 8px 40px rgba(0,0,0,0.14)`,
   );
-  document.body.style.background = pal.bg;
-  document.body.style.color = pal.text;
+  root.colorScheme = kit;
+  for (let i = 0; i < 16; i++) {
+    if (named) set(`--ansi-${i}`, named.ansi[i]!);
+    else root.removeProperty(`--ansi-${i}`);
+  }
+  document.body.style.background = bg;
+  document.body.style.color = fg;
 }
 
 applyTheme(getTheme());
@@ -665,6 +680,7 @@ export function App() {
                 <div className="min-h-0 flex-1">
                   <ScreenBoundary key="sidebar" where="Pane list"><Home state={state} compact /></ScreenBoundary>
                 </div>
+                <UsageStrip />
                 <nav aria-label="Sections" className="flex shrink-0 gap-1 border-t border-border p-2">
                   {FOOTER.map(({ to, label, Icon }) => (
                     <Link key={to} to={to} className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg text-[13px] text-muted hover:bg-elevated/60 hover:text-fg">
