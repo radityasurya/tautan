@@ -112,6 +112,22 @@ describe('TmuxMux', () => {
     expect((await f.mux.tree()).panes[0]!.revision).toBe(2);
   });
 
+  test('read carries the alternate-screen flag; a failed probe omits it', async () => {
+    let alt = '0';
+    let fail = false;
+    const exec: TmuxExec = async args => {
+      if (args[0] === 'capture-pane') return { stdout: 'grid\n', stderr: '', code: 0 };
+      if (args[0] === 'display-message') return fail ? { stdout: '', stderr: 'probe failed', code: 1 } : { stdout: `${alt}\n`, stderr: '', code: 0 };
+      return { stdout: '', stderr: '', code: 0 };
+    };
+    const mux = new TmuxMux({ id: 'test', socket: '/unused', exec, treeIntervalMs: 60_000, screenIntervalMs: 60_000 });
+    expect((await mux.read('%0', 'visible')).alt).toBe(false);
+    alt = '1';
+    expect((await mux.read('%0', 'visible')).alt).toBe(true);
+    fail = true;
+    expect('alt' in (await mux.read('%0', 'visible'))).toBe(false);
+  });
+
   test('unsupported operations reject and explain resolves null', async () => {
     const f = fakeMux();
     expect(f.mux.newTab('$0', {})).rejects.toThrow('unsupported');

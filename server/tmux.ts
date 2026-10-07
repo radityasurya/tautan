@@ -149,10 +149,16 @@ export class TmuxMux implements Mux {
     const args = mode === 'visible'
       ? ['capture-pane', '-t', paneId, '-e', '-p', '-J']
       : ['capture-pane', '-t', paneId, '-p', '-J', '-S', '-500'];
-    const text = await this.run(args);
+    // `#{alternate_on}` is the real full-screen signal; a failed probe leaves it unset, and
+    // Wrap falls back to its share-of-lines heuristic (shared/layout.ts tuiScreen).
+    const [text, alt] = await Promise.all([
+      this.run(args),
+      this.run(['display-message', '-p', '-t', paneId, '#{alternate_on}'])
+        .then(out => out.trim() === '1', () => undefined as boolean | undefined),
+    ]);
     this.lastReadAt.set(paneId, Date.now());
     this.reconcileControls();
-    return { text, ansi: mode === 'visible', revision: this.record(paneId, text), mode };
+    return { text, ansi: mode === 'visible', revision: this.record(paneId, text), mode, ...(alt !== undefined ? { alt } : {}) };
   }
 
   async sendText(paneId: string, text: string): Promise<void> {

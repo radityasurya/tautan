@@ -104,13 +104,17 @@ export function hangOf(line: string): number {
 /**
  * Which lines continue the line above: the agent hard-wrapped them at its own width, so
  * Wrap should rejoin them into one paragraph. The test is the word-wrapper's own: the
- * next line's first word would not have fit on this one. Claude Code wraps two columns
- * short of `cols` and Pi one or two, so four columns of slack catch both.
+ * next line's first word would not have fit on this one. The wrapper's width comes from
+ * the text itself: the widest prose line, when it sits within eight columns of `cols` —
+ * lines only pile up that high if a wrapper filled them (Claude Code wraps two columns
+ * short of `cols`, Pi one or two, an inset list a few more). A far narrower widest says
+ * nothing wrapped there, and `cols` with four columns of slack stands.
  */
-// ponytail: a fixed slack; a program wrapping narrower than cols - 4 is not rejoined.
 export function continues(text: string, cols = 80): boolean[] {
   const lines = text.split(/\r?\n/);
   const kinds = classify(text, cols);
+  const widest = Math.max(0, ...lines.map((line, i) => (kinds[i] === 'prose' ? line.trimEnd().length : 0)));
+  const at = widest >= cols - 8 ? Math.min(widest, cols - 4) : cols - 4;
   return lines.map((line, i) => {
     const prev = lines[i - 1];
     if (prev === undefined || kinds[i] !== 'prose' || kinds[i - 1] !== 'prose') return false;
@@ -118,7 +122,7 @@ export function continues(text: string, cols = 80): boolean[] {
     const indent = line.search(/\S/);
     if (!end || indent < 0 || MARKER.test(line) || indent < prev.search(/\S/)) return false;
     const word = line.slice(indent).split(/\s/)[0]!.length;
-    return end + 1 + word > cols - 4;
+    return end + 1 + word > at;
   });
 }
 
@@ -137,7 +141,9 @@ export function fillOf(spans: { text: string; bg?: number | string }[], cols = 8
  * A full-screen program's Screen (htop, k9s, a dashboard): most of its lines are columns
  * or drawn boxes. A shell's output is mostly lines of text, so Wrap can reflow it.
  */
-// ponytail: a share of lines, not alt-screen detection — the Mux does not report that.
+// ponytail: a share of lines, not alt-screen detection — herdr reports no alternate-screen
+// signal (neither its pane records nor pane.read carry one, 0.9.3), so this heuristic stays
+// its fallback; tmux's real flag rides Screen.alt and replaces it where the Mux reports one.
 export function tuiScreen(text: string, cols = 80): boolean {
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
   if (!lines.length) return false;

@@ -205,6 +205,20 @@ describe('Claude Code wrapping', () => {
     ].join('\n');
     expect(continues(text, 122).map(Number).join('')).toBe('01100');
   });
+
+  // `word ` is five columns; a run of them plus a short tail lands a line at an exact width.
+  const row = (n: number) => 'word '.repeat(Math.floor(n / 5)) + 'x'.repeat(n % 5);
+
+  test('a program wrapping eight short of cols rejoins at its own width', () => {
+    // The widest prose line is 112 of 120 columns: the wrapper's width, not cols - 4.
+    const text = [row(112), row(109), 'abc the next line of the paragraph'].join('\n');
+    expect(continues(text, 120).map(Number).join('')).toBe('011');
+  });
+
+  test('a widest line far from cols wraps nothing: the fixed slack stands', () => {
+    const text = [row(61), row(58), 'abc the next line of the paragraph'].join('\n');
+    expect(continues(text, 120).map(Number).join('')).toBe('000');
+  });
 });
 
 test('hangOf: under the text, past a list marker', () => {

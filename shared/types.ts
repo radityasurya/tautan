@@ -17,7 +17,11 @@ export interface Pane {
 export interface Tree { workspaces: Workspace[]; tabs: Tab[]; panes: Pane[] }
 
 export type ScreenMode = 'visible' | 'recent';
-export interface Screen { text: string; ansi: boolean; revision: number; mode: ScreenMode }
+export interface Screen {
+  text: string; ansi: boolean; revision: number; mode: ScreenMode;
+  /** the Mux reports the Pane shows a program's alternate screen; absent when it cannot (herdr) */
+  alt?: boolean;
+}
 
 export interface Explain {
   ruleId: string; state: Status; detection: string;

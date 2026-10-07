@@ -710,8 +710,9 @@ function PaneGrid({
   const gridWidth = pane?.cols ? Math.max(pane.cols, widest) * cell.cw + 34 : 0;
   const fits = !!gridWidth && !!potentialRoom && gridWidth <= potentialRoom + 34;
   // Auto reads the App profile first (a program tautan forwards the mouse to is full-screen),
-  // then the Screen itself, so an unknown TUI still keeps its grid.
-  const wrap = wrapChoice === 'auto' ? !profile.mouse && !tuiScreen(screenText, pane?.cols) : wrapChoice === 'on';
+  // then the Mux's own alternate-screen flag (Screen.alt, tmux), then the Screen itself: herdr
+  // reports no flag, so an unknown TUI there still keeps its grid by its drawn share.
+  const wrap = wrapChoice === 'auto' ? !profile.mouse && !(shown?.alt ?? tuiScreen(screenText, pane?.cols)) : wrapChoice === 'on';
   const effectiveWrap = wrap && !fits;
   // A split cell's grid (a TUI, or Wrap off) fits its cell; a single Pane only on the Fit pref.
   const fit = fitPref || (split && !effectiveWrap);
@@ -1244,7 +1245,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   };
   // The ⋯ menu's Wrap line names what auto resolved to. PaneGrid applies the same rule.
   const screenText = useMemo(() => lines.map(textOf).join('\n'), [lines]);
-  const wrap = wrapChoice === 'auto' ? !profile.mouse && !tuiScreen(screenText, pane?.cols) : wrapChoice === 'on';
+  const wrap = wrapChoice === 'auto' ? !profile.mouse && !(shown?.alt ?? tuiScreen(screenText, pane?.cols)) : wrapChoice === 'on';
   /** Bumped by the ⋯ switch, so the per-Pane override is re-read without a second store. */
   const [override, setOverride] = useState(0);
   const mouseOn = useMemo(() => mouseAllowed(paneKey, pane), [paneKey, pane?.agent, pane?.command, override]);
