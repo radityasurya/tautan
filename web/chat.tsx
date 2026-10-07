@@ -149,6 +149,7 @@ function ResultHint({ tool }: { tool: Tool }) {
   return <span className="shrink-0 text-[10px] tabular-nums text-muted">{count(tool.resultLines ?? 1, 'line')}</span>;
 }
 /** Whole outputs fetched so far, by Pane, subagent and tool id: a row that closes and opens again asks once. */
+// ponytail: the cache grows for the tab's life; evict on Pane switch if that ever matters.
 const outputs = new Map<string, string>();
 
 /** The whole output of a sliced tool result, fetched the first time its row opens; the slice stands in until then. */
@@ -247,7 +248,7 @@ function ToolRow({
       <details
         className="group"
         onToggle={(event) => {
-          if (event.currentTarget.open) setOpened(true);
+          setOpened(event.currentTarget.open); // a failed fetch retries on the next open
           const tail = event.currentTarget.open && event.currentTarget.querySelector<HTMLElement>('[data-tail]');
           if (tail) tail.scrollTop = tail.scrollHeight;
         }}
@@ -914,7 +915,7 @@ export function Chat({
                 const assistant = turn.role === 'assistant';
                 const tools = assistant ? turn.tools : [];
                 return (
-                  <li key={turnIndex} className={`flex flex-col ${assistant ? 'items-start' : 'items-end'}`}>
+                  <li key={turn.id ?? turnIndex} className={`flex flex-col ${assistant ? 'items-start' : 'items-end'}`}>
                     {(turn.text || Boolean(turn.images?.length)) && (
                       <div
                         className={`min-w-0 max-w-[88%] break-words rounded-card px-3 py-2.5 text-body ${
@@ -938,7 +939,7 @@ export function Chat({
                       <ul className="mt-1.5 flex w-[min(92%,42rem)] flex-col gap-1">
                         {tools.map((tool, toolIndex) => approval && target?.turn === turnIndex && target.tool === toolIndex ? (
                           <ApprovalItem
-                            key={`${tool.name}-${toolIndex}`}
+                            key={tool.id ?? `${tool.name}-${toolIndex}`}
                             approval={approval}
                             agent={agent}
                             tool={tool}
@@ -946,7 +947,7 @@ export function Chat({
                           />
                         ) : (
                           <ToolRow
-                            key={`${tool.name}-${toolIndex}`}
+                            key={tool.id ?? `${tool.name}-${toolIndex}`}
                             paneKey={paneKey}
                             agent={selected}
                             tool={tool}
