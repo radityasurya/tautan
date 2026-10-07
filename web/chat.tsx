@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { Blocked, ON_WARN, type ExplainResponse } from './blocked.tsx';
 import { Dot, timeAgo } from './home.tsx';
-import { SegmentedControl, Skeleton } from './halaska-kit';
+import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown } from './markdown.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
@@ -44,6 +44,17 @@ export function LensSwitch({ value, onChange }: { value: LensMode; onChange: (mo
     </div>
   );
 }
+
+type AgentKind = NonNullable<ChatResponse['agentKind']>;
+const AGENT_NAME: Record<AgentKind, string> = { claude: 'Claude', pi: 'pi', codex: 'Codex', omp: 'omp' };
+
+// Codex names its calls after the harness, not the user's idea of the work; the raw name stays in the tooltip.
+const CODEX_LABEL: Record<string, string> = {
+  exec: 'shell', exec_command: 'shell', shell: 'shell', local_shell_call: 'shell', write_stdin: 'stdin',
+  apply_patch: 'patch', update_plan: 'plan', view_image: 'image', web_search: 'web search', web_search_call: 'web search',
+  tool_search: 'tool search', tool_search_call: 'tool search',
+};
+const toolLabel = (name: string, kind?: AgentKind) => (kind === 'codex' ? CODEX_LABEL[name] ?? name.replace(/_/g, ' ') : name);
 
 /** Where a tool's image loads from, its label, and the full-size view; undefined when it is unsafe. */
 function toolImage(paneKey: string, tool: Tool, agent?: string): { src: string; alt: string; href?: string } | undefined {
@@ -223,6 +234,7 @@ function ToolRow({
   tool,
   at,
   subagent,
+  kind,
   onOpenSubagent,
 }: {
   paneKey: string;
@@ -232,6 +244,8 @@ function ToolRow({
   /** The turn's time, on the last row only. */
   at?: number;
   subagent?: Subagent;
+  /** Which agent wrote this transcript, for readable tool names. */
+  kind?: AgentKind;
   onOpenSubagent: (id: string) => void;
 }) {
   const image = toolImage(paneKey, tool, agent);
@@ -240,6 +254,7 @@ function ToolRow({
   const title = card?.title ?? tool.brief.split('/').filter(Boolean).at(-1) ?? tool.name;
   const preview = tool.previewId !== undefined ? { src: previewSrc(paneKey, tool.previewId, agent), title } : undefined;
   const brief = subagent ? subagentName(subagent) : tool.brief;
+  const label = toolLabel(tool.name, kind);
   const [opened, setOpened] = useState(false);
   const full = useFullOutput(paneKey, agent, tool, opened);
 
@@ -258,7 +273,7 @@ function ToolRow({
             <span className="min-w-0 flex-1">
               <span title={card.title} className="block truncate text-body font-medium text-fg">{card.title}</span>
               <span className="flex min-w-0 items-center gap-2 text-[11px] text-muted">
-                <span className="truncate">{tool.name} · {card.host}</span>
+                <span className="truncate">{label} · {card.host}</span>
                 <Stamp at={at} />
               </span>
             </span>
@@ -281,7 +296,7 @@ function ToolRow({
               className={`${tool.via ? 'max-w-44' : 'max-w-32'} truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 text-[10px] leading-none text-fg`}
             >
               {tool.via && <span className="text-muted">{tool.via} · </span>}
-              {tool.name}
+              {label}
             </span>
             <span className="flex min-w-0 items-center gap-2">
               {image && <Thumb src={image.src} />}
@@ -739,7 +754,7 @@ export function Chat({
           turns = merged;
           setData((prev) => ({
             agent: selected,
-            chat: { sessionId: delta.sessionId, turns, at: Date.now(), subagents: delta.subagents ?? (prev && prev.agent === selected ? prev.chat.subagents : undefined), ...(selected ? { agent: selected } : {}) },
+            chat: { sessionId: delta.sessionId, turns, at: Date.now(), agentKind: delta.agentKind ?? (prev && prev.agent === selected ? prev.chat.agentKind : undefined), subagents: delta.subagents ?? (prev && prev.agent === selected ? prev.chat.subagents : undefined), ...(selected ? { agent: selected } : {}) },
           }));
           if (delta.subagents) setSubagents(delta.subagents);
           const done = finishedIn(turns);
@@ -907,6 +922,11 @@ export function Chat({
         className={`relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4 ${subagents.length ? 'pb-4' : 'pb-10'}`}
       >
         <div>
+          {view?.agentKind && !selected && (
+            <p className="mb-3">
+              <Badge style={{ textTransform: 'none', letterSpacing: 0 }}>{AGENT_NAME[view.agentKind] ?? view.agentKind}</Badge>
+            </p>
+          )}
           {!view ? (
             <div className="flex flex-col gap-4">
               <Skeleton className="h-14 w-4/5 rounded-card" />
