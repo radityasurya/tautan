@@ -133,6 +133,132 @@ record that none exists (then that agent keeps the Screen only). Follow ADR 0005
 **Verify:** a Codex Pane on herdr 0.9 opens in the Chat view with its turns and tool rows;
 an agent with no trusted source falls back to the Screen with no error.
 
+## Wave 12.1 decision — transcript sources per agent
+
+Implement Codex in 12.2. In 12.3 implement only omp, and only when Herdr supplies an exact
+path. omo and gjc stay on the Screen until each has a Herdr integration that reports an exact
+path. This applies ADR 0005: an exact id may locate a uniquely matching file, but cwd, mtime and
+"newest file" never select a conversation.
+
+Readers must preserve native identity for Wave 11 deltas: Codex `turn_id`/call ids and
+Pi-family entry `id`/`toolCallId`. If stable identity is absent or ambiguous, do not synthesize
+it from array position; fall back to Screen.
+
+Machine evidence (2026-10-07): Codex CLI 0.145.0 is installed; `omp`, `omo` and `gjc` are not.
+Herdr 0.9.2 has a `codex.toml` detection manifest and built-in kinds/integrations for `codex`
+and `omp`; `~/.local/state/herdr/agent-detection/remote` contains none for omp, omo or gjc, and
+Herdr exposes no omo/gjc kind. `herdr integration status` says the Codex hook is v7 (current is
+v8) and the omp hook is absent. The live socket exists and this Codex Pane identifies itself as
+`wQ:p1`, but this lane's sandbox rejected the read-only `session.snapshot` connection with
+`EPERM`; therefore the live values below are integration contracts, not a claimed snapshot
+observation.
+
+### Codex
+
+| Item | Decision |
+|---|---|
+| Source | `${CODEX_HOME:-$HOME/.codex}/sessions/YYYY/MM/DD/rollout-<timestamp>-<thread-id>.jsonl`; also check `archived_sessions` for the same exact id. `-p/--profile` layers `$CODEX_HOME/<name>.config.toml` and does not create another transcript root. This host's current thread has exactly that default layout. |
+| Pane resolution | Herdr's installed hook reports `agent: "codex"`, `kind: "id"`, `value: <thread-id>`; its `transcript_path` input is only a hook-validity check. Accept a UUID from that `agent_session`, or the same id from the Pane's own `codex resume` descriptor. Under the known Codex home, require exactly one `rollout-*-${id}.jsonl` and require its first `session_meta.payload.id` to equal the id. An unknown per-Pane `CODEX_HOME`, zero/multiple matches, compressed-only files or a header mismatch are unresolved. |
+| Record mapping | Use `response_item/message` user `input_text` -> user `Turn`; assistant `output_text` -> assistant `Turn`. Ignore duplicate presentation `event_msg/user_message|agent_message` records. `function_call`, `custom_tool_call`, `web_search_call` and `tool_search_call` -> `Tool`; join `*_output` by `call_id`, carrying text, `isError`, and `input_image` as out-of-band `imageId`. User `input_image`/`local_images` -> `Turn.images`. Correlate `internal_chat_message_metadata_passthrough.turn_id`; `task_complete`/`turn_complete` or `turn_aborted` ends that turn, while an unmatched `task_started` remains incremental. Developer, reasoning and token records are not display turns. |
+| Fallback | Any resolution, read, JSONL, identity or ambiguous-turn failure returns no Chat response, so the Pane shows its Screen. |
+
+Redacted real record types observed in this host's rollouts (payloads come from several files so
+no user content is retained):
+
+```jsonl
+{"type":"session_meta","payload":{"id":"<thread-id>","cwd":"<redacted>"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"<turn-id>"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<redacted>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<redacted>"}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","call_id":"<call-id>","input":"<redacted>"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"<call-id>","output":"<redacted>"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"<call-id>","output":[{"type":"input_image","image_url":"<redacted>"}]}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"<turn-id>"}}
+```
+
+Evidence: the installed CLI/help and rollout above, Herdr's installed hook and API schema, and
+Codex's own [rollout fixture](https://github.com/openai/codex/blob/main/codex-rs/app-server/tests/common/rollout.rs)
+and [protocol types](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs).
+
+### omp
+
+| Item | Decision |
+|---|---|
+| Source | omp is **Oh My Pi**. Default: `~/.omp/agent/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl`; `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`, `--session-dir`, custom files and `~/.omp/profiles/<name>/agent/` can move it. No omp binary or local transcript exists on this host. |
+| Pane resolution | Herdr's bundled OMP integration reports `agent: "omp"` and prefers `agent_session {kind:"path", value:<absolute SessionManager file>}`; it can fall back to `kind:"id"`. Trust the absolute path only. Reject id-only reports: finding that id would require searching cwd/profile/custom roots. |
+| Record mapping | It is the Pi-family append-only tree already handled by `parsePiTranscript`: active `parentId` chain only; `message.role` user/assistant -> `Turn`; assistant `text` and `toolCall {id,name,arguments}` -> text/`Tool`; `toolResult {toolCallId,content,isError}` -> the tool result; user/tool-result `image {mimeType,data}` -> `Turn.images`/out-of-band `imageId`. Assistant `stopReason: toolUse` continues; `stop|length|error|aborted` ends the model step. |
+| Fallback | No path report, non-absolute/non-file path, malformed tree or read failure -> Screen. This host is Screen-only until omp and its Herdr integration are installed. |
+
+Source-backed redacted shape; there is deliberately no claimed local omp sample:
+
+```jsonl
+{"type":"session","version":3,"id":"<id>","cwd":"<redacted>"}
+{"type":"message","id":"<entry>","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"<redacted>"}]}}
+{"type":"message","id":"<entry>","parentId":"<entry>","message":{"role":"assistant","content":[{"type":"toolCall","id":"<call-id>","name":"read","arguments":{}}],"stopReason":"toolUse"}}
+{"type":"message","id":"<entry>","parentId":"<entry>","message":{"role":"toolResult","toolCallId":"<call-id>","content":[{"type":"text","text":"<redacted>"}],"isError":false}}
+{"type":"message","id":"<entry>","parentId":"<entry>","message":{"role":"toolResult","toolCallId":"<call-id>","content":[{"type":"image","mimeType":"image/png","data":"<redacted>"}]}}
+{"type":"message","id":"<entry>","parentId":"<entry>","message":{"role":"assistant","content":[{"type":"text","text":"<redacted>"}],"stopReason":"stop"}}
+```
+
+Evidence: Herdr's bundled `herdr-omp-agent-state.ts` and omp's own
+[development guide](https://github.com/open-horizon-labs/oh-omp/blob/main/packages/coding-agent/DEVELOPMENT.md).
+
+### omo
+
+| Item | Decision |
+|---|---|
+| Source | omo is **Oh My OpenAgent Native**, using the Senpi engine. Default: `~/.omo/agent/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl`; `OMO_CODING_AGENT_DIR`, then legacy `SENPI_CODING_AGENT_DIR`/`PI_CODING_AGENT_DIR`, can move it. Profile/custom roots also exist. No omo binary, state root or transcript exists here. |
+| Pane resolution | No Herdr kind, detection manifest or integration exists on this machine, so there is no trusted `agent_session` binding from a Pane to a file. A compatible file format is not identity evidence. |
+| Record mapping | Senpi documents the same Pi-family header/tree and user, assistant, `toolCall`, `toolResult`, image and `stopReason` shapes shown for omp. A future reader should reuse the Pi core plus explicitly ignore Senpi/OMO extension records. |
+| Fallback | **No trusted source: Screen only.** Do not start a 12.3 omo parser lane until a Herdr path-reporting integration exists and a real redacted transcript is captured. |
+
+Five source-defined record types to capture from a future real Pane (not presented as local data):
+
+```jsonl
+{"type":"session","id":"<id>","cwd":"<redacted>"}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"<redacted>"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"<call-id>","name":"<tool>","arguments":{}}],"stopReason":"toolUse"}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"<call-id>","content":[{"type":"image","mimeType":"image/png","data":"<redacted>"}],"isError":false}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"<redacted>"}],"stopReason":"stop"}}
+```
+
+Evidence: OMO's own [installation guide](https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/guide/installation.md)
+and Senpi's [file-format reference](https://github.com/code-yeongyu/senpi/blob/main/packages/coding-agent/docs/session-format.md).
+
+### gjc
+
+| Item | Decision |
+|---|---|
+| Source | gjc is **Gajae-Code**. Default: `~/.gjc/agent/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl`; `GJC_CODING_AGENT_DIR` replaces the agent directory. No gjc binary, state root or transcript exists here. |
+| Pane resolution | No Herdr kind, detection manifest or integration exists on this machine; neither cwd nor an id discovered by scanning is a Pane binding. |
+| Record mapping | GJC's source defines the Pi-family append-only tree: `type:"message"`, user/assistant/`toolResult`, assistant `toolCall`, text/image content and terminal `stopReason`. Reuse the Pi core only after identity is solved; ignore GJC-only records such as `session_init`, model/mode changes, custom messages and header/entry patches. |
+| Fallback | **No trusted source: Screen only.** Do not start a 12.3 gjc parser lane until a Herdr path-reporting integration exists and a real redacted transcript is captured. |
+
+Five source-defined record types to capture from a future real Pane (not presented as local data):
+
+```jsonl
+{"type":"session","id":"<id>","cwd":"<redacted>"}
+{"type":"message","id":"<entry>","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"<redacted>"}]}}
+{"type":"message","id":"<entry>","parentId":"<entry>","message":{"role":"assistant","content":[{"type":"toolCall","id":"<call-id>","name":"<tool>","arguments":{}}],"stopReason":"toolUse"}}
+{"type":"message","id":"<entry>","parentId":"<entry>","message":{"role":"toolResult","toolCallId":"<call-id>","content":[{"type":"text","text":"<redacted>"}],"isError":false}}
+{"type":"message","id":"<entry>","parentId":"<entry>","message":{"role":"assistant","content":[{"type":"text","text":"<redacted>"}],"stopReason":"stop"}}
+```
+
+Evidence: GJC's own [environment reference](https://github.com/Yeachan-Heo/gajae-code/blob/main/docs/environment-variables.md)
+and [SessionManager source](https://github.com/Yeachan-Heo/gajae-code/blob/main/packages/coding-agent/src/session/session-manager.ts).
+
+### Redacted fixtures for the build lanes
+
+- **Codex:** one resolved rollout with user/assistant text, all call/output variants and both
+  user/tool images; completion, error, abort, dangling start and overlapping `turn_id` cases;
+  duplicate presentation events; exact-id unique/zero/duplicate/header-mismatch resolution.
+- **omp:** one v3 active-branch tree with text, tool result/error and both image positions; a
+  fork, every terminal `stopReason`, an exact absolute path, and rejected id-only/relative paths.
+- **omo:** fallback fixture only: an omo-labelled Pane without `agent_session` stays on Screen.
+  A parser fixture waits for a real redacted capture plus a path-reporting Herdr integration.
+- **gjc:** fallback fixture only, with the same gate; include a GJC-only record in the future
+  capture to prove it is ignored without disturbing the active branch.
+
 ---
 
 # Wave 13 — Slash commands, file mentions and a model card
