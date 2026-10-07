@@ -1,4 +1,4 @@
-import { open, readFile, readdir, stat } from 'node:fs/promises';
+import { open, readFile, readdir, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseCodexRollout, parsePiTranscript, parseTranscript, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
@@ -22,7 +22,8 @@ export interface TranscriptIo {
   /** Every file matching a `*` wildcard pattern under a directory, recursively; `undefined`
    *  when the directory does not exist. For Codex's exact-id rollout search. */
   find?(root: string, pattern: string, target?: string): Promise<string[] | undefined>;
-  /** A file's first line within the head window, for Codex's `session_meta` id check. */
+  /** A file's first complete line (the head window grows to its cap), for Codex's
+   *  `session_meta` id check. */
   head?(path: string, target?: string): Promise<string | undefined>;
 }
 
@@ -70,24 +71,35 @@ async function ssh(target: string, command: string): Promise<{ stdout: string; c
   return { stdout, code };
 }
 
-// ponytail: `at` reads only the first 256 KB of a subagent transcript; a first entry whose
-// timestamp sits further in falls back to the file's mtime.
+// ponytail: the head window doubles until the first line is complete, capped at 8 MB — a first
+// entry past that falls back to the file's mtime (or fails Codex's header check); stream the
+// file if one ever appears.
 const HEAD = 262_144;
+const HEAD_CAP = 8 * 1024 * 1024;
 const firstAt = (head: string, mtimeMs: number | undefined): number | undefined => {
   const parsed = Date.parse(head.match(/"timestamp"\s*:\s*"([^"]+)"/)?.[1] ?? '');
   return Number.isFinite(parsed) ? parsed : mtimeMs;
 };
+
+/** A file's head, grown until its first line is complete: one long first entry can hold the
+ *  timestamp (or Codex's `session_meta` id) deep inside it. */
+async function readHead(handle: FileHandle): Promise<string> {
+  let window = HEAD;
+  for (;;) {
+    const buffer = Buffer.alloc(window);
+    const { bytesRead } = await handle.read(buffer, 0, window, 0);
+    const text = buffer.subarray(0, bytesRead).toString('utf8');
+    if (bytesRead < window || text.includes('\n') || window >= HEAD_CAP) return text;
+    window = Math.min(window * 2, HEAD_CAP);
+  }
+}
 
 /** A conversation file's `at`: its first entry's timestamp, else its mtime in ms. */
 async function agentAt(path: string): Promise<number | undefined> {
   try {
     const info = await stat(path);
     const handle = await open(path, 'r');
-    try {
-      const buffer = Buffer.alloc(HEAD);
-      const { bytesRead } = await handle.read(buffer, 0, HEAD, 0);
-      return firstAt(buffer.subarray(0, bytesRead).toString('utf8'), Math.round(info.mtimeMs));
-    } finally { await handle.close(); }
+    try { return firstAt(await readHead(handle), Math.round(info.mtimeMs)); } finally { await handle.close(); }
   } catch { return undefined; }
 }
 
@@ -145,15 +157,9 @@ export const localIo: TranscriptIo = {
     await walk(root);
     return out;
   },
-  // ponytail: a session_meta line over the 256 KB window (huge base_instructions) fails the
-  // header check and stays unresolved; raise HEAD if one ever appears.
   async head(path) {
     const handle = await open(path, 'r');
-    try {
-      const buffer = Buffer.alloc(HEAD);
-      const { bytesRead } = await handle.read(buffer, 0, HEAD, 0);
-      return buffer.subarray(0, bytesRead).toString('utf8').split('\n', 1)[0] ?? '';
-    } finally { await handle.close(); }
+    try { return (await readHead(handle)).split('\n', 1)[0] ?? ''; } finally { await handle.close(); }
   },
   async subagents(dir) {
     try {
@@ -210,7 +216,7 @@ const remoteIo: TranscriptIo = {
   },
   head: async (path, target) => {
     if (!target) return localIo.head!(path);
-    const result = await ssh(target, `head -c ${HEAD} -- ${remotePath(path)}`);
+    const result = await ssh(target, `head -c ${HEAD_CAP} -- ${remotePath(path)} | head -n 1`);
     if (result.code) throw new Error('remote transcript head failed');
     return result.stdout.split('\n', 1)[0] ?? '';
   },
@@ -249,7 +255,7 @@ for f in "$d"/agent-*.meta.json; do
   j="$d/agent-$i.jsonl"
   e=0; [ -f "$j" ] && e=$(LC_ALL=C stat -c '%Y' -- "$j" 2>/dev/null || stat -f '%m' -- "$j" 2>/dev/null || echo 0)
   printf '@@%s %s\\n' "$i" "$e"
-  if [ -f "$j" ]; then printf '@@head\\n'; head -c ${HEAD} "$j" 2>/dev/null; printf '\\n@@meta\\n'; else printf '@@meta\\n'; fi
+  if [ -f "$j" ]; then printf '@@head\\n'; head -c ${HEAD_CAP} "$j" 2>/dev/null | head -n 1; printf '\\n@@meta\\n'; else printf '@@meta\\n'; fi
   cat -- "$f"
   printf '\\n@@end\\n'
 done`;

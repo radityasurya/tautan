@@ -140,6 +140,21 @@ describe('chat subagents and previews', () => {
     } finally { rmSync(home2, { recursive: true, force: true }); }
   });
 
+  test('a first entry whose line passes the head window still stamps `at`', async () => {
+    const home2 = mkdtempSync(join(tmpdir(), 'tautan-chat-long-'));
+    try {
+      const dir = join(transcriptDir('/repo', id, home2), 'subagents');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'agent-long.meta.json'), JSON.stringify({ agentType: 'recon' }));
+      // The first entry's timestamp sits 280 KB in, past the old 256 KB window: the head grows
+      // to the first newline, and the second line's later timestamp must not win instead.
+      writeFileSync(join(dir, 'agent-long.jsonl'), `${JSON.stringify({ type: 'user', isSidechain: true, message: { content: 'x'.repeat(280_000) }, timestamp: '2026-10-06T00:00:08.000Z' })}\n${line({ type: 'user', isSidechain: true, timestamp: '2026-10-06T00:00:09.000Z', message: { content: 'second' } })}`);
+      const found = await localIo.subagents!(dir);
+      expect(found?.agents).toHaveLength(1);
+      expect(found?.agents[0]!.at).toBe(Date.parse('2026-10-06T00:00:08.000Z'));
+    } finally { rmSync(home2, { recursive: true, force: true }); }
+  });
+
   const get = (path: string) => handle(new Request(`http://tautan.test${path}`));
   const key = encodeURIComponent(paneKey);
 

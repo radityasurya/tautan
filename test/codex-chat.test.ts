@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, afterAll, describe, expect, test } from 'bun:test';
 import { parseCodexRollout, type TranscriptImage } from '../shared/chat.ts';
@@ -59,6 +60,22 @@ describe('resolveCodexPath', () => {
     await expect(resolveCodexPath(localIo, uuidD, fixtureHome)).resolves.toBeUndefined(); // two files carry the id
     await expect(resolveCodexPath(localIo, uuidM, fixtureHome)).resolves.toBeUndefined(); // header names another id
     await expect(resolveCodexPath(localIo, 'not-a-uuid', fixtureHome)).resolves.toBeUndefined();
+  });
+
+  test('a session_meta whose first line passes the head window still resolves', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tautan-codex-long-'));
+    try {
+      const uuid = 'bbbbbbbb-0000-4000-8000-0000000000ff';
+      const dir = join(home, 'sessions', '2026', '10', '07');
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, `rollout-2026-10-07T11-00-00-${uuid}.jsonl`);
+      // The header's id sits past the old 256 KB window behind huge base_instructions; the
+      // first line must be read whole before the header check can parse it.
+      const meta = `{"timestamp":"2026-10-07T11:00:00.000Z","type":"session_meta","payload":{"base_instructions":"${'i'.repeat(280_000)}","id":"${uuid}"}}`;
+      const turn = `{"timestamp":"2026-10-07T11:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hi"}]}}`;
+      writeFileSync(path, `${meta}\n${turn}\n`);
+      await expect(resolveCodexPath(localIo, uuid, home)).resolves.toBe(path);
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });
 
