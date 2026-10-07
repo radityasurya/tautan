@@ -203,6 +203,9 @@ const tokens = {
     textTertiary: "#aaaaaa",
     textMuted: "#cccccc",
     textInverse: "#ffffff",
+    // tautan edit: text and marks drawn on accent, danger and success fills (was a hard-coded white)
+    onAccent: "#ffffff", onDanger: "#ffffff", onSuccess: "#ffffff",
+    sheetBg: "rgba(255,255,255,0.95)",
     shadow: "rgba(0,0,0,0.04)",
     shadowMd: "rgba(0,0,0,0.06)",
     shadowLg: "rgba(0,0,0,0.1)",
@@ -236,6 +239,8 @@ const tokens = {
     textTertiary: "#6a6a6a",
     textMuted: "#4a4a4a",
     textInverse: "#1a1a1a",
+    onAccent: "#ffffff", onDanger: "#ffffff", onSuccess: "#ffffff",
+    sheetBg: "rgba(30,30,30,0.95)",
     shadow: "rgba(0,0,0,0.2)",
     shadowMd: "rgba(0,0,0,0.3)",
     shadowLg: "rgba(0,0,0,0.4)",
@@ -559,11 +564,11 @@ function Button({
     },
     accent: {
       background: disabled ? pal.bgMuted : pal.accent,
-      color: disabled ? pal.textMuted : "#ffffff",
+      color: disabled ? pal.textMuted : pal.onAccent,
     },
     danger: {
       background: disabled ? pal.bgMuted : pal.danger,
-      color: disabled ? pal.textMuted : "#ffffff",
+      color: disabled ? pal.textMuted : pal.onDanger,
     },
   };
 
@@ -929,7 +934,7 @@ function SwitchToggle({ checked, onChange, label, theme: tp }) {
         }}>
         <div style={{
           width: 20, height: 20, borderRadius: 10,
-          background: checked ? "#fff" : pal.bgElevated,
+          background: checked ? pal.onAccent : pal.bgElevated,
           position: "absolute", top: 2, left: checked ? 22 : 2,
           transition: `left ${motion.spring} ${motion.springCurve}`, boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
         }} />
@@ -1579,7 +1584,7 @@ function SpringToggle({ checked, onChange, label, theme: tp }) {
         }}>
         <div style={{
           width: thumbW, height: 20, borderRadius: 10,
-          background: checked ? "#fff" : pal.bgElevated,
+          background: checked ? pal.onAccent : pal.bgElevated,
           position: "absolute", top: 2,
           left: checked ? (44 - thumbW - 2) : 2,
           transition: `left ${motion.spring} ${motion.springCurve}, width ${motion.fast} ${motion.easeOut}, background ${motion.smooth} ${motion.easeInOut}`,
@@ -1643,7 +1648,7 @@ function SpringSlider({ value, onChange, min = 0, max = 100, label, theme: tp })
           <div style={{
             position: "absolute", left: `${pct}%`,
             transform: `translate(-50%, 0) scale(${thumbScale})`,
-            width: 14, height: 14, borderRadius: 7, background: "#fff",
+            width: 14, height: 14, borderRadius: 7, background: pal.onAccent,
             border: `1.5px solid ${pal.accent}`,
             boxShadow: dragging ? `0 0 0 6px ${pal.accent}22, 0 1px 3px rgba(0,0,0,0.18)` : "0 1px 3px rgba(0,0,0,0.15)",
             transition: thumbTrans,
@@ -1883,7 +1888,7 @@ function Stepper({ steps, current = 0, theme: tp }) {
               width: active ? 24 : 16, height: active ? 24 : 16, borderRadius: active ? 12 : 8,
               background: done ? pal.accent : active ? pal.bgElevated : pal.bgMuted,
               border: active ? `2px solid ${pal.accent}` : "none",
-              color: done ? "#fff" : active ? pal.accent : pal.textTertiary,
+              color: done ? pal.onAccent : active ? pal.accent : pal.textTertiary,
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: active ? 11 : 9, fontWeight: tokens.weight.semibold, fontFamily: tokens.font.sans,
               marginTop: active ? 0 : 4,
@@ -1914,7 +1919,7 @@ function CommandPalette({ items = [], placeholder = "Type a command or search…
   return (
     <div style={{
       width: 420, maxWidth: "100%", fontFamily: tokens.font.sans,
-      background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+      background: pal.sheetBg,
       backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
       border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.lg,
       boxShadow: `0 16px 48px ${pal.shadowLg}`,
@@ -1982,7 +1987,7 @@ function CommandMenu({ open, onClose, items = [], placeholder = "Type a command 
     }}>
       <div onClick={e => e.stopPropagation()} style={{
         width: 520, maxWidth: "92vw", fontFamily: tokens.font.sans,
-        background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+        background: pal.sheetBg,
         backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
         border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.lg,
         boxShadow: `0 16px 48px ${pal.shadowLg}`,
@@ -2119,7 +2124,7 @@ function Combobox({ options = [], value, onChange, placeholder = "Select…", la
       {open && (
         <div style={{
           position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 100,
-          background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+          background: pal.sheetBg,
           backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
           border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.md,
           boxShadow: `0 8px 24px ${pal.shadowLg}`,
@@ -2190,7 +2195,7 @@ function Calendar({ value, onChange, theme: tp }) {
               style={{
                 ...interactiveBase, padding: "6px 0", borderRadius: tokens.radius.sm,
                 background: isSelected ? pal.accent : "transparent",
-                color: !d ? "transparent" : isSelected ? "#fff" : isToday ? pal.accent : pal.text,
+                color: !d ? "transparent" : isSelected ? pal.onAccent : isToday ? pal.accent : pal.text,
                 fontWeight: isToday || isSelected ? tokens.weight.semibold : tokens.weight.regular,
                 ...tokens.type.sm, border: isToday && !isSelected ? `1px solid ${pal.accent}` : "1px solid transparent",
                 transition: `all ${motion.fast} ${motion.easeInOut}`,
@@ -2254,7 +2259,7 @@ function ContextMenu({ items, children, theme: tp }) {
       {menu && (
         <div onClick={(e) => e.stopPropagation()} style={{
           position: "fixed", top: menu.y, left: menu.x, zIndex: 10000,
-          background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+          background: pal.sheetBg,
           backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
           border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.md,
           padding: 4, minWidth: 180, boxShadow: `0 8px 24px ${pal.shadowLg}`, fontFamily: tokens.font.sans,
@@ -2303,7 +2308,7 @@ function Menubar({ menus, theme: tp }) {
               <div onClick={() => setOpen(null)} style={{ position: "fixed", inset: 0, zIndex: 99 }} />
               <div style={{
                 position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 100,
-                background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+                background: pal.sheetBg,
                 backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
                 border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.md, padding: 4, minWidth: 180,
                 boxShadow: `0 8px 24px ${pal.shadowLg}`,
@@ -2448,7 +2453,7 @@ function AlertDialog({ open, onClose, title, description, variant = "danger", co
       animation: `halaska-fade-in ${motion.fast} ${motion.easeOut} both`,
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+        background: pal.sheetBg,
         backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
         borderRadius: tokens.radius.lg, padding: 24, minWidth: 320, maxWidth: 420,
         border: `1px solid ${pal.borderSubtle}`, boxShadow: `0 16px 48px ${pal.shadowLg}`,
@@ -2480,7 +2485,7 @@ function FormDialog({ open, onClose, title, description, children, submitLabel =
       animation: `halaska-fade-in ${motion.fast} ${motion.easeOut} both`,
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+        background: pal.sheetBg,
         backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
         borderRadius: tokens.radius.lg, padding: 24, minWidth: 360, maxWidth: 480,
         border: `1px solid ${pal.borderSubtle}`, boxShadow: `0 16px 48px ${pal.shadowLg}`,
@@ -2510,14 +2515,14 @@ function CardDialog({ open, onClose, cover, title, description, children, action
       animation: `halaska-fade-in ${motion.fast} ${motion.easeOut} both`,
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+        background: pal.sheetBg,
         backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
         borderRadius: tokens.radius.lg, overflow: "hidden", minWidth: 360, maxWidth: 480,
         border: `1px solid ${pal.borderSubtle}`, boxShadow: `0 16px 48px ${pal.shadowLg}`,
         animation: `halaska-scale-in ${motion.normal} ${motion.emphasized} both`, fontFamily: tokens.font.sans,
       }}>
         {cover && (
-          <div style={{ height: 140, background: `linear-gradient(135deg, ${pal.accent}, ${pal.accentHover})`, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 32, transition: `background ${motion.smooth} ${motion.easeInOut}` }}>{cover}</div>
+          <div style={{ height: 140, background: `linear-gradient(135deg, ${pal.accent}, ${pal.accentHover})`, display: "flex", alignItems: "center", justifyContent: "center", color: pal.onAccent, fontSize: 32, transition: `background ${motion.smooth} ${motion.easeInOut}` }}>{cover}</div>
         )}
         <div style={{ padding: 24 }}>
           {title && <div style={{ ...tokens.type.lg, fontWeight: tokens.weight.semibold, color: pal.text, marginBottom: 4 }}>{title}</div>}
@@ -2572,7 +2577,7 @@ function Dialog({ open, onClose, title, children, theme: tp }) {
       animation: `halaska-fade-in ${motion.fast} ${motion.easeOut} both`,
     }}>
       <div onClick={(e) => e.stopPropagation()} style={{
-        background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+        background: pal.sheetBg,
         backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
         borderRadius: tokens.radius.lg, padding: 24, minWidth: 320, maxWidth: 480,
         border: `1px solid ${pal.borderSubtle}`, boxShadow: `0 16px 48px ${pal.shadowLg}`,
@@ -2617,7 +2622,7 @@ function Popover({ trigger, children, theme: tp }) {
       {open && <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 9999 }} />}
       <div style={{
         position: "absolute", top: "100%", left: 0, marginTop: 8, zIndex: 10000,
-        background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+        background: pal.sheetBg,
         backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.md,
         padding: 16, minWidth: 200, boxShadow: `0 8px 24px ${pal.shadowLg}`,
@@ -2820,7 +2825,7 @@ function Breadcrumb({ items, maxVisible, home, theme: tp }) {
               }}>…</span>
               <div style={{
                 position: "absolute", top: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
-                background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+                background: pal.sheetBg,
                 backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
                 border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.md,
                 padding: "8px 10px", boxShadow: `0 8px 24px ${pal.shadowLg}`,
@@ -2863,7 +2868,7 @@ function HoverCard({ trigger, children, theme: tp }) {
       {trigger}
       <div style={{
         position: "absolute", top: "100%", left: 0, marginTop: 8, zIndex: 100,
-        background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+        background: pal.sheetBg,
         backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.md,
         padding: 16, minWidth: 240, boxShadow: `0 8px 24px ${pal.shadowLg}`,
@@ -2976,7 +2981,7 @@ function DropdownMenu({ trigger, items, theme: tp }) {
       {open && <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 9999 }} />}
       <div style={{
         position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 10000,
-        background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+        background: pal.sheetBg,
         backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
         border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.md,
         padding: 4, minWidth: 180, boxShadow: `0 8px 24px ${pal.shadowLg}`,
@@ -3051,10 +3056,10 @@ function Choicebox({ options, value, onChange, multiple, theme: tp }) {
             }}>
               {selected && (multiple ? (
                 <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
-                  <path d="M1.5 5.5 4 8 8.5 2.5" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M1.5 5.5 4 8 8.5 2.5" stroke={pal.onAccent} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               ) : (
-                <span style={{ width: 6, height: 6, borderRadius: 3, background: "#fff", animation: `halaska-scale-in 0.2s ${motion.easeOut} both` }} />
+                <span style={{ width: 6, height: 6, borderRadius: 3, background: pal.onAccent, animation: `halaska-scale-in 0.2s ${motion.easeOut} both` }} />
               ))}
             </span>
             <span style={{ flex: 1, minWidth: 0 }}>
@@ -3126,7 +3131,7 @@ function SplitButton({ children, onClick, items = [], variant = "primary", size 
           <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 90 }} />
           <div style={{
             position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 91, minWidth: 200,
-            background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+            background: pal.sheetBg,
             backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
             border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.md,
             padding: 4, boxShadow: `0 8px 24px ${pal.shadowLg}`,
@@ -4276,7 +4281,7 @@ function InlinePanelPreview({ title, children, actions, theme, shape = "dialog" 
   return (
     <div style={{
       width: isSheet ? 320 : 400, maxWidth: "100%", boxSizing: "border-box",
-      background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+      background: pal.sheetBg,
       backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
       borderTop: `1px solid ${pal.borderSubtle}`, borderLeft: `1px solid ${pal.borderSubtle}`, borderRight: `1px solid ${pal.borderSubtle}`,
       borderBottom: isDrawer ? "none" : `1px solid ${pal.borderSubtle}`,
@@ -5241,7 +5246,7 @@ function AgentVisualAvatar({ visual, size = 72, theme }) {
       width: size, height: size, borderRadius: size / 2,
       background: visual ? `linear-gradient(135deg, ${pal.accent}, ${pal.accentHover})` : pal.bgMuted,
       border: `1px solid ${visual ? "transparent" : pal.borderSubtle}`,
-      color: "#fff",
+      color: pal.onAccent,
       display: "flex", alignItems: "center", justifyContent: "center",
       fontSize: size * 0.42, flexShrink: 0,
       boxShadow: visual ? `0 4px 14px ${pal.accent}33` : "none",
@@ -5455,7 +5460,7 @@ function AgentSetupPattern({ theme }) {
                   <div style={{
                     width: 28, height: 28, borderRadius: 14,
                     background: selected ? pal.accent : pal.bgMuted,
-                    color: selected ? "#fff" : pal.textSecondary,
+                    color: selected ? pal.onAccent : pal.textSecondary,
                     display: "flex", alignItems: "center", justifyContent: "center",
                     fontSize: 13, flexShrink: 0,
                     transition: `all ${motion.normal} ${motion.easeInOut}`,
@@ -5608,7 +5613,7 @@ function AgentGlyph({ size = 24, theme }) {
     <div style={{
       width: size, height: size, borderRadius: size / 2, flexShrink: 0,
       background: `linear-gradient(135deg, ${pal.accent}, ${pal.accentHover})`,
-      color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+      color: pal.onAccent, display: "flex", alignItems: "center", justifyContent: "center",
       fontSize: Math.round(size * 0.46),
       transition: `all ${motion.smooth} ${motion.easeInOut}`,
     }}>✦</div>
@@ -6073,7 +6078,7 @@ function ApprovalCardPattern({
                     display: "flex", alignItems: "center", justifyContent: "center",
                     transition: `all ${motion.spring} ${motion.springCurve}`,
                   }}>
-                    {active && <span style={{ width: 5, height: 5, borderRadius: 3, background: "#fff", animation: `halaska-radio-dot-in 0.35s ${motion.springCurve} both` }} />}
+                    {active && <span style={{ width: 5, height: 5, borderRadius: 3, background: pal.onAccent, animation: `halaska-radio-dot-in 0.35s ${motion.springCurve} both` }} />}
                   </span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <Text size="base" weight="medium" theme={theme} style={{ display: "block" }}>{o.title}</Text>
@@ -6518,7 +6523,7 @@ function CommandSearchPattern({ theme }) {
   return (
     <div style={{
       width: 440, maxWidth: "100%", fontFamily: tokens.font.sans,
-      background: theme === "dark" ? "rgba(30,30,30,0.95)" : "rgba(255,255,255,0.95)",
+      background: pal.sheetBg,
       backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
       border: `1px solid ${pal.borderSubtle}`, borderRadius: tokens.radius.lg,
       boxShadow: `0 16px 48px ${pal.shadowLg}`, overflow: "hidden",
@@ -6699,7 +6704,7 @@ function AgentChatPattern({ theme }) {
           <div key={i} style={{ alignSelf: "flex-end", maxWidth: "80%", animation: `halaska-step-in 0.3s ${motion.emphasized} both` }}>
             <div style={{
               padding: "9px 14px", borderRadius: `${tokens.radius.md}px ${tokens.radius.md}px 4px ${tokens.radius.md}px`,
-              background: pal.accent, color: "#fff", ...tokens.type.base, lineHeight: 1.55,
+              background: pal.accent, color: pal.onAccent, ...tokens.type.base, lineHeight: 1.55,
               transition: `background ${motion.smooth} ${motion.easeInOut}`,
             }}>{m.text}</div>
           </div>
@@ -6733,7 +6738,7 @@ function AgentChatPattern({ theme }) {
             style={{
               ...interactiveBase, width: 32, height: 32, borderRadius: 16, flexShrink: 0,
               background: draft.trim() ? pal.accent : pal.bgMuted,
-              color: draft.trim() ? "#fff" : pal.textTertiary,
+              color: draft.trim() ? pal.onAccent : pal.textTertiary,
               display: "flex", alignItems: "center", justifyContent: "center",
             }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -6993,11 +6998,11 @@ function PromptInputPattern({ theme }) {
                 background: streaming || canSend
                   ? (sendHover ? pal.accentHover : pal.accent)
                   : pal.bgMuted,
-                color: streaming || canSend ? "#fff" : pal.textMuted,
+                color: streaming || canSend ? pal.onAccent : pal.textMuted,
                 cursor: streaming || canSend ? "pointer" : "default",
               }}>
               {streaming ? (
-                <span style={{ width: 9, height: 9, borderRadius: 2, background: "#fff", animation: `halaska-scale-in 0.2s ${motion.easeOut} both` }} />
+                <span style={{ width: 9, height: 9, borderRadius: 2, background: pal.onAccent, animation: `halaska-scale-in 0.2s ${motion.easeOut} both` }} />
               ) : (
                 <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="8" y1="12.5" x2="8" y2="3.5" /><polyline points="4,7.5 8,3.5 12,7.5" />
@@ -7799,7 +7804,7 @@ function FdbkVoteBtn({ down, active, flash, onClick, theme }) {
         padding: "7px 12px", borderRadius: tokens.radius.pill,
         background: flash ? pal.accent : active ? pal.accentBg : hover ? pal.bgSubtle : "transparent",
         border: `1px solid ${active || flash ? `${pal.accent}55` : pal.borderSubtle}`,
-        color: flash ? "#fff" : active ? pal.accentText : hover ? pal.textSecondary : pal.textTertiary,
+        color: flash ? pal.onAccent : active ? pal.accentText : hover ? pal.textSecondary : pal.textTertiary,
       }}>
       <FdbkThumbIcon size={13} down={down} />
     </button>
@@ -8175,7 +8180,7 @@ function AutonomyLevelRow({ level, selected, onSelect, theme }) {
         display: "flex", alignItems: "center", justifyContent: "center",
         transition: `all ${motion.spring} ${motion.springCurve}`,
       }}>
-        {selected && <span style={{ width: 5, height: 5, borderRadius: 3, background: "#fff", animation: `halaska-radio-dot-in 0.35s ${motion.springCurve} both` }} />}
+        {selected && <span style={{ width: 5, height: 5, borderRadius: 3, background: pal.onAccent, animation: `halaska-radio-dot-in 0.35s ${motion.springCurve} both` }} />}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <Text size="base" weight="medium" theme={theme} style={{ display: "block" }}>{level.title}</Text>
@@ -9983,7 +9988,7 @@ function DiffViewPattern({ theme }) {
             <Text size="sm" secondary theme={theme}>All changes reviewed</Text>
             <Button theme={theme} variant="primary" size="sm"
               onClick={() => setApplied(true)}
-              style={applied ? { background: pal.success, color: "#fff", pointerEvents: "none" } : undefined}>
+              style={applied ? { background: pal.success, color: pal.onSuccess, pointerEvents: "none" } : undefined}>
               {applied ? "Applied ✓" : "Apply"}
             </Button>
           </div>

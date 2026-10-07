@@ -14,7 +14,7 @@ import { setBadge } from './push.ts';
 import { Settings } from './settings.tsx';
 import { UsageStrip } from './usage.tsx';
 import { ThemeProvider, tokens } from './halaska-kit';
-import { PALETTES, PALETTE_IDS } from './palettes.ts';
+import { PALETTES, PALETTE_IDS, kitTokens } from './palettes.ts';
 
 // ---- theme ----
 // The UI is Halaska Kit: two bases, light and dark. A named palette (web/palettes.ts) sits
@@ -43,9 +43,15 @@ export function setTheme(theme: Theme) {
   dispatchEvent(new CustomEvent('tautan:theme'));
 }
 
+// The kit exports `tokens` as a plain object and reads it on every render, so a named palette
+// is laid over tokens.light or tokens.dark in place; plain light and dark restore the originals.
+const kitBase = { light: { ...tokens.light }, dark: { ...tokens.dark } };
+
 function applyTheme(theme: Theme) {
   const kit = resolve(theme);
   const named = PALETTES[theme];
+  for (const k of ['light', 'dark'] as const) Object.assign(tokens[k], kitBase[k]);
+  if (named) Object.assign(tokens[kit], kitTokens(named));
   // A named palette is its own `data-theme`, so the Pane's nearest-ANSI cache (keyed on it)
   // rebuilds. Its colours go inline; the light and dark ANSI blocks in theme.css stay the
   // fallback and are what plain light and dark use.
@@ -88,10 +94,13 @@ dark.addEventListener('change', () => applyTheme(getTheme()));
 /** The resolved kit theme, as state, so <ThemeProvider> follows the picker and the OS. */
 export function useKitTheme(): KitTheme {
   const [kit, setKit] = useState(() => resolve(getTheme()));
+  const [, repaint] = useState(0);
   useEffect(() => {
     const on = () => {
       applyTheme(getTheme());
       setKit(resolve(getTheme()));
+      // Two palettes can share a base; the bump re-renders the kit so it re-reads its tokens.
+      repaint((n) => n + 1);
     };
     dark.addEventListener('change', on);
     addEventListener('tautan:theme', on);

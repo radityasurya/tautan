@@ -96,6 +96,51 @@ export const PALETTES: Record<string, Palette> = {
   },
 };
 
+const rgb = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const hexOf = (c: number[]) => `#${c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+/** `a` mixed toward `b` by `t` (0 to 1). */
+const mix = (a: string, b: string, t: number) => hexOf(rgb(a).map((v, i) => v + (rgb(b)[i]! - v) * t));
+const tint = (h: string, a: number) => `rgba(${rgb(h).join(',')},${a})`;
+
+/** `c` pulled toward `toward` until it reads at 4.5:1 on every ground. */
+function readable(c: string, toward: string, grounds: string[]): string {
+  let out = c;
+  for (let t = 0; t <= 1 && grounds.some((g) => contrast(out, g) < 4.5); t += 0.05) out = mix(c, toward, t);
+  return out;
+}
+
+/** The better of `fg` and `bg` for text drawn on `fill`. */
+// When neither reaches 4.5:1 (a published pastel), it moves to black or white, whichever reads better.
+function on(p: Palette, fill: string): string {
+  const pick = contrast(p.bg, fill) >= contrast(p.fg, fill) ? p.bg : p.fg;
+  if (contrast(pick, fill) >= 4.5) return pick;
+  return contrast('#000000', fill) >= contrast('#ffffff', fill) ? '#000000' : '#ffffff';
+}
+
+/**
+ * The kit colour tokens (tokens.light / tokens.dark keys) for a palette. Applied over the
+ * kit's own base by web/app.tsx, so every kit component follows the palette without a kit edit.
+ */
+export function kitTokens(p: Palette): Record<string, string> {
+  const light = p.base === 'light';
+  return {
+    bg: p.bg, bgElevated: p.elevated, bgSubtle: p.surface,
+    bgMuted: mix(p.surface, p.border, 0.2), bgHover: mix(p.surface, p.border, 0.3), bgInput: p.surface,
+    border: p.border, borderSubtle: mix(p.border, p.bg, 0.5),
+    borderInput: tint(p.fg, 0.12), borderFocus: p.accent,
+    text: p.fg, textSecondary: p.muted,
+    // ponytail: tertiary shares muted so every text token stays readable; add a step if the hierarchy is missed.
+    textTertiary: p.muted, textMuted: mix(p.muted, p.bg, 0.45), textInverse: p.bg,
+    shadow: light ? 'rgba(0,0,0,0.04)' : 'rgba(0,0,0,0.2)', shadowMd: light ? 'rgba(0,0,0,0.06)' : 'rgba(0,0,0,0.3)', shadowLg: light ? 'rgba(0,0,0,0.1)' : 'rgba(0,0,0,0.4)',
+    sheetBg: tint(p.elevated, 0.95),
+    onAccent: on(p, p.accent), onDanger: on(p, p.danger), onSuccess: on(p, p.ok),
+    accent: p.accent, accentHover: mix(p.accent, light ? '#000000' : '#ffffff', 0.15), accentBg: tint(p.accent, 0.12), accentText: readable(p.accent, p.fg, [p.bg, p.surface, p.elevated, mix(p.bg, p.accent, 0.12)]),
+    success: p.ok, successHover: mix(p.ok, light ? '#000000' : '#ffffff', 0.15), successBg: tint(p.ok, 0.1),
+    warning: p.warn, warningHover: mix(p.warn, light ? '#000000' : '#ffffff', 0.15), warningBg: tint(p.warn, 0.1),
+    danger: p.danger, dangerHover: mix(p.danger, light ? '#000000' : '#ffffff', 0.15), dangerBg: tint(p.danger, 0.1),
+  };
+}
+
 export const PALETTE_IDS = Object.keys(PALETTES);
 
 /** WCAG 2.x contrast ratio between two `#rrggbb` colours. */
