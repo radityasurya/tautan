@@ -8,7 +8,6 @@ import { FileScreen } from './file.tsx';
 import { Home, seedSeen, unseen } from './home.tsx';
 import { HostDetail, Hosts } from './hosts.tsx';
 import { AgentsTab, HostsTab, SettingsTab } from './icons.tsx';
-import { mockOpen } from './mock.ts';
 import { PaneScreen } from './pane.tsx';
 import { CHAT_EVENT } from '../shared/chat-merge.ts';
 import { setBadge } from './push.ts';
@@ -743,4 +742,4 @@ export async function api<T>(path: string, body?: unknown, method: 'GET' | 'POST
 }
 
 /** `?mock&open=switch` lands a screenshot on an open drawer. Always false without `?mock`. */
-export const opensWith = (name: string) => mockOpen() === name;
+export const opensWith = (name: string) => new URLSearchParams(location.search).get('open') === name;

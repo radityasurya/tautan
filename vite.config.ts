@@ -38,7 +38,8 @@ export default defineConfig({
   root: 'web',
   plugins: [react(), tailwindcss(), swPrecache()],
   resolve: { alias: { '@': fileURLToPath(new URL('./web', import.meta.url)) } },
-  build: { outDir: '../dist/web', emptyOutDir: true },
+  // ES2022 matches tsconfig; main.tsx's top-level await (the mock chunk gate) needs it.
+  build: { target: 'es2022', outDir: '../dist/web', emptyOutDir: true },
   server: {
     host: '127.0.0.1',
     port: 5173,

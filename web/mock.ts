@@ -1,6 +1,6 @@
 // Fixtures plus a fake Hub, so the web app runs with no herdr, no Host and no network.
-// Nothing imports this in production: `installMock()` is a no-op unless the page is
-// opened with `?mock` (or built with VITE_MOCK=1).
+// main.tsx loads this chunk only when the page is opened with `?mock` (or built with
+// VITE_MOCK=1); it never loads for a real page.
 import type {
   DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope,
   Explain, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
@@ -1220,7 +1220,7 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
  * theme (read in app.tsx) and `?mock&still` stops the fixture ticking.
  * ponytail: no allow-list of names; the screens that read it already know theirs.
  */
-export function mockOpen(): string | null {
+function mockOpen(): string | null {
   return new URLSearchParams(location.search).get('open');
 }
 

@@ -1,14 +1,15 @@
 import { lazy, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app.tsx';
-import { installMock } from './mock.ts';
 import { startPush } from './push.ts';
 import './theme.css';
 
-// A no-op unless the page was opened with `?mock`.
-// ponytail: imported unconditionally, so the fixtures ride along in the bundle (~6 KB
-// gzipped). Move behind a dynamic import if the bundle budget ever bites.
-installMock();
+// The fixtures live in their own chunk, fetched only when the page asks for them. Awaited
+// so the fake Hub is in place before `App` or `startPush` makes the first `/api` call.
+if (location.search.includes('mock') || import.meta.env.VITE_MOCK === '1') {
+  const { installMock } = await import('./mock.ts');
+  installMock();
+}
 
 // Registers `/sw.js` in a build, or in dev with `?sw`. Everything else about push waits
 // for the Settings toggle.
