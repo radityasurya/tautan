@@ -155,8 +155,21 @@ stop work asks first, and any other Tab closes at once.
   hint beside the strip shows only on a Mac. The shortcuts read `code`, so an AZERTY row
   still counts as digits.
 - **Pane chips.** When the open Tab holds more than one Pane, a row of Pane chips sits
-  under the Tabs, at both widths. Side-by-side Panes on desktop are deferred; see lane 10.8
-  in [WAVES.md](./WAVES.md).
+  under the Tabs, at both widths. On desktop, the split view replaces it while its rule
+  holds; when the rule breaks, the chips row comes back.
+
+**Split view, desktop.** From 1024 px up, the open Tab's 2 to 4 Panes draw side by side at
+the Mux's own proportions: 1 px dividers, a 24 px title row per cell (Dot, title, agent),
+and a 2 px accent ring on the focused cell. Each cell renders its Pane's grid, forced to
+Fit the cell whatever the Fit setting says. The chips row takes over when the Tab is
+zoomed — a zoomed Tab reports no cell origins — when this view holds a Phone width lease,
+when the lens is Chat, or when a cell would measure under 420×180 px in the space the
+composer leaves. **Split view** in ⋯ turns it off; it is on by default (`tautan.split`).
+
+Focus is the route. A click on a cell, or Enter on its title, navigates with `replace` and
+sends nothing to the program, so the stream stays open. The other cells are view-only: no
+Affordances, no mouse forwarding, no Chat lens, no composer. A view-only cell marks its
+Pane Seen after its Screen has stayed on display for 3 s while the page is visible.
 
 The grid renders the `visible` screen as styled ANSI spans, pinned to the
 bottom until you scroll up, when a **New output** pill appears. Content wider
@@ -188,6 +201,7 @@ row there is hinted with the grid size.
 | Wrap, agent Panes | on | `tautan.wrap.agent` = `on` \| `off` |
 | Wrap, shell Panes | off | `tautan.wrap.shell` = `on` \| `off` |
 | Sidebar, desktop | open | `tautan.sidebar` = `open` \| `closed` |
+| Split view, desktop | on | `tautan.split` = `on` \| `off` |
 | Smart replies | off | `tautan.smart` = `on` \| `off` |
 | Mouse taps | the App profile | `tautan.mouse.<paneKey>` = `on` \| `off` |
 
@@ -584,7 +598,8 @@ title and the meta line.
   branch field it reveals.
 - **Rename**: one field, for a Workspace, Tab or Pane.
 - **More**: the ⋯ menu — the theme picker (`ThemePicker` from `web/settings.tsx`,
-  the same dropdown the Settings screen shows), then Wrap, **Fit to width** with the
+  the same dropdown the Settings screen shows), then Wrap, **Phone width** with
+  `the pane draws at your columns` as its hint, **Fit to width** with the
   grid size as its hint, **Theme colors**, **Mouse taps**, Diff, Rename, Close Pane, and a
   disabled `Resize to phone` marked `v2`.
 - **Close Pane** is a Dialog, not a drawer, so a destructive action cannot be
@@ -649,8 +664,9 @@ The sidebar footer holds two links. **Settings** opens `#/settings`. **Hosts** o
 
 Hash routes use `history.pushState`, so the iOS edge swipe and the Android back button
 work, wrapped in a View Transition. There is one `EventSource` for the whole app. It
-reopens when the watched Pane changes, and a hairline `Reconnecting` bar shows while it is
-down. The floating tab bar badges unseen `blocked` Panes and hides itself whenever a text
+reopens when the watched set changes — a Tab change reopens it, a focus move inside a
+split Tab does not — and a hairline `Reconnecting` bar shows while it is down. The
+floating tab bar badges unseen `blocked` Panes and hides itself whenever a text
 field has focus, so the keyboard never covers the composer.
 
 The **app badge** on the installed icon counts more than the tab badge does:

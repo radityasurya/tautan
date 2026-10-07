@@ -66,13 +66,22 @@ sequenceDiagram
     H->>M: session.snapshot
     M-->>H: workspaces, tabs, panes, status
     H-->>P: event: state
-    loop agent produces output
-        M-->>H: pane_updated {pane_id, revision, agent_status}
-        Note over H: debounce 150 ms per Pane
+    H->>M: pane.read {source: visible, format: ansi}
+    M-->>H: rendered grid
+    H-->>P: event: screen
+    Note over M,H: pane.updated fires on the title, the cwd and the Status only.<br/>herdr sends no event for raw output, so the Hub polls every watched Pane.
+    loop one timer per watched Pane
         H->>M: pane.read {source: visible, format: ansi}
         M-->>H: rendered grid
-        H-->>P: event: screen
+        alt the Screen changed
+            H-->>P: event: screen
+            Note over H: next poll in 250 ms
+        else the Screen is unchanged
+            Note over H: delay ×1.5, at most 2 s
+        end
     end
+    M-->>H: pane_updated {title, cwd or Status}
+    Note over H: re-poll the Pane at once, whatever the backoff,<br/>and refresh the tree
     P->>H: POST /api/panes/w1/p3/input {text, keys}
     H->>M: pane.send_text · pane.send_keys
     Note over H: Status → blocked sends one push
@@ -85,9 +94,9 @@ sequenceDiagram
   (`~/.config/herdr/herdr.sock`; other sessions via `herdr session list --json`). The
   server closes the connection after **one** response, so the client opens a connection per
   request. Only `events.subscribe` stays open.
-- `pane.updated` events carry the full pane record (`revision`, `agent_status`) on every
-  output change, roughly ten per second per working pane. There is no replay: subscribe,
-  then take a `session.snapshot`.
+- `pane.updated` fires on the title, the cwd and the Status only — never on raw output. A
+  shell that prints for ten seconds emits nothing, so the Hub polls a watched Pane instead.
+  There is no replay: subscribe, then take a `session.snapshot`.
 - `pane.read` returns the rendered grid (`format: ansi`) or text; sources `visible`,
   `recent`, `recent_unwrapped`, `detection`. No cursor position.
 - `agent.explain` returns the matched detection rule (`matched_rule.id`) and evidence;
@@ -158,7 +167,9 @@ capability flags: the UI hides write actions when `kind === 'tmux'`.
   Status that settles into `blocked` between events would otherwise arrive late.
 - A Status **transition** into `blocked` sends one push per subscription. A Pane that is
   already `blocked` sends nothing, and `done` never pushes — it is a badge.
-- Each SSE client may watch one Pane: changes on it → 150 ms debounce → `read()` → SSE `screen`.
+- Each SSE client may watch up to 4 Panes (ADR 0006): every watched Pane is polled on its
+  own backoff, 250 ms after a change, ×1.5 while quiet, at most 2 s. A changed Screen goes
+  out as one SSE `screen` event, which names its Pane by `key`.
 - **Seen** is `{paneKey: revision}` persisted in `state.json`; unseen = `revision > seen`.
 - `StatePane.command` is the Pane's foreground command name, which picks the App profile on
   the phone: tmux reads `pane_current_command`, herdr answers `pane.process_info` through
@@ -170,11 +181,13 @@ capability flags: the UI hides write actions when `kind === 'tmux'`.
 
 | Route | Purpose |
 |---|---|
-| `GET /api/state` | hosts, muxes, workspaces, panes (with status, revision, seenRevision, preview) |
-| `GET /api/events?pane=<key>` | SSE: `state`, `screen`; comment ping every 25 s |
+| `GET /api/state` | hosts, muxes, workspaces, panes (with status, revision, seenRevision, preview, and the cell origin `x`/`y` in cells relative to the Tab — omitted for every Pane of a zoomed Tab) |
+| `GET /api/events?pane=<key>&pane=<key>…` | SSE: `hello {stream}` first, then `state`, `screen`; comment ping every 25 s. `pane=` repeats, de-duplicated, up to 4 watched Panes ([ADR 0006](./adr/0006-split-panes-mirror-mux-geometry.md)); a fifth key is 400 `{error: 'too-many-panes'}`, a key that resolves to no Pane drops, and none resolving is 404 `{error: 'pane not found'}`. Each watched Pane is polled on its own backoff (250 ms after a change, ×1.5 while quiet, at most 2 s). The `screen` event is unchanged: it names its Pane by `key` |
 | `GET /api/panes/:key/screen?mode=visible\|recent` | one Screen |
 | `POST /api/panes/:key/input` `{text?, keys?, raw?}` | text first, then keys, then `raw` — bytes written to the pty untouched |
 | `POST /api/panes/:key/mouse` `{kind, col, row, allow}` | `kind` is `click\|right\|double\|wheelUp\|wheelDown`, `col`/`row` are 1-based cells; the Hub builds the SGR press and release (`mouseBytes`) and sends them as `raw` → 204. 400 `{error: 'body'}` on an unknown kind or a coordinate outside 1…9999, 409 `{error: 'mouse-off'}` unless `allow` is true |
+| `POST /api/panes/:key/lease` `{cols, rows, takeover?, stream?}` | take the Phone width geometry lease (ADR 0004): the Pane draws at these cells. `stream` is the id the stream's first `hello` event announced; the lease belongs to that stream and releases when it ends, whoever else watches the Pane (ADR 0006). Without `stream` the lease lives while any listener watches. 400 `{error: 'geometry'}` outside cols 10–500 or rows 4–200, 409 `{error: 'slot-held'}`, 501 `{error: 'not-herdr'}` on tmux → 204 |
+| `DELETE /api/panes/:key/lease` | release the lease and restore the operator's geometry → 204 |
 | `POST /api/panes/:key/seen` `{revision}` | mark Seen |
 | `GET /api/panes/:key/explain` | Explain or null |
 | `POST /api/panes/:key/attach` (raw body, `X-Name: <filename>`) | write the file on the Pane's Host → `{path, bytes, display}`; 413 over `TAUTAN_MAX_ATTACHMENT_MB` |
