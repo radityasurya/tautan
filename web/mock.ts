@@ -1156,10 +1156,14 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
     // no result while it waits, the result once answered.
     const asking = !agent && key === 'mbp/herdr/p1';
     const etag = `"mock-${agent ?? 'main'}-${grown}${asking ? `-${pane.status}` : ''}"`;
-    if (headers?.get('if-none-match') === etag) return new Response(null, { status: 304, headers: { etag } });
+    const since = url.searchParams.get('since');
+    // ponytail: the fixture turns carry no ids, so a changed cursor answers a reset, as the Hub does for id-less turns.
+    if (since === etag) return json({ sessionId: 'mock', cursor: etag, reset: false, upserts: [], ...(agent ? { agent } : {}) });
+    if (since === null && headers?.get('if-none-match') === etag) return new Response(null, { status: 304, headers: { etag } });
     const chat = mockChat(agent);
     for (let n = 1; n <= grown; n++) chat.turns.push(liveTurn(n));
     if (asking) chat.turns.push(permissionTurn(pane.status));
+    if (since !== null) return json({ sessionId: chat.sessionId, cursor: etag, reset: true, upserts: chat.turns, ...(chat.subagents ? { subagents: chat.subagents } : {}), ...(agent ? { agent } : {}) });
     return Response.json(chat, { headers: { etag, 'cache-control': 'no-cache' } });
   }
   if (method === 'GET' && match[2] === 'explain') return json(mockExplains[key] ?? null);

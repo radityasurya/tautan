@@ -10,6 +10,7 @@ import { HostDetail, Hosts } from './hosts.tsx';
 import { AgentsTab, HostsTab, SettingsTab } from './icons.tsx';
 import { mockOpen } from './mock.ts';
 import { PaneScreen } from './pane.tsx';
+import { CHAT_EVENT } from '../shared/chat-merge.ts';
 import { setBadge } from './push.ts';
 import { Settings } from './settings.tsx';
 import { UsageStrip } from './usage.tsx';
@@ -232,6 +233,8 @@ export function useEvents(pick: (state: State | null) => string[]) {
       setScreen(value);
       setScreens((prev) => ({ ...prev, [value.key]: value }));
     });
+    // ADR 0007: a wake-up for the Chat view, which makes its own `?since=` GET.
+    es.addEventListener('chat', (e) => dispatchEvent(new CustomEvent(CHAT_EVENT, { detail: JSON.parse((e as MessageEvent<string>).data) })));
     es.onopen = () => setConnected(true);
     es.onerror = () => {
       setConnected(false);

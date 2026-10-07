@@ -5,7 +5,8 @@ import { SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown } from './markdown.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
-import { pendingTool, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
+import { pendingTool, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
+import { CHAT_EVENT, mergeTurns } from '../shared/chat-merge.ts';
 import type { Span, Status } from '../shared/types.ts';
 import { deliver, dropPending, pendingSnapshot, settled, subscribePending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
@@ -108,11 +109,11 @@ const count = (n: number, word: string) => `${n.toLocaleString()} ${word}${n ===
 const SHELL = /^bash$/i;
 
 /** What the tool returned: a header with its size, Copy, and the text in its own scroll box. */
-function ToolResult({ tool }: { tool: Tool }) {
-  const result = tool.result!;
+function ToolResult({ tool, full }: { tool: Tool; full?: string }) {
+  const result = full ?? tool.result!;
   const total = tool.resultLines ?? result.split('\n').length;
-  const capped = result.startsWith('…\n');
-  const size = capped ? `last ${result.split('\n').length - 1} of ${count(total, 'line')}` : count(total, 'line');
+  const capped = full === undefined && (tool.resultTruncated || result.startsWith('…\n'));
+  const size = capped ? `last ${result.split('\n').length - (result.startsWith('…\n') ? 1 : 0)} of ${count(total, 'line')}` : count(total, 'line');
   return (
     <section aria-label={`${tool.name} ${tool.isError ? 'error' : 'output'}`} className="border-t border-border p-2">
       <div className="mb-1.5 flex min-h-8 items-center gap-2 pl-1">
@@ -147,10 +148,29 @@ function ResultHint({ tool }: { tool: Tool }) {
   if (tool.result === undefined) return null;
   return <span className="shrink-0 text-[10px] tabular-nums text-muted">{count(tool.resultLines ?? 1, 'line')}</span>;
 }
+/** Whole outputs fetched so far, by Pane, subagent and tool id: a row that closes and opens again asks once. */
+const outputs = new Map<string, string>();
+
+/** The whole output of a sliced tool result, fetched the first time its row opens; the slice stands in until then. */
+function useFullOutput(paneKey: string, agent: string | undefined, tool: Tool, opened: boolean): string | undefined {
+  const key = tool.resultTruncated && tool.id ? `${paneKey}\u0000${agent ?? ''}\u0000${tool.id}` : undefined;
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    if (!opened || !key || outputs.has(key)) return;
+    let alive = true;
+    const url = `/api/panes/${encodeURIComponent(paneKey)}/chat/output/${encodeURIComponent(tool.id!)}${agent ? `?agent=${encodeURIComponent(agent)}` : ''}`;
+    fetch(url)
+      .then((r) => (r.ok ? r.text() : undefined))
+      .then((text) => { if (text !== undefined) { outputs.set(key, text); if (alive) redraw((n) => n + 1); } })
+      .catch(() => {}); // the slice stays; the next open asks again
+    return () => { alive = false; };
+  }, [opened, key]);
+  return key ? outputs.get(key) : undefined;
+}
 const SUMMARY = 'cursor-pointer list-none rounded-chip [&::-webkit-details-marker]:hidden';
 
 /** The open part of a tool row: the image, the page preview, the input, and the output. */
-function ToolBody({ tool, image, preview }: { tool: Tool; image?: ReturnType<typeof toolImage>; preview?: { src: string; title: string } }) {
+function ToolBody({ tool, image, preview, full }: { tool: Tool; image?: ReturnType<typeof toolImage>; preview?: { src: string; title: string }; full?: string }) {
   return (
     <>
       {image && (
@@ -174,7 +194,7 @@ function ToolBody({ tool, image, preview }: { tool: Tool; image?: ReturnType<typ
           className="absolute right-1.5 top-1.5 min-h-8 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg"
         />
       </div>
-      {tool.result !== undefined && <ToolResult tool={tool} />}
+      {tool.result !== undefined && <ToolResult tool={tool} full={full} />}
       {tool.result === undefined && tool.isError && (
         <p className="border-t border-border px-3 py-1.5 text-[11px] font-semibold text-danger">Error, no output</p>
       )}
@@ -219,12 +239,15 @@ function ToolRow({
   const title = card?.title ?? tool.brief.split('/').filter(Boolean).at(-1) ?? tool.name;
   const preview = tool.previewId !== undefined ? { src: previewSrc(paneKey, tool.previewId, agent), title } : undefined;
   const brief = subagent ? subagentName(subagent) : tool.brief;
+  const [opened, setOpened] = useState(false);
+  const full = useFullOutput(paneKey, agent, tool, opened);
 
   return (
     <li className={ROW}>
       <details
         className="group"
         onToggle={(event) => {
+          if (event.currentTarget.open) setOpened(true);
           const tail = event.currentTarget.open && event.currentTarget.querySelector<HTMLElement>('[data-tail]');
           if (tail) tail.scrollTop = tail.scrollHeight;
         }}
@@ -270,7 +293,7 @@ function ToolRow({
             <ChevronRight className="text-muted transition-transform group-open:rotate-90" />
           </summary>
         )}
-        <ToolBody tool={tool} image={image} preview={preview} />
+        <ToolBody tool={tool} image={image} preview={preview} full={full} />
       </details>
       {tool.subagentId && (
         <button
@@ -668,19 +691,20 @@ export function Chat({
     return () => setShowing(paneKey, undefined);
   }, [paneKey, selected]);
 
-  // The Chat view polls its transcript, because herdr moves a Pane's revision on the title,
-  // cwd and Status only: a long working turn would never refresh. Each poll asks with the
-  // last ETag and costs the Hub a stat and a 304 until the transcript moves. The next poll
-  // waits for the previous one; a revision, a send or a Status change asks at once.
-  // ponytail: a change sends the whole conversation again (4 MB on the busiest Pane); an
-  // incremental `?since=` or an SSE push from the Hub is the upgrade.
+  // The Chat view asks the Hub for what changed since its cursor (ADR 0007): a `chat` event
+  // from the Hub wakes it at once, and a slow poll covers a missed event, because herdr moves
+  // a Pane's revision on the title, cwd and Status only. The first ask sends an empty cursor,
+  // which the Hub answers as a reset. The next ask waits for the previous one; a revision, a
+  // send or a Status change asks at once.
   const pace = useRef({ fast: false, blocked: false });
   pace.current = { fast: status === 'working' || waiting.some((p) => p.state !== 'held' && p.state !== 'failed'), blocked: status === 'blocked' };
   const poke = useRef(() => {});
   useEffect(() => {
-    const url = `/api/panes/${encodeURIComponent(paneKey)}/chat${selected ? `?agent=${encodeURIComponent(selected)}` : ''}`;
+    const base = `/api/panes/${encodeURIComponent(paneKey)}/chat?since=`;
+    const agentQuery = selected ? `&agent=${encodeURIComponent(selected)}` : '';
     const controller = new AbortController();
-    let etag: string | null = null;
+    let cursor = '';
+    let turns: Turn[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     let busy = false, again = false, loaded = false, quiet = 0;
     const next = () => {
@@ -695,18 +719,23 @@ export function Chat({
       if (busy) { again = true; return; }
       busy = true;
       try {
-        const response = await fetch(url, { signal: controller.signal, cache: 'no-store', headers: etag ? { 'if-none-match': etag } : {} });
-        if (response.status === 304) quiet++;
+        const response = await fetch(`${base}${encodeURIComponent(cursor)}${agentQuery}`, { signal: controller.signal, cache: 'no-store' });
+        if (!response.ok) throw Object.assign(new Error(String(response.status)), { gone: response.status === 404 || response.status === 501 });
+        const delta = (await response.json()) as ChatDelta;
+        if (!Array.isArray(delta.upserts)) throw new Error('invalid chat');
+        const merged = mergeTurns(turns, delta);
+        cursor = delta.cursor;
+        if (merged === turns && loaded && !delta.subagents) quiet++;
         else {
-          if (!response.ok) throw Object.assign(new Error(String(response.status)), { gone: response.status === 404 || response.status === 501 });
-          const result = (await response.json()) as ChatResponse;
-          if (!Array.isArray(result.turns)) throw new Error('invalid chat');
-          etag = response.headers.get('etag');
           quiet = 0;
           loaded = true;
-          setData({ agent: selected, chat: result });
-          if (result.subagents) setSubagents(result.subagents);
-          const done = finishedIn(result.turns);
+          turns = merged;
+          setData((prev) => ({
+            agent: selected,
+            chat: { sessionId: delta.sessionId, turns, at: Date.now(), subagents: delta.subagents ?? (prev && prev.agent === selected ? prev.chat.subagents : undefined), ...(selected ? { agent: selected } : {}) },
+          }));
+          if (delta.subagents) setSubagents(delta.subagents);
+          const done = finishedIn(turns);
           setFinished((prev) => (done.every((id) => prev.has(id)) ? prev : new Set([...prev, ...done])));
         }
       } catch (error) {
@@ -723,6 +752,11 @@ export function Chat({
       if (again) { again = false; void run(); } else next();
     };
     poke.current = () => void run();
+    const onChat = (event: Event) => {
+      const wake = (event as CustomEvent<ChatEvent>).detail;
+      if (wake.pane === paneKey && wake.agent === selected && wake.cursor !== cursor) void run();
+    };
+    addEventListener(CHAT_EVENT, onChat);
     const onVisible = () => { if (document.visibilityState === 'visible') void run(); else clearTimeout(timer); };
     document.addEventListener('visibilitychange', onVisible);
     void run();
@@ -730,6 +764,7 @@ export function Chat({
       controller.abort();
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisible);
+      removeEventListener(CHAT_EVENT, onChat);
       poke.current = () => {};
     };
   }, [paneKey, selected, onUnavailable]);
@@ -891,7 +926,7 @@ export function Chat({
                           <span className={`block ${turn.text ? 'mt-2' : ''}`}>
                             <Gallery
                               images={turn.images.map((image, n, all) => ({
-                                src: image.src && safeImage(image.src),
+                                src: image.imageId !== undefined ? chatImage(paneKey, image.imageId, selected) : image.src && safeImage(image.src),
                                 alt: all.length > 1 ? `Image you pasted, ${n + 1} of ${all.length}` : 'Image you pasted',
                               }))}
                             />
