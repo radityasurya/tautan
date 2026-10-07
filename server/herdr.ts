@@ -90,10 +90,13 @@ export class HerdrMux implements Mux {
         revision: pane.revision ?? 0, ...sizes.get(pane.pane_id),
       };
     });
-    // ponytail: herdr workspace snapshots carry no cwd, so it is derived from the root pane
     return {
       workspaces: (snap.workspaces ?? []).map((w: Json) => {
-        const cwd = panes.find(p => p.workspaceId === w.workspace_id)?.cwd;
+        // ponytail: no snapshot carries a workspace cwd. Probe 2026-10-07: herdr server
+        // 0.9.0, protocol 22 — session.snapshot, workspace.list, workspace.get, and the
+        // 0.9.2 bundled schema. Only linked worktrees report checkout_path, so the root
+        // pane's cwd stays the fallback. Re-probe workspace.get when herdr ships a plain cwd.
+        const cwd = w.worktree?.checkout_path ?? panes.find(p => p.workspaceId === w.workspace_id)?.cwd;
         return { id: w.workspace_id, label: w.label || w.workspace_id, ...(cwd ? { cwd } : {}) };
       }),
       tabs: (snap.tabs ?? []).map((t: Json) => ({ id: t.tab_id, workspaceId: t.workspace_id, label: t.label || t.tab_id })),

@@ -12,16 +12,22 @@ let server: Server;
 
 const snapshot = {
   snapshot: {
-    workspaces: [{ workspace_id: 'w1', label: 'w1' }],
-    tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1' }, { tab_id: 'w1:t2', workspace_id: 'w1' }],
+    workspaces: [
+      { workspace_id: 'w1', label: 'w1' },
+      // herdr 0.9.2 links a Workspace to a git worktree; 0.9.0 omits the field entirely.
+      { workspace_id: 'w2', label: 'w2', worktree: { checkout_path: '/wt/checkout', repo_root: '/wt/repo', is_linked_worktree: true, repo_key: 'k', repo_name: 'r' } },
+      { workspace_id: 'w3', label: 'w3' },
+    ],
+    tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1' }, { tab_id: 'w1:t2', workspace_id: 'w1' }, { tab_id: 'w2:t1', workspace_id: 'w2' }],
     layouts: [
       { zoomed: false, panes: [{ pane_id: 'w1:p1', rect: { x: 0, y: 0, width: 80, height: 50 } }, { pane_id: 'w1:p2', rect: { x: 80, y: 0, width: 40, height: 50 } }] },
       { zoomed: true, focused_pane_id: 'w1:p3', panes: [{ pane_id: 'w1:p3', rect: { x: 0, y: 0, width: 120, height: 50 } }] },
     ],
     panes: [
-      { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1', revision: 7, agent_status: 'idle' },
+      { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1', cwd: '/run/w1', revision: 7, agent_status: 'idle' },
       { pane_id: 'w1:p2', tab_id: 'w1:t1', workspace_id: 'w1', revision: 1, agent_status: 'idle' },
       { pane_id: 'w1:p3', tab_id: 'w1:t2', workspace_id: 'w1', revision: 1, agent_status: 'idle' },
+      { pane_id: 'w2:p1', tab_id: 'w2:t1', workspace_id: 'w2', cwd: '/run/w2', revision: 1, agent_status: 'idle' },
     ],
   },
 };
@@ -88,6 +94,20 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux ev
     expect(subscribes().at(-1)!.subscriptions.map((s: any) => s.type)).not.toContain('layout.updated');
     mux.close();
   }, 10_000);
+});
+
+describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tree workspace cwd', () => {
+  test('prefers the worktree checkout path, then the root pane, then none', async () => {
+    const mux = new HerdrMux('test', socketPath);
+    const workspaces = (await mux.tree()).workspaces;
+    // A linked worktree's checkout_path wins over the pane cwd.
+    expect(workspaces.find(w => w.id === 'w2')!.cwd).toBe('/wt/checkout');
+    // No worktree (herdr 0.9.0 or an unlinked Workspace): derived from the first Pane.
+    expect(workspaces.find(w => w.id === 'w1')!.cwd).toBe('/run/w1');
+    // No worktree and no Pane: no cwd at all.
+    expect(workspaces.find(w => w.id === 'w3')!.cwd).toBeUndefined();
+    mux.close();
+  });
 });
 
 describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tree geometry', () => {
