@@ -190,7 +190,9 @@ async function attachRemoteTmux(hub: Hub, host: HostDescriptor, managed: Managed
   for (const t of found) {
     const id = `tmux-${t.id}`;
     const exec = (args: string[]) => ssh(['tmux', '-S', t.socketPath, ...args].map(q).join(' '));
-    if (!hub.hasMux(host.id, id)) hub.add(host.id, new TmuxMux({ id, socket: t.socketPath, exec }));
+    // controlSpawn: null — the ssh exec is one round trip per command; a control client needs
+    // its own long-lived channel, so a remote Mux stays on plain polling for now.
+    if (!hub.hasMux(host.id, id)) hub.add(host.id, new TmuxMux({ id, socket: t.socketPath, exec, controlSpawn: null }));
   }
   return found.length;
 }

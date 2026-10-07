@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { hostname } from 'node:os';
 import { remoteTmuxSockets } from '../server/tmux-discover.ts';
-import { parseTree, TmuxMux, tmuxKey, type TmuxExec } from '../server/tmux.ts';
+import { parseTree, TmuxMux, tmuxKey, type TmuxControl, type TmuxControlSpawn, type TmuxExec } from '../server/tmux.ts';
 import { Hub } from '../server/mux.ts';
 import { AGENT_KEYS, MODIFIERS, SHELL_KEYS, trayGroups } from '../web/keys.ts';
 
@@ -38,7 +38,7 @@ describe('parseTree', () => {
   });
 });
 
-function fakeMux() {
+function fakeMux(controlSpawn?: TmuxControlSpawn) {
   const calls: string[][] = [];
   let treeText = row();
   let captureText = 'same';
@@ -48,9 +48,31 @@ function fakeMux() {
   };
   return {
     calls,
-    mux: new TmuxMux({ id: 'test', socket: '/unused', exec, treeIntervalMs: 20, screenIntervalMs: 20 }),
+    mux: new TmuxMux({ id: 'test', socket: '/unused', exec, ...(controlSpawn ? { controlSpawn } : {}), treeIntervalMs: 20, screenIntervalMs: 20 }),
     setTree(value: string) { treeText = value; }, setCapture(value: string) { captureText = value; },
   };
+}
+
+/** a fake control client whose %output lines and death the test drives by hand */
+type FakeControl = TmuxControl & { output(line: string): void; dead(): void };
+function fakeControl() {
+  const spawns: string[][] = [];
+  let controls = 0;
+  const make = (): FakeControl => {
+    controls++;
+    let push: (line: string) => void = () => {};
+    let die: (code: number) => void = () => {};
+    return {
+      stdin: { write: () => {} },
+      stdout: new ReadableStream<Uint8Array>({ start(controller) { push = line => controller.enqueue(new TextEncoder().encode(`${line}\n`)); } }),
+      exited: new Promise<number>(resolve => { die = resolve; }),
+      kill: () => die(0),
+      output: (line: string) => push(line), dead: () => die(1),
+    };
+  };
+  let current = make();
+  const spawn: TmuxControlSpawn = args => { spawns.push(args); current = make(); return current; };
+  return { spawns, get clients() { return controls; }, spawn, get live() { return current; } };
 }
 
 describe('TmuxMux', () => {
@@ -143,6 +165,49 @@ describe('TmuxMux', () => {
     expect(f.calls).toHaveLength(count);
     f.mux.close();
   });
+
+  test('a %output notification re-captures only the watched Pane that produced it', async () => {
+    const control = fakeControl();
+    const f = fakeMux(control.spawn);
+    const events: (string[] | 'all')[] = [];
+    const off = f.mux.onChange(value => events.push(value));
+    try {
+      await f.mux.read('%0', 'visible'); // watch %0
+      await Bun.sleep(40); // the tree poll maps %0 → $0 and attaches the control client
+      expect(control.spawns).toEqual([['-C', 'attach', '-E', '-r', '-t', '$0']]);
+      f.setCapture('via-output');
+      control.live.output('%output %0 hello'); // the bytes are discarded; the pane id is the signal
+      const deadline = Date.now() + 500;
+      while (!events.some(value => Array.isArray(value) && value.includes('%0')) && Date.now() < deadline) await Bun.sleep(10);
+      expect(events.some(value => Array.isArray(value) && value.includes('%0'))).toBe(true);
+      // An unwatched Pane's output is ignored: no capture-pane for it through exec.
+      control.live.output('%output %9 noise');
+      await Bun.sleep(80);
+      expect(f.calls.some(args => args[0] === 'capture-pane' && args[2] === '%9')).toBe(false);
+    } finally { off(); f.mux.close(); }
+  });
+
+  test('a dead control client falls back to polling and restarts with backoff', async () => {
+    const control = fakeControl();
+    const f = fakeMux(control.spawn);
+    const events: (string[] | 'all')[] = [];
+    const off = f.mux.onChange(value => events.push(value));
+    try {
+      await f.mux.read('%0', 'visible');
+      await Bun.sleep(40); // attached
+      control.live.dead(); // the client dies on its own, while still registered
+      await Bun.sleep(60); // before the 1 s restart: the fallback poll covers %0
+      f.setCapture('fallback');
+      const fallbackDeadline = Date.now() + 500;
+      while (!events.some(value => Array.isArray(value) && value.includes('%0')) && Date.now() < fallbackDeadline) await Bun.sleep(10);
+      expect(events.some(value => Array.isArray(value) && value.includes('%0'))).toBe(true);
+      // 1 s after the death the restart re-attaches: a second client for the same Workspace.
+      const restartDeadline = Date.now() + 1_500;
+      while (control.spawns.length < 2 && Date.now() < restartDeadline) await Bun.sleep(20);
+      expect(control.spawns.length).toBeGreaterThanOrEqual(2);
+      expect(control.spawns[1]).toEqual(control.spawns[0]);
+    } finally { off(); f.mux.close(); }
+  }, 3_000);
 });
 
 test('remoteTmuxSockets resolves the uid, filters names, and checks candidates', async () => {
