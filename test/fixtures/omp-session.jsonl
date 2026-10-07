@@ -1,0 +1,10 @@
+{"type":"session","version":3,"id":"omp-session","timestamp":"2026-10-07T09:00:00.000Z","cwd":"/home/user/fixture","agent":"omp"}
+{"id":"u1","parentId":null,"timestamp":"2026-10-07T09:00:01.000Z","type":"message","message":{"role":"user","content":[{"type":"text","text":"Read the screenshot."},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo="}]}}
+{"id":"a1","parentId":"u1","timestamp":"2026-10-07T09:00:02.000Z","type":"message","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"omp_call_1","name":"read","arguments":{"path":"/tmp/shot.png"}}]}}
+{"id":"t1","parentId":"a1","timestamp":"2026-10-07T09:00:03.000Z","type":"message","message":{"role":"toolResult","toolCallId":"omp_call_1","toolName":"read","content":[{"type":"text","text":"Read image file [image/png]"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgo="}]}}
+{"id":"a2","parentId":"t1","timestamp":"2026-10-07T09:00:04.000Z","type":"message","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"omp_call_2","name":"bash","arguments":{"command":"bun test"}},{"type":"text","text":"Running."}]}}
+{"id":"t2","parentId":"a2","timestamp":"2026-10-07T09:00:05.000Z","type":"message","message":{"role":"toolResult","toolCallId":"omp_call_2","toolName":"bash","isError":true,"content":[{"type":"text","text":"exit 1"}]}}
+{"id":"uf","parentId":"u1","timestamp":"2026-10-07T09:00:06.000Z","type":"message","message":{"role":"user","content":[{"type":"text","text":"Take the other path."}]}}
+{"id":"af","parentId":"uf","timestamp":"2026-10-07T09:00:07.000Z","type":"message","message":{"role":"assistant","stopReason":"length","content":[{"type":"text","text":"old answer ran out of tokens"}]}}
+{"id":"ax","parentId":"af","timestamp":"2026-10-07T09:00:08.000Z","type":"message","message":{"role":"assistant","stopReason":"aborted","content":[{"type":"text","text":"cut short"}]}}
+{"id":"a3","parentId":"t2","timestamp":"2026-10-07T09:00:09.000Z","type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"new answer"}]}}

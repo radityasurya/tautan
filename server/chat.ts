@@ -275,11 +275,11 @@ done`;
   return { mtime, agents };
 }
 
-/** A resolved session: Claude's rollout id; pi's session file path (herdr reports it as
- *  `kind: "path"`); or Codex's thread id, which maps to its one rollout file under the
- *  Codex home (Wave 12.2). All come only from herdr's `agent_session` or the process's
- *  own argv. */
-export type ResolvedSession = { agent: 'claude'; sessionId: string } | { agent: 'pi'; path: string } | { agent: 'codex'; sessionId: string };
+/** A resolved session: Claude's rollout id; pi's or omp's session file path (herdr reports
+ *  both as `kind: "path"`; omp trusts the path report only, Wave 12.3); or Codex's thread id,
+ *  which maps to its one rollout file under the Codex home (Wave 12.2). All come only from
+ *  herdr's `agent_session` or the process's own argv. */
+export type ResolvedSession = { agent: 'claude'; sessionId: string } | { agent: 'pi' | 'omp'; path: string } | { agent: 'codex'; sessionId: string };
 
 const piFile = /^\/\S+\.jsonl$/;
 // ponytail: `pi --session <uuid>` (a bare or partial id) is left unresolved — mapping an id to a
@@ -302,6 +302,9 @@ export async function resolveSession(hub: SessionHub, paneKey: string): Promise<
   const pane = found.entry.tree?.panes.find(pane => pane.id === found.paneId);
   const known = pane?.agentSession;
   if (pane?.agent === 'pi') return piSession(known, found.entry.mux.processInfo?.(found.paneId));
+  // omp (Wave 12.3): the Herdr path report only — an id-only report would need the cwd/profile
+  // root scans ADR 0005 forbids, so it stays unresolved.
+  if (pane?.agent === 'omp') return typeof known === 'string' && piFile.test(known) ? { agent: 'omp', path: known } : undefined;
   if (pane?.agent === 'codex' && known && sessionId.test(known)) return { agent: 'codex', sessionId: known };
   if (known && sessionId.test(known)) return { agent: 'claude', sessionId: known };
   const info = await found.entry.mux.processInfo?.(found.paneId);
@@ -571,7 +574,7 @@ export class ChatLens {
     const target = this.hub.host(await this.hub.paneHost(paneKey))?.target;
     let session: string;
     if (resolved.agent === 'codex' || resolved.agent === 'claude') session = resolved.sessionId;
-    else session = piSessionId(resolved.path); // pi: the id rides the file's name
+    else session = piSessionId(resolved.path); // pi and omp: the id rides the file's name
     // A failed resolve or stat is a transient miss, not a new conversation: a cursor names
     // bytes, not cache state, so the generations survive it. Only a session change retires
     // them — and a cursor hashes the session id, so a stale one can never match anyway.
@@ -592,7 +595,7 @@ export class ChatLens {
       dir = transcriptDir(cwd, resolved.sessionId, home);
       path = agent ? join(dir, 'subagents', `agent-${agent}.jsonl`) : transcriptPath(cwd, resolved.sessionId, home);
     } else {
-      if (agent) return; // pi keeps no subagent directory either
+      if (agent) return; // pi and omp keep no subagent directory either
       path = resolved.path;
     }
     const signature = await this.io.stat(path, target);
@@ -624,7 +627,7 @@ export class ChatLens {
     const opts: ParseOpts = { images, previews, outputs, subagentIds, ...(agent ? { sidechain: true } : {}) };
     if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
     const parsed = resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
-      : (resolved.agent === 'pi' ? parsePiTranscript : parseTranscript)(jsonl, opts);
+      : (resolved.agent === 'pi' || resolved.agent === 'omp' ? parsePiTranscript : parseTranscript)(jsonl, opts);
     // A Codex parse without stable identity (Wave 12.1) is no Chat: the Pane keeps its Screen.
     if (!parsed) { this.cache.delete(cacheKey); return; }
     const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, outputs, subagents: list, at: Date.now() };

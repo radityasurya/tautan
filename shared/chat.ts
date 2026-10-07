@@ -65,7 +65,7 @@ export interface ChatResponse {
   /** Set when the response is a subagent's own conversation. */
   agent?: string;
   /** Which agent's transcript this is, for the Chat view's agent badge (Wave 12.4). */
-  agentKind?: 'claude' | 'pi' | 'codex';
+  agentKind?: 'claude' | 'pi' | 'codex' | 'omp';
 }
 
 /** `GET /api/panes/:key/chat?since=<cursor>[&agent=<id>]` (ADR 0007): only what changed
@@ -79,7 +79,7 @@ export interface ChatDelta {
   /** Set when the response is a subagent's own conversation, as today. */
   agent?: string;
   /** Which agent's transcript this is, as on `ChatResponse`. */
-  agentKind?: 'claude' | 'pi' | 'codex';
+  agentKind?: 'claude' | 'pi' | 'codex' | 'omp';
 }
 
 /** The `chat` event on `/api/events`: a watched Pane's conversation moved to a new
@@ -441,8 +441,6 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
 /** Parse pi's session JSONL into the same turns. Each line is an entry in a parentId tree;
  *  only the active branch is rendered — the chain that ends at the last entry, because pi
  *  appends a fork's new leaf after the branch it replaces. */
-// ponytail: user-pasted images are unhandled — no pi transcript on this machine carries one;
-// map {type:'image'} blocks in user content through `pasted()` when they appear.
 export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   const entries: Record<string, unknown>[] = [];
   for (const line of jsonl.split(/\r?\n/)) {
@@ -488,10 +486,17 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     const content = record.content;
     let text = turnText(content);
     const tools: Turn['tools'] = [];
+    const images: Pasted[] = [];
     if (Array.isArray(content)) for (const item of content) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const block = item as Block;
       if (block.type === 'text' && typeof block.text === 'string') text += block.text;
+      if (block.type === 'image' && role === 'user') {
+        if (typeof block.mimeType === 'string' && PASTED_TYPE.test(block.mimeType) && typeof block.data === 'string' && block.data.length <= RESULT_MAX && BASE64.test(block.data)) {
+          opts?.images?.push({ mediaType: block.mimeType, data: block.data });
+          images.push({ imageId: imageSeq++ });
+        } else images.push({}); // malformed or over the memory bound: a placeholder, no id consumed
+      }
       if (block.type === 'toolCall' && typeof block.name === 'string') {
         const image = block.name === 'read' ? readImage(block.arguments) : undefined;
         const tool: Tool = { name: block.name, brief: brief(block.arguments), detail: detail(block.name, block.arguments), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
@@ -499,14 +504,15 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         tools.push(tool);
       }
     }
-    if (!text && !tools.length) continue;
+    if (!text && !tools.length && !images.length) continue;
     const at = time(entry.timestamp);
     const previous = forked ? undefined : turns.at(-1);
     forked = false;
     if (previous?.role === role) {
       previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
       previous.tools.push(...tools);
-    } else turns.push({ role, text: cap(text), tools, ...(typeof entry.id === 'string' ? { id: entry.id } : {}), ...(at !== undefined ? { at } : {}) });
+      if (images.length) previous.images = [...previous.images ?? [], ...images];
+    } else turns.push({ role, text: cap(text), tools, ...(typeof entry.id === 'string' ? { id: entry.id } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
   }
   return turns;
 }
