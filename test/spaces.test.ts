@@ -67,3 +67,22 @@ test('preferences default, survive a bad value, and tell subscribers', () => {
   setPaneList('tautan');
   expect(told).toBe(1);
 });
+
+test('a blocked localStorage keeps choices in memory and flags it once', async () => {
+  const blocked = () => { throw new Error('SecurityError'); };
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  (globalThis as { localStorage?: unknown }).localStorage = { getItem: blocked, setItem: blocked, removeItem: blocked };
+  const { isStorageBlocked, resetStore, store } = await import('../web/store.tsx');
+  expect(getAgentSort()).toBe('urgency');
+  setAgentSort('name');
+  expect(getAgentSort()).toBe('name');
+  store.set('k', 'v');
+  expect(store.get('k')).toBe('v');
+  store.remove('k');
+  expect(store.get('k')).toBeNull();
+  expect(isStorageBlocked()).toBe(true);
+  resetStore();
+  expect(isStorageBlocked()).toBe(false);
+  if (original) Object.defineProperty(globalThis, 'localStorage', original);
+  else delete (globalThis as { localStorage?: unknown }).localStorage;
+});

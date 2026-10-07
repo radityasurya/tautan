@@ -4,6 +4,7 @@
  * storage, so a test can run the order without a DOM.
  */
 import type { StateWorkspace } from '../shared/types.ts';
+import { store } from './store.tsx';
 
 export type WorkspaceOrder = Record<string, string[]>;
 export const ORDER_KEY = 'tautan.workspaceOrder';
@@ -53,7 +54,7 @@ export function moveWorkspace(
 
 export function readOrder(): WorkspaceOrder {
   try {
-    const v: unknown = JSON.parse(localStorage.getItem(ORDER_KEY) ?? '{}');
+    const v: unknown = JSON.parse(store.get(ORDER_KEY) ?? '{}');
     if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
     return Object.fromEntries(
       Object.entries(v).filter((e): e is [string, string[]] => Array.isArray(e[1]) && e[1].every((x) => typeof x === 'string')),
@@ -64,5 +65,5 @@ export function readOrder(): WorkspaceOrder {
 }
 // ponytail: a blocked localStorage keeps the order for this page load only; the caller holds it in state.
 export function writeOrder(order: WorkspaceOrder) {
-  try { localStorage.setItem(ORDER_KEY, JSON.stringify(order)); } catch {}
+  try { store.set(ORDER_KEY, JSON.stringify(order)); } catch {}
 }

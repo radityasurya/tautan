@@ -11,6 +11,7 @@ import { disablePush, enablePush, pushOn } from './push.ts';
 
 import type { ReactNode } from 'react';
 import type { Settings as HubSettings, SuggestSettingBody } from '../shared/types.ts';
+import { store } from './store.tsx';
 
 const LABELS: Record<Theme, string> = {
   system: 'System',
@@ -91,14 +92,14 @@ export function Settings({ section }: { section?: string }) {
   const desktop = useDesktop();
   const { prefs, setPrefs, read } = useHubSettings();
   const [access, setAccess] = useState('');
-  const [haptics, setHaptics] = useState(() => localStorage.getItem('tautan.haptics') !== 'off');
+  const [haptics, setHaptics] = useState(() => store.get('tautan.haptics') !== 'off');
   // Push state is the browser's, not the Hub's: the intent in localStorage plus a live
   // permission. `/api/settings` has no push field to read.
   const [push, setPush] = useState(pushOn);
   const [pushNote, setPushNote] = useState('');
   // Smart replies live in two places: the Hub decides whether to draft at all, this phone
   // decides whether to show the drafts. On means both, and the switch writes both.
-  const [smart, setSmart] = useState(() => localStorage.getItem('tautan.smart') === 'on');
+  const [smart, setSmart] = useState(() => store.get('tautan.smart') === 'on');
 
   // `#/settings/<section>` lands on that section; plain `#/settings` on the top.
   useEffect(() => {
@@ -165,7 +166,7 @@ export function Settings({ section }: { section?: string }) {
                 checked={haptics}
                 onChange={(v) => {
                   setHaptics(v);
-                  localStorage.setItem('tautan.haptics', v ? 'on' : 'off');
+                  store.set('tautan.haptics', v ? 'on' : 'off');
                 }}
               />
             </>
@@ -183,7 +184,7 @@ export function Settings({ section }: { section?: string }) {
             disabled={!provider}
             onChange={(v) => {
               setSmart(v);
-              localStorage.setItem('tautan.smart', v ? 'on' : 'off');
+              store.set('tautan.smart', v ? 'on' : 'off');
               setPrefs({ ...prefs, suggest: { ...suggest, enabled: v } });
               void fetch('/api/settings/suggest', {
                 method: 'POST',

@@ -16,6 +16,7 @@ import { Settings } from './settings.tsx';
 import { UsageStrip } from './usage.tsx';
 import { ThemeProvider, tokens } from './halaska-kit';
 import { PALETTES, PALETTE_IDS, kitTokens } from './palettes.ts';
+import { store, StorageNotice } from './store.tsx';
 
 // ---- theme ----
 // The UI is Halaska Kit: two bases, light and dark. A named palette (web/palettes.ts) sits
@@ -31,7 +32,7 @@ export function getTheme(): Theme {
   // `?mock&theme=dark` forces a theme, so a screenshot can reach one without touching storage.
   const forced = new URLSearchParams(location.search).get('theme') as Theme | null;
   if (forced && THEMES.includes(forced)) return forced;
-  const t = localStorage.getItem('tautan.theme') as Theme | null;
+  const t = store.get('tautan.theme') as Theme | null;
   return t && THEMES.includes(t) ? t : 'system';
 }
 
@@ -39,7 +40,7 @@ const resolve = (t: Theme): KitTheme =>
   t === 'system' ? (dark.matches ? 'dark' : 'light') : (PALETTES[t]?.base ?? (t as KitTheme));
 
 export function setTheme(theme: Theme) {
-  localStorage.setItem('tautan.theme', theme);
+  store.set('tautan.theme', theme);
   applyTheme(theme);
   dispatchEvent(new CustomEvent('tautan:theme'));
 }
@@ -118,7 +119,7 @@ export const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)'
 /** A short tap, Android only, behind the Settings toggle. iOS has no web haptics. */
 export function haptic() {
   if (!/Android/.test(navigator.userAgent)) return;
-  if (localStorage.getItem('tautan.haptics') === 'off') return;
+  if (store.get('tautan.haptics') === 'off') return;
   navigator.vibrate?.(8);
 }
 
@@ -128,10 +129,10 @@ export function haptic() {
 
 const SPLIT_KEY = 'tautan.split';
 export const splitOn = () => {
-  try { return localStorage.getItem(SPLIT_KEY) !== 'off'; } catch { return true; }
+  try { return store.get(SPLIT_KEY) !== 'off'; } catch { return true; }
 };
 export function setSplitOn(on: boolean) {
-  try { localStorage.setItem(SPLIT_KEY, on ? 'on' : 'off'); } catch {}
+  try { store.set(SPLIT_KEY, on ? 'on' : 'off'); } catch {}
   dispatchEvent(new Event('tautan:split'));
 }
 /** "Split view" in the ⋯ sheet, as state, so the App's watched set follows the toggle. */
@@ -165,7 +166,7 @@ const watchKeys = (state: State | null, paneKey: string, split: boolean) => {
     // The Hub drops a key that no longer resolves, and the stream's own state event
     // corrects a stale set with one reconnect.
     try {
-      const last: unknown = JSON.parse(localStorage.getItem(WATCHED) ?? '[]');
+      const last: unknown = JSON.parse(store.get(WATCHED) ?? '[]');
       if (Array.isArray(last) && last.length <= 4 && last.includes(paneKey)) return last as string[];
     } catch {}
   }
@@ -220,7 +221,7 @@ export function useEvents(pick: (state: State | null) => string[]) {
     // Wrap reflows it client-side. See docs/DESIGN.md "Terminal width on a phone".
     const url = keys.length ? `/api/events?${keys.map((k) => `pane=${encodeURIComponent(k)}`).join('&')}&mode=visible` : '/api/events';
     const es = new EventSource(url);
-    if (keys.length > 1) localStorage.setItem(WATCHED, JSON.stringify(keys));
+    if (keys.length > 1) store.set(WATCHED, JSON.stringify(keys));
     let retry: ReturnType<typeof setTimeout>;
     const on = <T,>(name: string, set: (v: T) => void) =>
       es.addEventListener(name, (e) => {
@@ -413,7 +414,7 @@ const SIDEBAR = 'tautan.sidebar';
 /** The sidebar's open state, and the `⌘B` / `Ctrl+B` toggle. Remembered in localStorage. */
 function useSidebar(enabled: boolean) {
   const [open, setOpen] = useState(() => {
-    try { return localStorage.getItem(SIDEBAR) !== 'closed'; } catch { return true; }
+    try { return store.get(SIDEBAR) !== 'closed'; } catch { return true; }
   });
   useEffect(() => {
     if (!enabled) return;
@@ -425,7 +426,7 @@ function useSidebar(enabled: boolean) {
       if (!(e.metaKey || (e.ctrlKey && !typing))) return;
       e.preventDefault();
       setOpen((was) => {
-        try { localStorage.setItem(SIDEBAR, was ? 'closed' : 'open'); } catch {}
+        try { store.set(SIDEBAR, was ? 'closed' : 'open'); } catch {}
         return !was;
       });
     };
@@ -665,6 +666,7 @@ export function App() {
       >
         <span className="sr-only">{connected ? '' : 'Reconnecting'}</span>
       </div>
+      <StorageNotice />
       <NeedsCard state={state} openPaneKey={paneKey} onOpen={(key) => navigate(`#/pane/${encodeURIComponent(key)}`)} />
       {desktop ? (
         // The frame is the window: the sidebar and the screen each scroll inside it, so the

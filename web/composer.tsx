@@ -10,19 +10,10 @@ import { CYCLE_MODE_KEYS, toolbarFromScreen, type Profile } from './profiles.ts'
 import { quickReplies, type Pill } from './replies.ts';
 import { deliver, dropPending, holdPending, trackPending } from './pending.ts';
 import { showingSubagent, subscribeShowing } from './subagents.ts';
+import { store } from './store.tsx';
 
 /** "Wider than the viewport" is a fade, not a scrollbar. The grid and the Diff screen reuse it. */
 export const FADE = 'linear-gradient(to right,#000 calc(100% - 24px),transparent)';
-
-/** localStorage that never throws: a full or blocked store must not break a send. */
-const store = {
-  get: (key: string): string | null => {
-    try { return localStorage.getItem(key); } catch { return null; }
-  },
-  set: (key: string, value: string) => {
-    try { localStorage.setItem(key, value); } catch {}
-  },
-};
 
 /**
  * The two trays above the input, remembered per kind. An Agent opens on its suggestions; a
@@ -671,7 +662,7 @@ export function Composer({
     setKeyPrefs((k) => ({ ...k, [kind]: chosen }));
   };
   const resetKeys = () => {
-    try { localStorage.removeItem(keysKey(kind)); } catch {}
+    try { store.remove(keysKey(kind)); } catch {}
     setKeyPrefs((k) => ({ ...k, [kind]: null }));
   };
   const waiting = pills.length + commands.length;

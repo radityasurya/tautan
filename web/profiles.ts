@@ -1,5 +1,6 @@
 import type { AffordanceProfile } from '../shared/affordances.ts';
 import { AGENT_KEYS, INLINE_KEYS, SHELL_KEYS } from './keys.ts';
+import { store } from './store.tsx';
 
 /** Toolbar facts read off a Screen. An absent field means the Screen does not state it — never a guess. */
 export interface ToolbarData {
@@ -96,11 +97,11 @@ export function profileFor(pane: { agent?: string; command?: string } | undefine
 }
 
 export function mouseAllowed(paneKey: string, pane: { agent?: string; command?: string } | undefined): boolean {
-  const override = localStorage.getItem(`tautan.mouse.${paneKey}`);
+  const override = store.get(`tautan.mouse.${paneKey}`);
   return override === 'on' || override !== 'off' && profileFor(pane).mouse;
 }
 
 export function setMouseOverride(paneKey: string, value: 'on' | 'off' | null): void {
   const key = `tautan.mouse.${paneKey}`;
-  if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+  if (value === null) store.remove(key); else store.set(key, value);
 }

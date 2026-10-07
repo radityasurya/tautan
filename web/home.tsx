@@ -16,6 +16,7 @@ import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameShe
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
 import { fetchExplain, ON_WARN, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
+import { store } from './store.tsx';
 
 // ---- status ----
 
@@ -53,11 +54,11 @@ export function Dot({ status, seen, size = 8 }: { status: Status; seen?: boolean
 // tautan's own flag, never written back to the Mux. One revision map, read through a module cache.
 
 let seenAt: Record<string, number> | null = null;
-const seen = () => (seenAt ??= JSON.parse(localStorage.getItem('tautan.seen') ?? '{}') as Record<string, number>);
+const seen = () => (seenAt ??= JSON.parse(store.get('tautan.seen') ?? '{}') as Record<string, number>);
 
 export function markSeen(key: string, revision: number) {
   seen()[key] = revision;
-  localStorage.setItem('tautan.seen', JSON.stringify(seen()));
+  store.set('tautan.seen', JSON.stringify(seen()));
 }
 
 /** Seed a new device from its first snapshot. Blocked remains actionable regardless. */
@@ -65,7 +66,7 @@ export function seedSeen(panes: StatePane[]) {
   const current = seen();
   if (Object.keys(current).length) return;
   for (const pane of panes) current[pane.key] = pane.revision;
-  localStorage.setItem('tautan.seen', JSON.stringify(current));
+  store.set('tautan.seen', JSON.stringify(current));
 }
 
 /**
@@ -812,7 +813,7 @@ function AgentsView({ shellCount, compact }: { shellCount: number; compact?: boo
 // ---- screen ----
 
 const COLLAPSED = 'tautan.collapsed';
-const readCollapsed = (): string[] => JSON.parse(localStorage.getItem(COLLAPSED) ?? '[]') as string[];
+const readCollapsed = (): string[] => JSON.parse(store.get(COLLAPSED) ?? '[]') as string[];
 /** Fold keys for the two pinned sections. */
 const NEEDS = '@needs';
 const RUNNING = '@running';
@@ -856,7 +857,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
 
   const write = (next: string[]) => {
     setCollapsed(next);
-    localStorage.setItem(COLLAPSED, JSON.stringify(next));
+    store.set(COLLAPSED, JSON.stringify(next));
   };
   const toggle = (key: string) =>
     write(collapsed.includes(key) ? collapsed.filter((k) => k !== key) : [...collapsed, key]);

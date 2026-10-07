@@ -1,4 +1,5 @@
 // Pure helpers for the folder picker and the file viewer's folder view.
+import { store } from './store.tsx';
 
 /** Breadcrumb steps for an absolute `path`. A path under `home` starts at `~`. */
 export function crumbs(path: string, home: string): { label: string; path: string }[] {
@@ -34,7 +35,7 @@ export const pushRecent = (list: string[], path: string, max = 8) =>
 const key = (hostId: string) => `tautan.folders.${hostId}`;
 export function readRecent(hostId: string): string[] {
   try {
-    const v = JSON.parse(localStorage.getItem(key(hostId)) ?? '[]');
+    const v = JSON.parse(store.get(key(hostId)) ?? '[]');
     return Array.isArray(v) ? v.filter((p): p is string => typeof p === 'string') : [];
   } catch {
     return [];
@@ -42,7 +43,7 @@ export function readRecent(hostId: string): string[] {
 }
 export function writeRecent(hostId: string, path: string) {
   try {
-    localStorage.setItem(key(hostId), JSON.stringify(pushRecent(readRecent(hostId), path)));
+    store.set(key(hostId), JSON.stringify(pushRecent(readRecent(hostId), path)));
   } catch {
     // ponytail: private mode or a full quota only loses the recents.
   }

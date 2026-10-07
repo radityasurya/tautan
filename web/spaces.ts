@@ -4,6 +4,7 @@
  * Pure helpers and the one preference, so a test can run them without a DOM.
  */
 import { useSyncExternalStore } from 'react';
+import { store } from './store.tsx';
 import type { StatePane, Status } from '../shared/types.ts';
 
 // ---- preferences ----
@@ -25,12 +26,9 @@ export const subscribePrefs = (fn: () => void) => {
   bus.addEventListener('change', fn);
   return () => bus.removeEventListener('change', fn);
 };
-const get = (key: string) => {
-  try { return localStorage.getItem(key); } catch { return null; }
-};
-// ponytail: a blocked localStorage drops the choice silently; keep an in-memory copy if that bites.
+const get = store.get;
 const set = (key: string, value: string) => {
-  try { localStorage.setItem(key, value); } catch {}
+  store.set(key, value);
   bus.dispatchEvent(new Event('change'));
 };
 /** A preference below, live: `usePref(getPaneList)`. */

@@ -7,6 +7,7 @@
  */
 
 const INTENT = 'tautan.push';
+import { store } from './store.tsx';
 
 export type PushResult = { ok: true } | { ok: false; reason: 'denied' | 'unsupported' | 'error'; message: string };
 
@@ -18,7 +19,7 @@ export const MESSAGES = {
 
 export const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 
-export const pushIntent = () => localStorage.getItem(INTENT) === '1';
+export const pushIntent = () => store.get(INTENT) === '1';
 
 /** True only when the user asked for push and the browser still agrees. */
 export const pushOn = () => pushIntent() && pushSupported() && Notification.permission === 'granted';
@@ -62,7 +63,7 @@ export async function enablePush(): Promise<PushResult> {
       return { ok: false, reason: 'denied', message: MESSAGES.denied };
     }
     await subscribe(await getRegistration());
-    localStorage.setItem(INTENT, '1');
+    store.set(INTENT, '1');
     return { ok: true };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -71,7 +72,7 @@ export async function enablePush(): Promise<PushResult> {
 }
 
 export async function disablePush(): Promise<void> {
-  localStorage.setItem(INTENT, '0');
+  store.set(INTENT, '0');
   if (!pushSupported()) return;
   const sub = await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
   if (!sub) return;

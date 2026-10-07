@@ -22,16 +22,17 @@ import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
 import { SWITCH_HEADING, SWITCH_ROW, SwitchDrawer } from './switch.tsx';
 import { splitFloor } from './split-floor.ts';
+import { store } from './store.tsx';
 
 // ---- themed terminal colours ----
 // A 256-colour or truecolour span carries the palette the agent picked, which is nobody's
 // theme. Snapped on, every such colour becomes the nearest of the theme's own 16, so one
 // Pane reads as one picture. Indices 0–15 already resolve through `--ansi-*` and are left be.
-let themed = localStorage.getItem('tautan.themedColors') !== 'off';
+let themed = store.get('tautan.themedColors') !== 'off';
 export const themedColors = () => themed;
 export function setThemedColors(on: boolean) {
   themed = on;
-  localStorage.setItem('tautan.themedColors', on ? 'on' : 'off');
+  store.set('tautan.themedColors', on ? 'on' : 'off');
 }
 
 const EXTRA_TOKENS = ['--warn', '--ok', '--danger', '--accent'] as const;
@@ -575,8 +576,8 @@ function lastBlock(text?: string): string {
  *  wraps, a full-screen program (htop, k9s, vim) keeps the grid, where the columns are the
  *  layout. An explicit on or off wins over auto. Remembered per kind, not per Pane. */
 function readWrapChoice(kind: 'agent' | 'shell'): WrapChoice {
-  if (kind === 'agent') return localStorage.getItem('tautan.wrap.agent') === 'off' ? 'off' : 'on';
-  const shell = localStorage.getItem('tautan.wrap.shell');
+  if (kind === 'agent') return store.get('tautan.wrap.agent') === 'off' ? 'off' : 'on';
+  const shell = store.get('tautan.wrap.shell');
   return shell === 'on' || shell === 'off' ? shell : 'auto';
 }
 
@@ -636,7 +637,7 @@ function PaneGrid({
   // Fit is off until the user asks for it: the column grows to the grid's own width on a
   // desktop, so scaling is a phone answer, not the default. The scale is min(1, …), so a
   // grid that already fits is left alone even then.
-  const fitPref = localStorage.getItem('tautan.fit') === 'on';
+  const fitPref = store.get('tautan.fit') === 'on';
   const [scale, setScale] = useState(1);
   /** What the scale takes off the `<pre>`'s layout box, so the scroller ends where the grid does. */
   const [shrink, setShrink] = useState({ w: 0, h: 0 });
@@ -1136,12 +1137,12 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const [wraps, setWraps] = useState(() => ({ agent: readWrapChoice('agent'), shell: readWrapChoice('shell') }));
   const wrapChoice = wraps[kind];
   const setWrap = (v: WrapChoice) => {
-    if (v === 'auto') localStorage.removeItem(`tautan.wrap.${kind}`);
-    else localStorage.setItem(`tautan.wrap.${kind}`, v);
+    if (v === 'auto') store.remove(`tautan.wrap.${kind}`);
+    else store.set(`tautan.wrap.${kind}`, v);
     setWraps((w) => ({ ...w, [kind]: v }));
   };
-  const [fit, setFitState] = useState(() => localStorage.getItem('tautan.fit') === 'on');
-  const setFit = (v: boolean) => { localStorage.setItem('tautan.fit', v ? 'on' : 'off'); setFitState(v); };
+  const [fit, setFitState] = useState(() => store.get('tautan.fit') === 'on');
+  const setFit = (v: boolean) => { store.set('tautan.fit', v ? 'on' : 'off'); setFitState(v); };
   const [explain, setExplain] = useState<ExplainResponse | null>(null);
   const [showSwitch, setShowSwitch] = useState(() => opensWith('switch'));
   const [showMore, setShowMore] = useState(() => opensWith('more'));
@@ -1500,7 +1501,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const mouseSource =
     mouseOn && gridMeasure.effectiveWrap
       ? 'off while Wrap is on'
-      : localStorage.getItem(`tautan.mouse.${paneKey}`)
+      : store.get(`tautan.mouse.${paneKey}`)
         ? 'overridden'
         : `from ${pane?.command ?? pane?.agent ?? 'the generic'} profile`;
 
