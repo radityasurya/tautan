@@ -28,7 +28,14 @@ describe.skipIf(!canListen)('pane attachments', () => {
   let origin: string;
 
   const files = () => existsSync(attachmentDir) ? readdirSync(attachmentDir) : [];
-  const post = (key = paneKey, init: RequestInit = {}) => fetch(`${origin}/api/panes/${encodeURIComponent(key)}/attach`, {
+  // Bun's fetch pool can hand the next request the keep-alive socket an unread 413 body left
+  // mid-stream, and Bun answers that garbage itself: a 400 with no content-type (tautan's own
+  // 400s always carry JSON). Retry that one signature once — the poisoned socket closes on it.
+  const fetchClean = async (input: string, init?: RequestInit): Promise<Response> => {
+    const first = await fetch(input, init);
+    return first.status === 400 && !first.headers.has('content-type') ? fetch(input, init) : first;
+  };
+  const post = (key = paneKey, init: RequestInit = {}) => fetchClean(`${origin}/api/panes/${encodeURIComponent(key)}/attach`, {
     ...init, method: 'POST', headers: { origin, ...init.headers },
   });
 
@@ -96,7 +103,8 @@ describe.skipIf(!canListen)('pane attachments', () => {
   });
 
   test('enforces origin, pane existence, and non-empty bodies', async () => {
-    expect((await fetch(`${origin}/api/panes/${encodeURIComponent(paneKey)}/attach`, { method: 'POST', body: 'x' })).status).toBe(403);
+    const noOrigin = await fetchClean(`${origin}/api/panes/${encodeURIComponent(paneKey)}/attach`, { method: 'POST', body: 'x' });
+    expect(noOrigin.status).toBe(403);
     expect((await post('missing/fake/pane', { body: 'x' })).status).toBe(404);
     expect((await post(paneKey, { body: new Uint8Array(0) })).status).toBe(400);
   });

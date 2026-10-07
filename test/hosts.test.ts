@@ -105,8 +105,11 @@ test('a dropped forwarder marks the Host unreachable with the next retry time', 
       sleep: async () => { await Bun.sleep(0); },
       now: () => (clock += 1_000),
     });
-    await Bun.sleep(30);
-    const stored = hub.host('vps')!;
+    // The retry loop reaches its setHost only after several event-loop hops, which take
+    // unbounded real time under load — so wait for the mark, not a fixed sleep.
+    const deadline = Date.now() + 2_000;
+    let stored = hub.host('vps')!;
+    while (stored.error === undefined && Date.now() < deadline) { await Bun.sleep(10); stored = hub.host('vps')!; }
     expect(stored.online).toBe(false);
     expect(stored.error).toBe('ssh: connect failed');
     // Set from the injected clock plus the backoff, so it predates wall-clock time by far.
