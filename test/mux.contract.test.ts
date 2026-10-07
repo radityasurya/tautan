@@ -74,6 +74,13 @@ describe.skipIf(!herdrAvailable)('HerdrMux contract', () => {
       const withBg = line.filter(span => span.bg !== undefined && span.text.trim() !== '');
       return withBg.length > 0 && withBg.every(span => span.bg === withBg[0]!.bg);
     });
+    // pane.read 'visible' keeps ANSI, and htop 3.3 splits `F10` from `Quit` with SGR
+    // spans, so substring checks must run on the parsed screen, never on the raw text.
+    const plain = (text: string) => parseAnsi(text).map(line => line.map(span => span.text).join('')).join('\n');
+    // htop walks all of /proc before its first paint: ~12 s idle, 35 s+ on a loaded
+    // 50k-task box, and it services clicks between walks (~9 s observed). `eventually`
+    // returns the unmet last value, so readiness is asserted before any click is sent.
+    const HTOP_READY_MS = 120_000, HTOP_MOVE_MS = 120_000;
     // Hub.close() closes every Mux it was given, so it must not be handed the shared
     // `mux` fixture: that would kill the shared event stream for every later test.
     const hubMux = herdrMux(fixture.sock);
@@ -81,17 +88,19 @@ describe.skipIf(!herdrAvailable)('HerdrMux contract', () => {
     const server = startHttp(hub, { port: 0, hostname: '127.0.0.1', staticDir: fixture.dir });
     try {
       await mux.sendText(pane.id, 'htop\n');
-      const ready = await eventually(() => mux.read(pane.id, 'visible'), value => value.text.includes('F10Quit') && highlightedRow(value.text) >= 0, 5_000);
-      const current = highlightedRow(ready.text); const target = current + 3;
+      const ready = await eventually(() => mux.read(pane.id, 'visible'), value => plain(value.text).includes('F10Quit') && highlightedRow(value.text) >= 0, HTOP_READY_MS);
+      const current = highlightedRow(ready.text);
+      expect(current).toBeGreaterThanOrEqual(0);
+      const target = current + 3;
       const origin = `http://127.0.0.1:${server.port}`;
       const key = `contract/throwaway/${pane.id}`;
       const response = await fetch(`${origin}/api/panes/${encodeURIComponent(key)}/mouse`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'click', col: 5, row: target + 1, allow: true }) });
       expect(response.status).toBe(204);
-      const moved = await eventually(() => mux.read(pane.id, 'visible'), value => highlightedRow(value.text) === target, 5_000);
+      const moved = await eventually(() => mux.read(pane.id, 'visible'), value => highlightedRow(value.text) === target, HTOP_MOVE_MS);
       expect(highlightedRow(moved.text)).toBe(target);
       await mux.sendText(pane.id, 'q');
     } finally { server.stop(); hub.close(); try { await mux.closePane(pane.id); } catch {} }
-  }, 15_000);
+  }, 250_000);
 
   test('mouse-off rejects before a plain shell receives bytes', async () => {
     const pane = await mux.newTab(workspaceId, { cwd: fixture.dir, label: 'mouse-off' });
