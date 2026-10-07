@@ -159,9 +159,9 @@ const WATCHED = 'tautan.watched';
 
 const watchKeys = (state: State | null, paneKey: string, split: boolean) => {
   if (split && !state) {
-    // Before the first state event the Tab is unknown. Reuse the last split set that held
-    // this Pane, so the first stream already carries every cell; the Hub drops a key that
-    // no longer resolves, and the state event corrects a stale set with one reconnect.
+    // Only reachable when the bootstrap GET failed: the Tab is unknown, so reuse the last
+    // split set that held this Pane. The Hub drops a key that no longer resolves, and the
+    // stream's own state event corrects a stale set with one reconnect.
     try {
       const last: unknown = JSON.parse(localStorage.getItem(WATCHED) ?? '[]');
       if (Array.isArray(last) && last.length <= 4 && last.includes(paneKey)) return last as string[];
@@ -182,8 +182,26 @@ export function useEvents(pick: (state: State | null) => string[]) {
   const [streamId, setStreamId] = useState<string | null>(null);
   const [connected, setConnected] = useState(true);
   const [attempt, setAttempt] = useState(0);
+  const [booted, setBooted] = useState(false);
   const keys = pick(state);
   const watched = keys.join(',');
+
+  // One GET /api/state before any stream opens: with the Tab's Panes known up front, a cold
+  // split Tab opens on the whole set at once instead of on one Pane and then on the set.
+  // A failed GET still boots; watchKeys then falls back to the remembered set or the Pane.
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/state')
+      .then((r) => (r.ok ? (r.json() as Promise<State>) : null))
+      .then((value) => {
+        if (!alive || !value) return;
+        seedSeen(value.panes);
+        setState(value);
+      })
+      .catch(() => {})
+      .finally(() => { if (alive) setBooted(true); });
+    return () => { alive = false; };
+  }, []);
 
   // Pane to Pane keeps the last Screen until the new Pane's first `screen` event, so the grid
   // swaps instead of blanking; PaneScreen matches `screen.key` to tell the two apart. Leaving
@@ -195,6 +213,7 @@ export function useEvents(pick: (state: State | null) => string[]) {
   }, [watched]);
 
   useEffect(() => {
+    if (!booted) return;
     // The Hub still serves `mode=recent`; tautan's UI only ever shows the visible grid, and
     // Wrap reflows it client-side. See docs/DESIGN.md "Terminal width on a phone".
     const url = keys.length ? `/api/events?${keys.map((k) => `pane=${encodeURIComponent(k)}`).join('&')}&mode=visible` : '/api/events';
@@ -225,7 +244,7 @@ export function useEvents(pick: (state: State | null) => string[]) {
       clearTimeout(retry);
       es.close();
     };
-  }, [watched, attempt]);
+  }, [watched, attempt, booted]);
 
   return { state, screen, screens, streamId, connected };
 }
@@ -569,8 +588,8 @@ export function App() {
   // The watched set must not depend on the layout: a lease belongs to its stream, so taking
   // or dropping one (or a resize back to the chips row) may not reopen it. The set is the
   // Tab's Panes whenever a split could show; focus moves inside it keep one sorted key.
-  // ponytail: state is unknown before the first event. A cold load opens on the last split
-  // set that held this Pane (see watchKeys); a first visit to a split Tab still opens twice.
+  // useEvents holds every stream until the bootstrap state lands, so a first visit to a
+  // split Tab opens one stream on the whole set, not one Pane and then the set.
   const { state, screen, screens: paneScreens, streamId, connected } = useEvents(
     (s) => (paneKey ? watchKeys(s, paneKey, desktop && splitPref) : []),
   );
