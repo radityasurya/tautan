@@ -1249,12 +1249,16 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
         open={newWorkspace}
         onClose={() => setNewWorkspace(false)}
         cwd={parentDir(beside?.cwd)}
+        hostId={beside ? hostOf(beside.muxKey) : undefined}
+        paneKey={beside ? panesOf(beside)[0]?.key : undefined}
         onSubmit={createWorkspace}
       />
       <NewTabSheet
         open={tabIn !== null}
         onClose={() => setNewTab(null)}
         cwd={tabIn?.cwd}
+        hostId={tabIn ? hostOf(tabIn.muxKey) : undefined}
+        paneKey={tabIn ? panesOf(tabIn)[0]?.key : undefined}
         agent={commonAgent(tabIn ? panesOf(tabIn) : [])}
         where={
           <>

@@ -233,6 +233,16 @@ try {
     return 'no switch offered (agent pane without lens support) — Screen only';
   });
 
+  await flow('file viewer folder view lists the folder and opens a sibling', async () => {
+    await desktop.goto(`${BASE}/#/file/${encodeURIComponent(KEY)}?path=${encodeURIComponent(`${fixture.dir}/chart.png`)}`, { waitUntil: 'networkidle' });
+    await desktop.getByRole('button', { name: 'Folder', exact: true }).click();
+    const row = desktop.getByRole('button', { name: /chart\.png/ }).first();
+    await row.waitFor({ timeout: 8_000 });
+    await row.click();
+    await desktop.waitForTimeout(600);
+    return assert(decodeURIComponent(desktop.url()).includes('chart.png') && await desktop.locator('img').count() === 1, 'sibling opens in the viewer');
+  });
+
   await flow('desktop card answers through the 409 guard; the header has no answer; ⌘2 opens Tab 2', async () => {
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-tabs' });
     const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;

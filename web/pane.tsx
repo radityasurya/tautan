@@ -1678,6 +1678,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         open={showNewTab}
         onClose={() => setShowNewTab(false)}
         cwd={ws?.cwd}
+        hostId={host?.id}
+        paneKey={pane?.key}
         agent={commonAgent(state?.panes.filter((p) => p.muxKey === pane?.muxKey && p.workspaceId === pane?.workspaceId) ?? [])}
         where={
           <>

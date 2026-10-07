@@ -3,6 +3,9 @@ import { useEffect, useState } from 'react';
 import type { State } from '../shared/types.ts';
 import { Back } from './icons.tsx';
 import { Skeleton } from './halaska-kit';
+import { FolderBrowser } from './folders.tsx';
+import { absolute, dirname, filesUrl, viewerFor } from './folders-logic.ts';
+import { fileView } from './image.tsx';
 
 type FileData = { kind: 'image'; src: string } | { kind: 'text'; text: string } | { kind: 'binary' };
 
@@ -13,6 +16,15 @@ export function FileScreen({ paneKey, path, state }: { paneKey: string; path: st
   const [nonce, setNonce] = useState(0);
   const [data, setData] = useState<FileData | null>(null);
   const [error, setError] = useState('');
+  const [browsing, setBrowsing] = useState(false);
+  const abs = absolute(path, pane?.cwd);
+  const kind = viewerFor(path);
+  const raw = (download?: boolean) =>
+    host ? filesUrl('raw', { host: host.id, path: abs, pane: paneKey, download: download ? '1' : undefined }) : '';
+
+  useEffect(() => {
+    setBrowsing(false);
+  }, [path]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -24,6 +36,8 @@ export function FileScreen({ paneKey, path, state }: { paneKey: string; path: st
       setError('not found');
       return () => controller.abort();
     }
+    // Media and PDF stream from /api/files/raw (ranges); only text and images are read here.
+    if (kind !== 'other') return () => controller.abort();
 
     fetch(`/api/panes/${encodeURIComponent(paneKey)}/file?path=${encodeURIComponent(path)}`, {
       signal: controller.signal,
@@ -57,7 +71,7 @@ export function FileScreen({ paneKey, path, state }: { paneKey: string; path: st
       controller.abort();
       if (imageUrl) URL.revokeObjectURL(imageUrl);
     };
-  }, [paneKey, path, nonce]);
+  }, [paneKey, path, nonce, kind]);
 
   const name = path.split('/').filter(Boolean).at(-1) ?? path;
   const context = [pane?.title, host?.label].filter(Boolean).join(' · ') || 'Pane';
@@ -82,10 +96,57 @@ export function FileScreen({ paneKey, path, state }: { paneKey: string; path: st
           <h1 className="truncate text-title tracking-tight">{name || 'File'}</h1>
           <p className="truncate text-caption text-muted">{context}</p>
         </div>
+        {host && path && (
+          <>
+            <button
+              type="button"
+              aria-pressed={browsing}
+              onClick={() => setBrowsing(!browsing)}
+              className="flex min-h-11 shrink-0 items-center px-2 text-body font-medium text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]"
+            >
+              Folder
+            </button>
+            <a
+              href={raw(true)}
+              download={name}
+              className="flex min-h-11 shrink-0 items-center px-2 text-body font-medium text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]"
+            >
+              Download
+            </a>
+          </>
+        )}
       </header>
 
       <main className="min-h-0 flex-1 overflow-auto pb-[max(env(safe-area-inset-bottom),12px)]">
-        {error ? (
+        {browsing && host ? (
+          <div className="px-4 pt-2">
+            <FolderBrowser
+              hostId={host.id}
+              paneKey={paneKey}
+              start={dirname(abs)}
+              files
+              onFile={(p) => {
+                setBrowsing(false); // the same file leaves the hash unchanged, so close the list here
+                location.hash = fileView(paneKey, p);
+              }}
+            />
+          </div>
+        ) : kind !== 'other' && path ? (
+          !host ? (
+            <p className="px-4 pt-8 text-body">Host not available</p>
+          ) : kind === 'pdf' ? (
+            // ponytail: Chrome's PDF viewer refuses every sandboxed frame (probed on Chrome 1228: '', allow-scripts,
+            // allow-same-origin and both together all blank it), so this frame is unsandboxed.
+            // The Hub sends the PDF as application/pdf from our own origin, never as HTML.
+            <iframe title={name} src={raw()} className="size-full min-h-[70dvh] border-0" />
+          ) : kind === 'video' ? (
+            <video src={raw()} controls playsInline preload="metadata" className="max-h-full w-full bg-black" />
+          ) : (
+            <div className="flex flex-col gap-3 px-4 pt-8">
+              <audio src={raw()} controls preload="metadata" className="w-full" />
+            </div>
+          )
+        ) : error ? (
           <div className="flex flex-col items-start gap-3 px-4 pt-8">
             <p className="text-body">
               {error === 'not found' ? 'File not found' : error === 'too large' ? 'File is too large' : 'Could not read the file'}

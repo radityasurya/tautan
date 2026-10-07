@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FocusEvent, ReactNode } from 'react';
 
 import { Toggle } from './hosts.tsx';
+import { FolderBrowser } from './folders.tsx';
 import { AlertDialog, Button, Caption, Chip, Sheet as KitSheet, TextInput, usePal } from './halaska-kit';
 
 // One kit surface for every sheet: Halaska's side panel, with the title row it brings.
@@ -311,6 +312,38 @@ function AgentChips({ agents, selected = '', onPick }: { agents: string[]; selec
   );
 }
 
+/**
+ * The Directory field with a Browse button. While `browsing`, the sheet swaps its form for
+ * the folder list (a second sheet would sit inside the first one's transform).
+ */
+function DirField({ value, onChange, hostId, onBrowse }: { value: string; onChange: (v: string) => void; hostId?: string; onBrowse: () => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <TextInput value={value} onChange={onChange} label="Directory" placeholder="/home/user/projects/tautan" />
+      </div>
+      {hostId && (
+        <Button variant="outline" size="lg" onClick={onBrowse} aria-label="Browse folders" style={{ minHeight: 44, minWidth: 44 }}>
+          Browse
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function Browse({ hostId, paneKey, start, onUse, onBack }: { hostId: string; paneKey?: string; start: string; onUse: (path: string) => void; onBack: () => void }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div>
+        <Button variant="ghost" size="sm" onClick={onBack} style={{ minHeight: 44 }}>
+          ← Back
+        </Button>
+      </div>
+      <FolderBrowser hostId={hostId} paneKey={paneKey} start={start} recents onUse={onUse} />
+    </div>
+  );
+}
+
 export function NewTabSheet({
   open,
   onClose,
@@ -319,6 +352,8 @@ export function NewTabSheet({
   cwd,
   agent,
   agents = ['claude', 'pi', 'codex'],
+  hostId,
+  paneKey,
 }: {
   open: boolean;
   onClose: () => void;
@@ -327,34 +362,38 @@ export function NewTabSheet({
   cwd?: string;
   agent?: string;
   agents?: string[];
+  /** Host to browse for the Directory; no Browse button without it. */
+  hostId?: string;
+  paneKey?: string;
 }) {
   const { busy, error, submit, retry } = useWrite(open, onSubmit, onClose);
+  const [browsing, setBrowsing] = useState(false);
   const [label, setLabel] = useState('');
   const [dir, setDir] = useState('');
   const [pick, setPick] = useState('');
   useEffect(() => {
     if (open) {
+      setBrowsing(false);
       setLabel('');
       setDir(cwd ?? '');
       setPick(agent ?? '');
     }
   }, [open, cwd, agent]);
   return (
-    <Sheet open={open} title="New Tab" meta={where} onClose={onClose}>
+    <Sheet open={open} title={browsing ? 'Choose a folder' : 'New Tab'} meta={browsing ? undefined : where} onClose={onClose}>
+      {browsing && hostId ? (
+        <Browse hostId={hostId} paneKey={paneKey} start={dir.trim()} onUse={(p) => { setDir(p); setBrowsing(false); }} onBack={() => setBrowsing(false)} />
+      ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <TextInput value={label} onChange={setLabel} label="Label" placeholder="Optional" />
-        <TextInput
-          value={dir}
-          onChange={setDir}
-          label="Directory"
-          placeholder="/home/user/projects/tautan"
-        />
+        <DirField value={dir} onChange={setDir} hostId={hostId} onBrowse={() => setBrowsing(true)} />
         <AgentChips agents={agents} selected={pick} onPick={setPick} />
         {error && <ErrorLine error={error} busy={busy} onRetry={retry} />}
         <Button variant="primary" size="lg" fullWidth loading={busy} onClick={() => submit({ label: label.trim() || undefined, cwd: dir.trim() || undefined, agent: pick || undefined })}>
           {busy ? 'Creating…' : 'Create tab'}
         </Button>
       </div>
+      )}
     </Sheet>
   );
 }
@@ -364,13 +403,19 @@ export function NewWorkspaceSheet({
   onClose,
   onSubmit,
   cwd,
+  hostId,
+  paneKey,
 }: {
   open: boolean;
   onClose: () => void;
   onSubmit: Submit<{ cwd: string; label?: string; branch?: string }>;
   cwd?: string;
+  /** Host to browse for the Directory; no Browse button without it. */
+  hostId?: string;
+  paneKey?: string;
 }) {
   const { busy, error, submit, retry } = useWrite(open, onSubmit, onClose);
+  const [browsing, setBrowsing] = useState(false);
   const [dir, setDir] = useState('');
   const [label, setLabel] = useState('');
   const [branch, setBranch] = useState('');
@@ -378,6 +423,7 @@ export function NewWorkspaceSheet({
   const [selectSuggestedBranch, setSelectSuggestedBranch] = useState(false);
   useEffect(() => {
     if (open) {
+      setBrowsing(false);
       setDir(cwd ?? '');
       setLabel('');
       setBranch('');
@@ -387,9 +433,12 @@ export function NewWorkspaceSheet({
   }, [open, cwd]);
 
   return (
-    <Sheet open={open} title="New Workspace" onClose={onClose}>
+    <Sheet open={open} title={browsing ? 'Choose a folder' : 'New Workspace'} onClose={onClose}>
+      {browsing && hostId ? (
+        <Browse hostId={hostId} paneKey={paneKey} start={dir.trim()} onUse={(p) => { setDir(p); setBrowsing(false); }} onBack={() => setBrowsing(false)} />
+      ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <TextInput value={dir} onChange={setDir} label="Directory" placeholder="/home/user/projects/tautan" />
+        <DirField value={dir} onChange={setDir} hostId={hostId} onBrowse={() => setBrowsing(true)} />
         <TextInput value={label} onChange={setLabel} label="Label" placeholder={workspaceLabel(branch)} />
         {/* A branch only means something with the switch on, so the field arrives with it. */}
         <Toggle
@@ -429,6 +478,7 @@ export function NewWorkspaceSheet({
           {busy ? 'Creating…' : 'Create workspace'}
         </Button>
       </div>
+      )}
     </Sheet>
   );
 }
