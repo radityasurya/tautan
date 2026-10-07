@@ -146,16 +146,18 @@ export class TmuxMux implements Mux {
   }
 
   async read(paneId: string, mode: ScreenMode): Promise<Screen> {
-    const args = mode === 'visible'
-      ? ['capture-pane', '-t', paneId, '-e', '-p', '-J']
-      : ['capture-pane', '-t', paneId, '-p', '-J', '-S', '-500'];
-    // `#{alternate_on}` is the real full-screen signal; a failed probe leaves it unset, and
-    // Wrap falls back to its share-of-lines heuristic (shared/layout.ts tuiScreen).
-    const [text, alt] = await Promise.all([
-      this.run(args),
-      this.run(['display-message', '-p', '-t', paneId, '#{alternate_on}'])
-        .then(out => out.trim() === '1', () => undefined as boolean | undefined),
-    ]);
+    // One process, one round trip (two over ssh on a remote Host): the flag prints its own
+    // line first, the capture follows. `#{alternate_on}` is the real full-screen signal, but
+    // tmux <= 3.1c expands an unknown format to an empty line with exit 0 — parsed strictly,
+    // that stays "unknown" (alt omitted) instead of a confident false, and Wrap falls back to
+    // its share-of-lines heuristic (shared/layout.ts tuiScreen). A dead Pane fails the
+    // capture, so the chain exits nonzero and read rejects, as before.
+    const out = await this.run(['display-message', '-p', '-t', paneId, '#{alternate_on}', ';',
+      'capture-pane', '-t', paneId, ...(mode === 'visible' ? ['-e'] : ['-S', '-500']), '-p', '-J']);
+    const nl = out.indexOf('\n');
+    const first = nl < 0 ? out : out.slice(0, nl);
+    const alt = first === '1' || first === '0' ? first === '1' : undefined;
+    const text = nl < 0 ? out : out.slice(nl + 1); // the flag's line is dropped, empty or not
     this.lastReadAt.set(paneId, Date.now());
     this.reconcileControls();
     return { text, ansi: mode === 'visible', revision: this.record(paneId, text), mode, ...(alt !== undefined ? { alt } : {}) };

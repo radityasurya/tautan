@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { parseAnsi } from '../shared/ansi.ts';
-import { boxInner, classify, continues, fillOf, hangOf, splitAt, tuiScreen } from '../shared/layout.ts';
+import { boxInner, classify, continues, fillOf, fullScreen, hangOf, splitAt, tuiScreen } from '../shared/layout.ts';
 
 const kinds = (text: string) => classify(text, 120).join(',');
 
@@ -263,6 +263,18 @@ describe('tuiScreen', () => {
   test('side-by-side panels are a full-screen program', () => {
     const panels = Array.from({ length: 6 }, (_, i) => `│ item ${i} │ detail ${i} │`).join('\n');
     expect(tuiScreen(panels, 80)).toBe(true);
+  });
+});
+
+describe('fullScreen', () => {
+  test('the profile mouse flag wins, then Screen.alt, then the text heuristic', () => {
+    const panels = Array.from({ length: 6 }, (_, i) => `│ item ${i} │ detail ${i} │`).join('\n');
+    const shell = 'one two three four\nfive six seven\neight nine ten';
+    expect(fullScreen(false, undefined, panels)).toBe(true); // heuristic alone
+    expect(fullScreen(false, undefined, shell)).toBe(false);
+    expect(fullScreen(false, true, shell)).toBe(true); // the Mux's flag beats the heuristic
+    expect(fullScreen(false, false, panels)).toBe(false); // a confident false beats it too
+    expect(fullScreen(true, false, shell)).toBe(true); // a mouse-forwarding profile wins
   });
 });
 

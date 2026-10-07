@@ -150,3 +150,13 @@ export function tuiScreen(text: string, cols = 80): boolean {
   const drawn = lines.filter((line) => kindOf(line, cols) === 'structure' || /\S\s*[│┃║]\s*\S/.test(line)).length;
   return drawn / lines.length >= 0.4;
 }
+
+/**
+ * Whether a Screen must keep its grid instead of reflowing — Wrap's auto rule in one place:
+ * the App profile's mouse flag first (a program tautan forwards the mouse to is full-screen),
+ * then the Mux's own alternate-screen flag (Screen.alt, tmux), then tuiScreen's read of the
+ * text — herdr reports no flag, so an unknown TUI there keeps its grid by its drawn share.
+ */
+export function fullScreen(mouse: boolean, alt: boolean | undefined, text: string, cols = 80): boolean {
+  return mouse || (alt ?? tuiScreen(text, cols));
+}

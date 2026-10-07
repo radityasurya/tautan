@@ -44,7 +44,9 @@ function fakeMux(controlSpawn?: TmuxControlSpawn) {
   let captureText = 'same';
   const exec: TmuxExec = async args => {
     calls.push(args);
-    return { stdout: args[0] === 'list-panes' ? treeText : args[0] === 'capture-pane' ? captureText : '', stderr: '', code: 0 };
+    // read() chains the flag line and the capture into one command, so display-message
+    // answers with both; the polling capture() still asks for capture-pane alone.
+    return { stdout: args[0] === 'list-panes' ? treeText : args[0] === 'display-message' ? `0\n${captureText}` : args[0] === 'capture-pane' ? captureText : '', stderr: '', code: 0 };
   };
   return {
     calls,
@@ -112,20 +114,25 @@ describe('TmuxMux', () => {
     expect((await f.mux.tree()).panes[0]!.revision).toBe(2);
   });
 
-  test('read carries the alternate-screen flag; a failed probe omits it', async () => {
-    let alt = '0';
-    let fail = false;
+  test('read chains the alt probe into one command and parses the flag line strictly', async () => {
+    let first = '0';
     const exec: TmuxExec = async args => {
-      if (args[0] === 'capture-pane') return { stdout: 'grid\n', stderr: '', code: 0 };
-      if (args[0] === 'display-message') return fail ? { stdout: '', stderr: 'probe failed', code: 1 } : { stdout: `${alt}\n`, stderr: '', code: 0 };
-      return { stdout: '', stderr: '', code: 0 };
+      expect(args).toEqual(['display-message', '-p', '-t', '%0', '#{alternate_on}', ';',
+        'capture-pane', '-t', '%0', '-e', '-p', '-J']);
+      return { stdout: `${first}\ngrid\n`, stderr: '', code: 0 };
     };
     const mux = new TmuxMux({ id: 'test', socket: '/unused', exec, treeIntervalMs: 60_000, screenIntervalMs: 60_000 });
-    expect((await mux.read('%0', 'visible')).alt).toBe(false);
-    alt = '1';
-    expect((await mux.read('%0', 'visible')).alt).toBe(true);
-    fail = true;
-    expect('alt' in (await mux.read('%0', 'visible'))).toBe(false);
+    let screen = await mux.read('%0', 'visible');
+    expect(screen.alt).toBe(false);
+    expect(screen.text).toBe('grid\n');
+    first = '1';
+    screen = await mux.read('%0', 'visible');
+    expect(screen.alt).toBe(true);
+    expect(screen.text).toBe('grid\n');
+    first = ''; // tmux <= 3.1c: an unknown format var expands to an empty line, exit 0
+    screen = await mux.read('%0', 'visible');
+    expect('alt' in screen).toBe(false);
+    expect(screen.text).toBe('grid\n'); // the empty flag line is dropped, not kept as text
   });
 
   test('unsupported operations reject and explain resolves null', async () => {
