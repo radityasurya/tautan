@@ -303,6 +303,15 @@ export function startHttp(hub: Hub, opts: {
           if (asked.length > 4) return json({ error: 'too-many-panes' }, 400);
           const paneKeys: string[] = [];
           for (const paneKey of asked) if (await hub.hasPane(paneKey)) paneKeys.push(paneKey);
+          if (asked.some(key => !paneKeys.includes(key))) {
+            // A key the cached tree lacks may exist on the Mux since its last read: a cold
+            // open of a fresh split Tab races the Hub's change debounce. Re-read the owning
+            // Muxes once before dropping keys, so the first stream opens on the whole Tab.
+            const missing = asked.filter(key => !paneKeys.includes(key));
+            const muxKeys = new Set(missing.map(key => key.slice(0, key.lastIndexOf('/'))));
+            for (const muxKey of muxKeys) await hub.refresh(muxKey).catch(() => {});
+            for (const paneKey of missing) if (await hub.hasPane(paneKey)) paneKeys.push(paneKey);
+          }
           if (asked.length && !paneKeys.length) return json({ error: 'pane not found' }, 404);
           const mode: ScreenMode = url.searchParams.get('mode') === 'recent' ? 'recent' : 'visible';
           // The stream announces its own id in the first event (`hello`, `{stream: id}`); a

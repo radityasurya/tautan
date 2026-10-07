@@ -158,10 +158,11 @@ export function splitSet(state: State | null, pane: StatePane | undefined): Stat
 const WATCHED = 'tautan.watched';
 
 const watchKeys = (state: State | null, paneKey: string, split: boolean) => {
-  if (split && !state) {
-    // Only reachable when the bootstrap GET failed: the Tab is unknown, so reuse the last
-    // split set that held this Pane. The Hub drops a key that no longer resolves, and the
-    // stream's own state event corrects a stale set with one reconnect.
+  // A stale bootstrap state can predate the Pane (a Tab created moments ago), which is the
+  // same unknown-Tab case as a failed GET: reuse the last split set that held this Pane.
+  if (split && !state?.panes.some((p) => p.key === paneKey)) {
+    // The Hub drops a key that no longer resolves, and the stream's own state event
+    // corrects a stale set with one reconnect.
     try {
       const last: unknown = JSON.parse(localStorage.getItem(WATCHED) ?? '[]');
       if (Array.isArray(last) && last.length <= 4 && last.includes(paneKey)) return last as string[];

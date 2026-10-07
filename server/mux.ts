@@ -132,7 +132,8 @@ export class Hub {
     }
   }
 
-  private async refresh(muxKey: string): Promise<void> {
+  /** Re-read one Mux now and emit the result. Public for the events route's stale-key path. */
+  async refresh(muxKey: string): Promise<void> {
     const entry = this.entries.get(muxKey); if (!entry) return;
     if (entry.refresh) { entry.again = true; return entry.refresh; }
     entry.refresh = (async () => {
