@@ -442,9 +442,12 @@ export class Hub {
         watch.last = screen.text;
         watch.delay = Hub.WATCH_FAST;
         listener.onScreen({ key: paneKey, ...screen });
-      } else {
+      } else if (screen.text.trim()) {
         watch.delay = Math.min(Hub.WATCH_SLOW, Math.round(watch.delay * 1.5));
       }
+      // An empty Screen does not back off: it is a program that has not drawn yet (a fresh
+      // htop reads empty until it paints), and backing off showed its first frame up to 2 s
+      // late. ponytail: a Pane that stays blank costs 4 reads/s while watched; cap it if seen.
     } catch { watch.delay = Hub.WATCH_SLOW; }
     if (this.watchers.get(listener)?.has(paneKey)) this.scheduleWatch(listener, paneKey, watch.delay);
   }

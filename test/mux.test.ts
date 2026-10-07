@@ -151,6 +151,21 @@ test('two watched panes on one listener back off independently', async () => {
   } finally { off(); f.hub.close(); }
 }, 8_000);
 
+test('an empty Screen keeps its key fast until the program draws', async () => {
+  const f = watchFixture();
+  f.textFor('a', () => ''); // a program that has not drawn yet; b is a quiet prompt
+  const screens: ScreenEvent[] = [];
+  const off = f.hub.subscribe({ paneKeys: ['local/fake/a', 'local/fake/b'], onState: () => {}, onScreen: screen => screens.push(screen) });
+  try {
+    await Bun.sleep(1_600); // a quiet key would be at 250 → 375 → 563 → 845 by now
+    f.textFor('a', () => 'drawn');
+    const at = Date.now();
+    await until(() => screens, list => list.some(screen => screen.key === 'local/fake/a' && screen.text === 'drawn'), 1_000);
+    expect(Date.now() - at).toBeLessThan(400);
+    expect(f.reads.a.length).toBeGreaterThan(f.reads.b.length);
+  } finally { off(); f.hub.close(); }
+}, 5_000);
+
 test('a change on one key re-polls only that key', async () => {
   const f = watchFixture(); // both panes return a constant screen
   const screens: ScreenEvent[] = [];

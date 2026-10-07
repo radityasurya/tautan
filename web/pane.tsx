@@ -980,7 +980,9 @@ function SplitView({ panes, focusKey, screens, held, focusedContent, onZoom, onM
           key={p.key}
           pane={p}
           focused={p.key === focusKey}
-          screen={screens[p.key] ?? held}
+          // Only the focused cell holds the last Screen across a switch: another cell showing
+          // it would draw a stranger's grid until its own first Screen lands.
+          screen={screens[p.key] ?? (p.key === focusKey ? held : null)}
           content={focusedContent}
           onMeasure={onMeasure}
           onZoom={onZoom && (() => onZoom(p.key))}

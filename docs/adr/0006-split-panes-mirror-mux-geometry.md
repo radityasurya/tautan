@@ -59,6 +59,11 @@ to 4 Panes. A Screen payload was 3–9 KB.
   worst case. Only changed Screens are sent.
 - Focus moves inside the watched set, so it does not reconnect the stream. A Tab change
   reconnects, as it did before.
+- A cold load opens its stream on the last split set that held the route's Pane
+  (`tautan.watched` in localStorage), so every cell gets its first Screen from the first
+  stream. Only the focused cell holds the previous Screen across a switch; another cell
+  stays empty until its own arrives. An empty Screen does not back off, so a program that
+  draws late shows within 250 ms of drawing (2026-10-07).
 - A zoom, split or resize made in herdr 0.9 fires `layout.updated`, and the Hub refreshes
   the tree on it. On herdr 0.8, and on tmux, a layout change reaches tautan on the next
   tree refresh (at most 15 s).
