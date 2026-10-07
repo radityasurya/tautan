@@ -131,7 +131,7 @@ const WHY: Record<string, string> = {
   hosts: 'Check the SSH target',
   login: 'That login is not the one this request carries',
 };
-const why = (code: string) => WHY[code] ?? `That did not work · ${code}`;
+export const why = (code: string) => WHY[code] ?? `That did not work · ${code}`;
 
 const WORKTREE_ADJECTIVES = ['bold', 'bright', 'calm', 'clever', 'quick', 'solar', 'steady', 'swift'];
 const WORKTREE_NOUNS = ['badger', 'comet', 'falcon', 'maple', 'otter', 'river', 'sable', 'willow'];

@@ -1,10 +1,11 @@
 import { TopBar } from './header.tsx';
 import { useEffect, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import type { DragEvent, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type {
   NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
-import { api, haptic, Link, navigate, opensWith, reducedMotion } from './app.tsx';
+import { api, haptic, Link, navigate, opensWith, reducedMotion, useDesktop } from './app.tsx';
+import { moveWorkspace, orderWorkspaces, readOrder, writeOrder, type WorkspaceOrder } from './order.ts';
 import { Check, ChevronDown, ChevronRight, CollapseAll, ExpandAll, ListHerdr, ListTautan, More, Plus, Sliders } from './icons.tsx';
 import { Chip, EmptyState, IconButton, SearchInput, Skeleton, usePal } from './halaska-kit';
 import {
@@ -472,6 +473,10 @@ function useLongPress(fn: () => void) {
   };
 }
 
+/** Where a dragged Workspace would land relative to the row under it. */
+type DropMark = 'above' | 'below' | undefined;
+const dropShadow = (d: DropMark) => (d === 'above' ? 'shadow-[inset_0_2px_0_var(--accent)]' : d === 'below' ? 'shadow-[inset_0_-2px_0_var(--accent)]' : '');
+
 /**
  * A list group header, one row: chevron, the label (the first thing to truncate), the Host as
  * a muted chip, the Status counts as pills on the right, then ⋯. Workspace groups also open
@@ -486,6 +491,8 @@ function GroupHeader({
   compact,
   onToggle,
   onMenu,
+  drag,
+  drop,
 }: {
   label: string;
   host?: string;
@@ -495,12 +502,16 @@ function GroupHeader({
   compact?: boolean;
   onToggle: () => void;
   onMenu?: () => void;
+  /** Desktop only: the drag handlers that reorder this Workspace, and where a drop would land. */
+  drag?: HTMLAttributes<HTMLElement>;
+  drop?: DropMark;
 }) {
   const press = useLongPress(() => onMenu?.());
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <h2
-      className={`group/header flex items-center ${compact ? 'mt-2 hover:bg-bg' : 'mt-4 hover:bg-surface'} ${onMenu ? (compact ? 'pr-1.5' : 'pr-2') : 'pr-4'}`}
+      {...drag}
+      className={`group/header flex items-center ${dropShadow(drop)} ${compact ? 'mt-2 hover:bg-bg' : 'mt-4 hover:bg-surface'} ${onMenu ? (compact ? 'pr-1.5' : 'pr-2') : 'pr-4'}`}
     >
       <button
         type="button"
@@ -594,6 +605,8 @@ function SpaceRow({
   compact,
   onSelect,
   onMenu,
+  drag,
+  drop,
 }: {
   label: string;
   host?: string;
@@ -603,6 +616,8 @@ function SpaceRow({
   compact?: boolean;
   onSelect: () => void;
   onMenu?: () => void;
+  drag?: HTMLAttributes<HTMLElement>;
+  drop?: DropMark;
 }) {
   const press = useLongPress(() => onMenu?.());
   const top = rollup(panes, unseen);
@@ -612,7 +627,8 @@ function SpaceRow({
   const state = top ? `${top.status}${top.seen ? '' : ', unseen'}` : 'no Agents';
   return (
     <li
-      className={`group/space flex items-center ${onMenu ? 'pr-1.5' : 'pr-4'} ${
+      {...drag}
+      className={`group/space flex items-center ${dropShadow(drop)} ${onMenu ? 'pr-1.5' : 'pr-4'} ${
         selected ? `${compact ? 'bg-bg' : 'bg-surface'} shadow-[inset_2px_0_0_var(--accent)]` : compact ? 'hover:bg-bg' : 'hover:bg-surface'
       }`}
     >
@@ -830,6 +846,10 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   // The Workspace this screen just created: it stays listed until State fills it with a
   // Pane, and scrolls itself into view the first time State carries it.
   const [created, setCreated] = useState<string | null>(null);
+  // The Workspace order (ADR 0008): this device's own, never sent to a Mux.
+  const desktop = useDesktop();
+  const [order, setOrder] = useState<WorkspaceOrder>(readOrder);
+  const [drag, setDrag] = useState<{ key: string; over: string | null } | null>(null);
   const sections = useRef(new Map<string, HTMLElement>());
   const scrolled = useRef(false);
   const pal = usePal();
@@ -847,6 +867,42 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
     scrolled.current = true;
     el.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
   }, [state, created]);
+
+  const ordered = orderWorkspaces(state?.workspaces ?? [], order);
+  const reorder = (w: StateWorkspace, to: Parameters<typeof moveWorkspace>[3]) => {
+    const next = moveWorkspace(ordered, order, w, to);
+    if (next === order) return;
+    setOrder(next);
+    writeOrder(next);
+  };
+  const slot = (w: StateWorkspace) => ordered.filter((x) => x.muxKey === w.muxKey);
+  // ponytail: native drag and drop on the row, desktop only; a button inside a draggable row
+  // does not start a drag in every browser. Pointer-driven drag if that ever bites.
+  const dragging = ordered.find((w) => w.key === drag?.key);
+  const dragProps = (w: StateWorkspace): HTMLAttributes<HTMLElement> | undefined =>
+    desktop && !needle
+      ? {
+          draggable: true,
+          onDragStart: (e: DragEvent) => {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', w.key);
+            setDrag({ key: w.key, over: null });
+          },
+          onDragOver: (e: DragEvent) => {
+            if (!dragging || dragging.key === w.key || dragging.muxKey !== w.muxKey) return;
+            e.preventDefault();
+            if (drag?.over !== w.key) setDrag({ key: dragging.key, over: w.key });
+          },
+          onDrop: (e: DragEvent) => {
+            e.preventDefault();
+            if (dragging && dragging.muxKey === w.muxKey && dragging.key !== w.key) reorder(dragging, { before: w.id });
+            setDrag(null);
+          },
+          onDragEnd: () => setDrag(null),
+        }
+      : undefined;
+  const dropAt = (w: StateWorkspace): DropMark =>
+    dragging && drag?.over === w.key ? (slot(w).indexOf(dragging) > slot(w).indexOf(w) ? 'above' : 'below') : undefined;
 
   const hostOf = (muxKey: string) => state?.muxes.find((m) => m.key === muxKey)?.hostId;
   const hostLabel = (muxKey: string) => state?.hosts.find((h) => h.id === hostOf(muxKey))?.label;
@@ -872,7 +928,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
     .filter((p) => visible(p.muxKey) && p.status === 'working' && hit(p))
     .sort((a, b) => (b.statusChangedAt ?? 0) - (a.statusChangedAt ?? 0));
   const pinned = new Set([...needsYou, ...running].map((p) => p.key));
-  const groups = (state?.workspaces ?? [])
+  const groups = ordered
     .filter((w) => visible(w.muxKey))
     .map((w) => {
       const hostId = hostOf(w.muxKey);
@@ -1084,6 +1140,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                       open={!shut}
                       onToggle={() => toggle(w.key)}
                       onMenu={() => setMenu(w)}
+                      drag={dragProps(w)}
+                      drop={dropAt(w)}
                     />
                     {!shut && (
                       <ul>
@@ -1120,7 +1178,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   // ---- the herdr list: Spaces over Agents ----
   const herdr = layout === 'herdr' && !!state && state.workspaces.some((w) => visible(w.muxKey));
   const many = (state?.hosts.length ?? 0) > 1;
-  const spaces = (state?.workspaces ?? [])
+  const spaces = ordered
     .filter((w) => visible(w.muxKey))
     .map((w) => ({ w, all: panesOf(w) }))
     .filter(({ w, all }) => !needle || w.key === space || w.label.toLowerCase().includes(needle) || all.some(hit));
@@ -1177,6 +1235,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                 compact={compact}
                 onSelect={() => setSpace(picked?.key === w.key ? null : w.key)}
                 onMenu={() => setMenu(w)}
+                drag={dragProps(w)}
+                drop={dropAt(w)}
               />
             );
           })}
@@ -1281,6 +1341,14 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
             : []),
           { label: 'Diff', onClick: () => menu && navigate(`#/diff/${encodeURIComponent(menu.key)}`) },
           { label: collapsed.includes(menu?.key ?? '') ? 'Expand' : 'Collapse', onClick: () => menu && toggle(menu.key) },
+          // The order is tautan's own, so tmux Workspaces move too. This is the phone's way to
+          // reorder; a drag fights scrolling on touch (ADR 0008).
+          ...(menu && slot(menu).length > 1
+            ? [
+                { label: 'Move up', hint: 'earlier in the list', disabled: slot(menu)[0]?.id === menu.id, onClick: () => reorder(menu, { delta: -1 }) },
+                { label: 'Move down', hint: 'later in the list', disabled: slot(menu).at(-1)?.id === menu.id, onClick: () => reorder(menu, { delta: 1 }) },
+              ]
+            : []),
           ...(writable(menu?.muxKey) ? [{ label: 'Close Workspace', danger: true, onClick: () => menu && setClose(menu) }] : []),
         ]}
       />

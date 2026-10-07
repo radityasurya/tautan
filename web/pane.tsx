@@ -1,10 +1,10 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
 import { boxInner, classify, continues, fillOf, hangOf, splitAt, tuiScreen, type LineKind } from '../shared/layout.ts';
 import type {
-  NewTabBody, NewTabResult, RenameBody, ZoomBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
+  MoveBody, NewTabBody, NewTabResult, RenameBody, ResizeBody, SplitBody, SwapBody, ZoomBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
 import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordances.tsx';
 
@@ -16,7 +16,8 @@ import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, unseen } from './home.tsx';
 import { ChevronDown, Down, Plus, ZoomIn, ZoomOut } from './icons.tsx';
-import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
+import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet, why } from './sheets.tsx';
+import { MoveSheet, RESIZE_STEP, ResizeSheet, SwapSheet } from './layout.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
 import { SWITCH_HEADING, SWITCH_ROW, SwitchDrawer } from './switch.tsx';
@@ -966,13 +967,103 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMea
   );
 }
 
+/** A shared edge between two Panes' rects, in cells: `at` is the line, `from`..`to` its extent along it. */
+interface Edge { key: string; vertical: boolean; at: number; from: number; to: number; before: StatePane; after: StatePane }
+/** `before` is left of (or above) `after`; a rect gap of one cell still counts as touching. */
+function edgesOf(panes: StatePane[]): Edge[] {
+  const out: Edge[] = [];
+  for (const a of panes) {
+    for (const b of panes) {
+      if (a === b) continue;
+      const gapX = b.x! - (a.x! + a.cols!);
+      const gapY = b.y! - (a.y! + a.rows!);
+      const along = (lo: number, hi: number, lo2: number, hi2: number) => [Math.max(lo, lo2), Math.min(hi, hi2)] as const;
+      const [y0, y1] = along(a.y!, a.y! + a.rows!, b.y!, b.y! + b.rows!);
+      const [x0, x1] = along(a.x!, a.x! + a.cols!, b.x!, b.x! + b.cols!);
+      if (gapX >= 0 && gapX <= 1 && y1 > y0) out.push({ key: `${a.key}|${b.key}`, vertical: true, at: b.x!, from: y0, to: y1, before: a, after: b });
+      else if (gapY >= 0 && gapY <= 1 && x1 > x0) out.push({ key: `${a.key}|${b.key}`, vertical: false, at: b.y!, from: x0, to: x1, before: a, after: b });
+    }
+  }
+  return out;
+}
+
+/**
+ * One split divider, draggable on the desktop (ADR 0008). The drag is CSS only: the line
+ * follows the pointer, and one `/resize` with the whole cell delta goes out on release. The
+ * next `state` event puts it where the Mux clamped it. A step of arrow keys does the same
+ * for the keyboard. Moving the line toward `after` grows `before`, and the other way grows `after`.
+ */
+function Divider({ edge, W, H, host, onResize }: {
+  edge: Edge;
+  W: number;
+  H: number;
+  host: RefObject<HTMLDivElement | null>;
+  onResize: (key: string, direction: ResizeBody['direction'], amount: number) => void;
+}) {
+  const v = edge.vertical;
+  const [shift, setShift] = useState(0);
+  const from = useRef<{ at: number; size: number } | null>(null);
+  const at = (e: { clientX: number; clientY: number }) => (v ? e.clientX : e.clientY);
+  const send = (cells: number) => {
+    if (!cells) return;
+    const grow = cells > 0 ? edge.before : edge.after;
+    onResize(grow.key, v ? (cells > 0 ? 'right' : 'left') : (cells > 0 ? 'down' : 'up'), Math.min(500, Math.abs(cells)));
+  };
+  const total = v ? W : H;
+  return (
+    <div
+      role="separator"
+      tabIndex={0}
+      aria-orientation={v ? 'vertical' : 'horizontal'}
+      aria-label={`Resize ${edge.before.title} and ${edge.after.title}`}
+      data-testid="split-divider"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const r = host.current?.getBoundingClientRect();
+        if (r) from.current = { at: at(e), size: v ? r.width : r.height };
+      }}
+      onPointerMove={(e) => {
+        if (from.current) setShift(at(e) - from.current.at);
+      }}
+      onPointerUp={(e) => {
+        const s = from.current;
+        from.current = null;
+        setShift(0);
+        if (s) send(Math.round(((at(e) - s.at) / s.size) * total));
+      }}
+      onPointerCancel={() => {
+        from.current = null;
+        setShift(0);
+      }}
+      onKeyDown={(e) => {
+        const dir = v ? { ArrowLeft: -1, ArrowRight: 1 }[e.key] : { ArrowUp: -1, ArrowDown: 1 }[e.key];
+        if (!dir) return;
+        e.preventDefault();
+        send(dir * RESIZE_STEP);
+      }}
+      style={{
+        position: 'absolute',
+        zIndex: 10,
+        touchAction: 'none',
+        cursor: v ? 'col-resize' : 'row-resize',
+        ...(v
+          ? { left: `calc(${(edge.at / W) * 100}% - 3px)`, width: 6, top: `${(edge.from / H) * 100}%`, height: `${((edge.to - edge.from) / H) * 100}%`, transform: `translateX(${shift}px)` }
+          : { top: `calc(${(edge.at / H) * 100}% - 3px)`, height: 6, left: `${(edge.from / W) * 100}%`, width: `${((edge.to - edge.from) / W) * 100}%`, transform: `translateY(${shift}px)` }),
+      }}
+      className={`group/divider outline-none ${shift ? 'bg-accent/60' : 'hover:bg-accent/40 focus-visible:bg-accent/60'}`}
+    />
+  );
+}
+
 /**
  * A split Tab at `lg` (ADR 0006): every Pane's grid placed at the Mux's own rect, as a
  * proportion of the Tab. The route is the focus; a click on another cell only moves it,
  * and sends nothing to the program. View-only cells have no Affordances, no mouse.
  * `focusedContent` replaces the focused cell's grid (the Chat lens); the others stay Screen.
  */
-function SplitView({ panes, focusKey, screens, held, focusedContent, onZoom, onMeasure }: {
+function SplitView({ panes, focusKey, screens, held, focusedContent, onZoom, onResize, onMeasure }: {
   panes: StatePane[];
   focusKey: string;
   screens: Record<string, ScreenEvent>;
@@ -980,11 +1071,14 @@ function SplitView({ panes, focusKey, screens, held, focusedContent, onZoom, onM
   focusedContent?: ReactNode;
   /** absent while a zoom is in flight */
   onZoom?: (key: string) => void;
+  /** a divider drag or key step: the Pane that grows, the way, and the cells */
+  onResize?: (key: string, direction: ResizeBody['direction'], amount: number) => void;
   onMeasure: (measure: GridMeasure) => void;
 }) {
   const { W, H } = extent(panes);
+  const host = useRef<HTMLDivElement>(null);
   return (
-    <div data-testid="split-view" className="relative min-h-0 flex-1">
+    <div ref={host} data-testid="split-view" className="relative min-h-0 flex-1">
       {panes.map((p) => (
         <SplitCell
           key={p.key}
@@ -1000,6 +1094,7 @@ function SplitView({ panes, focusKey, screens, held, focusedContent, onZoom, onM
           box={{ left: `${(p.x! / W) * 100}%`, top: `${(p.y! / H) * 100}%`, width: `${(p.cols! / W) * 100}%`, height: `${(p.rows! / H) * 100}%` }}
         />
       ))}
+      {onResize && edgesOf(panes).map((edge) => <Divider key={edge.key} edge={edge} W={W} H={H} host={host} onResize={onResize} />)}
     </div>
   );
 }
@@ -1060,6 +1155,10 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   /** A zoom write in flight, and the last one that failed (shown for 4 s). */
   const [zooming, setZooming] = useState(false);
   const [zoomFailed, setZoomFailed] = useState(false);
+  /** ADR 0008 layout edits from the ⋯ menu: the picker or sheet open, the write in flight, the last failure (shown for 4 s). */
+  const [layoutSheet, setLayoutSheet] = useState<'move' | 'swap' | 'resize' | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [editFailed, setEditFailed] = useState<{ verb: string; reason: string } | null>(null);
   const desktop = useDesktop();
   /** The Tab picker opens Switch at Tab level; the header's trigger opens it at Pane level. */
   const [switchTabs, setSwitchTabs] = useState(false);
@@ -1265,6 +1364,33 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     }
   };
 
+  /** One layout write. `then` gets the Hub's reply; a failure shows `<verb> failed` on the strip. The
+   *  Hub releases any lease on the Tab first, and the reply already follows the new `state`. */
+  const edit = async <T,>(verb: string, run: () => Promise<T>, then?: (r: T) => void) => {
+    haptic();
+    setEditing(true);
+    setEditFailed(null);
+    try {
+      const reply = await run(); // not inside `then?.()`: an absent callback would skip the argument
+      then?.(reply);
+    } catch (e) {
+      setEditFailed({ verb, reason: why((e instanceof Error && e.message) || 'network') });
+      setTimeout(() => setEditFailed(null), 4000);
+    } finally {
+      setEditing(false);
+    }
+  };
+  const tabsOfMux = state?.tabs.filter((t) => t.muxKey === pane?.muxKey) ?? [];
+  const ownTab = tabsOfMux.find((t) => t.workspaceId === pane?.workspaceId && t.id === pane?.tabId);
+  const base = `/api/panes/${encodeURIComponent(paneKey)}`;
+  const follow = ({ paneKey: next }: { paneKey: string }) =>
+    navigate(`#/pane/${encodeURIComponent(next)}`, { replace: true, transition: false });
+  const split = (direction: SplitBody['direction']) =>
+    edit('Split', () => api<{ paneKey: string }>(`${base}/split`, { direction } satisfies SplitBody), follow);
+  const move = (to: Pick<MoveBody, 'tab' | 'newTab' | 'newWorkspace'>) =>
+    edit('Move', () => api<{ paneKey: string }>(`${base}/move`, { ...to, ...(to.tab ? { split: 'down' } : {}) } satisfies MoveBody), follow);
+  const swap = (target: string) => edit('Swap', () => api<void>(`${base}/swap`, { target } satisfies SwapBody));
+
   const menuTab = tabs.find((t) => t.id === tabMenu);
   const renameTab = tabs.find((t) => t.id === tabRename);
   const closingTab = tabs.find((t) => t.id === tabClose);
@@ -1336,6 +1462,11 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
       {zoomFailed && (
         <span role="status" className="shrink-0 text-[12px] text-danger">
           Zoom failed
+        </span>
+      )}
+      {editFailed && (
+        <span role="status" title={editFailed.reason} className="shrink-0 text-[12px] text-danger">
+          {editFailed.verb} failed · {editFailed.reason}
         </span>
       )}
       {mouseOn && !gridMeasure.effectiveWrap && (
@@ -1533,6 +1664,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                 held={last}
                 focusedContent={chat || undefined}
                 onZoom={zooming ? undefined : (key) => void zoomTo(key, true)}
+                onResize={editing ? undefined : (key, direction, amount) =>
+                  void edit('Resize', () => api<void>(`/api/panes/${encodeURIComponent(key)}/resize`, { direction, amount } satisfies ResizeBody))}
                 onMeasure={onGridMeasure}
               />
             ) : (
@@ -1661,6 +1794,17 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                   : { label: 'Zoom Pane', hint: 'this Pane fills the Tab', disabled: zooming, onClick: () => void zoomTo(paneKey, true) },
               ]
             : []),
+          // ADR 0008. Hidden while zoomed: the Tab shows one Pane, so an edit would be invisible.
+          // Both Muxes write layout; a herdr older than 0.9 answers 501 and the strip says so.
+          ...(active && !tabZoomed
+            ? [
+                { label: 'Split right', group: 'Layout', disabled: editing, onClick: () => void split('right') },
+                { label: 'Split down', group: 'Layout', disabled: editing, onClick: () => void split('down') },
+                ...(active.panes.length > 1 ? [{ label: 'Swap with…', group: 'Layout', onClick: () => setLayoutSheet('swap') }] : []),
+                { label: 'Move to…', group: 'Layout', onClick: () => setLayoutSheet('move') },
+                ...(active.panes.length > 1 ? [{ label: 'Resize…', group: 'Layout', hint: '5 cells a step', onClick: () => setLayoutSheet('resize') }] : []),
+              ]
+            : []),
           { label: fit ? 'Fit to width: on' : 'Fit to width: off', hint: grid, onClick: () => setFit(!fit) },
           {
             label: themedOn ? 'Theme colors: on' : 'Theme colors: off',
@@ -1686,6 +1830,25 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
             : []),
           { label: 'Resize to phone', hint: 'v2', disabled: true },
         ]}
+      />
+      <MoveSheet
+        open={layoutSheet === 'move'}
+        onClose={() => setLayoutSheet(null)}
+        tab={ownTab}
+        tabs={tabsOfMux}
+        workspaces={state?.workspaces.filter((w) => w.muxKey === pane?.muxKey) ?? []}
+        onMove={(to) => void move(to)}
+      />
+      <SwapSheet
+        open={layoutSheet === 'swap'}
+        onClose={() => setLayoutSheet(null)}
+        panes={active?.panes.filter((p) => p.key !== paneKey) ?? []}
+        onSwap={(target) => void swap(target)}
+      />
+      <ResizeSheet
+        open={layoutSheet === 'resize'}
+        onClose={() => setLayoutSheet(null)}
+        onResize={(direction, amount) => api<void>(`${base}/resize`, { direction, amount } satisfies ResizeBody)}
       />
       <NewTabSheet
         open={showNewTab}

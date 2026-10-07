@@ -530,7 +530,7 @@ try {
       await wide.getByRole('button', { name: /^Zoom Pane/ }).click();
       // Zoomed: no split, the chips row with its Zoomed pill, and a marker on the strip Tab.
       const chips = wide.getByRole('group', { name: 'Panes in this Tab' });
-      await chips.getByRole('button', { name: 'Unzoom' }).waitFor({ timeout: 8_000 });
+      await chips.getByRole('button', { name: /^Unzoom\s*show/ }).waitFor({ timeout: 8_000 });
       assert(await wide.getByTestId('split-view').count() === 0, 'split gone while zoomed');
       assert(await chips.getByText('Zoomed', { exact: true }).count() === 1, 'Zoomed pill');
       assert(await wide.getByRole('tab', { name: /zoomed/ }).count() === 1, 'zoomed marker on the Tab');
@@ -542,14 +542,48 @@ try {
       assert(await chips.count() === 0, 'chips gone after unzoom');
       // And the cell's own zoom button does the same, from the title row.
       await wide.locator(`[data-pane="${keyA}"]`).getByRole('button', { name: /^Zoom / }).click();
-      await chips.getByRole('button', { name: 'Unzoom' }).waitFor({ timeout: 8_000 });
-      await chips.getByRole('button', { name: 'Unzoom' }).click();
+      await chips.getByRole('button', { name: /^Unzoom\s*show/ }).waitFor({ timeout: 8_000 });
+      await chips.getByRole('button', { name: /^Unzoom\s*show/ }).click();
       await wide.getByTestId('split-cell').nth(1).waitFor({ timeout: 8_000 });
       await wide.screenshot({ path: '/tmp/tautan-zoom/e2e-unzoomed.png' });
       const after = await wide.evaluate(() => performance.getEntriesByType('navigation').length + ':' + performance.timeOrigin);
       return assert(after === reloads, 'zoomed from ⋯, unzoomed from ⋯, zoomed from the cell, unzoomed from the chips; no reload');
     } finally {
       await wide.close().catch(() => {});
+    }
+  });
+  await flow('layout (ADR 0008): phone ⋯ Split right adds a shell and opens it; a Workspace menu Move up writes tautan.workspaceOrder and no Mux', async () => {
+    const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-layout' });
+    const only = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
+    const key = `HireOpz/default/${only}`;
+    await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-layout-2' }); // Move up/down needs a neighbour
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    try {
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      await page.getByRole('button', { name: 'More' }).click();
+      await page.getByRole('button', { name: 'Split right' }).click();
+      let panes = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id);
+      for (let i = 0; i < 20 && panes.length < 2; i++) { await Bun.sleep(250); panes = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id); }
+      assert(panes.length === 2, `panes=${panes.length}`);
+      // The route follows the new Pane (the one that is not the original).
+      for (let i = 0; i < 20 && decodeURIComponent(page.url()).endsWith(key); i++) await Bun.sleep(250);
+      assert(!decodeURIComponent(page.url()).endsWith(key), 'navigated to the new Pane');
+      // A zoomed Tab hides the edits, and offers Unzoom instead.
+      await page.getByRole('button', { name: 'More' }).click();
+      await page.getByRole('button', { name: /^Zoom Pane/ }).click();
+      await page.getByRole('button', { name: 'More' }).click();
+      await page.getByRole('button', { name: /^Unzoom\s*show/ }).waitFor({ timeout: 8_000 });
+      assert(await page.getByRole('button', { name: 'Split right' }).count() === 0, 'no Split on a zoomed Tab');
+      await page.getByRole('button', { name: /^Unzoom\s*show/ }).click();
+      // Reorder: one step from the Workspace menu (Move down when it already leads), stored here, never in the Mux.
+      await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+      await page.getByRole('button', { name: 'e2e-layout actions' }).click();
+      const up = page.getByRole('button', { name: /^Move up/ });
+      await (await up.isEnabled() ? up : page.getByRole('button', { name: /^Move down/ })).click();
+      const stored = await page.evaluate(() => localStorage.getItem('tautan.workspaceOrder'));
+      return assert(!!stored && Object.values(JSON.parse(stored) as Record<string, string[]>)[0]!.includes(workspace.id), `order=${stored}`);
+    } finally {
+      await page.close().catch(() => {});
     }
   });
 } finally {
