@@ -23,6 +23,7 @@ export function orderWorkspaces(all: StateWorkspace[], order: WorkspaceOrder): S
   const next = new Map<string, StateWorkspace[]>();
   for (const [mux, list] of byMux) {
     const rank = mergeOrder(order[mux], list.map((w) => w.id));
+    // ponytail: rank.indexOf in the comparator is O(n² log n); fine at Workspace counts, build a Map if lists grow.
     next.set(mux, [...list].sort((a, b) => rank.indexOf(a.id) - rank.indexOf(b.id)));
   }
   const used = new Map<string, number>();

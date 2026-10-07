@@ -103,7 +103,7 @@ export function ResizeSheet({ open, onClose, onResize }: { open: boolean; onClos
     );
   };
   return (
-    <Sheet open={open} title="Resize" meta={`${RESIZE_STEP} cells a step. The Pane grows toward the arrow.`} onClose={onClose}>
+    <Sheet open={open} title="Resize" meta={`${RESIZE_STEP} cells a step.`} onClose={onClose}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div role="group" aria-label="Grow the Pane" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {DIRS.map(({ dir, label }) => (

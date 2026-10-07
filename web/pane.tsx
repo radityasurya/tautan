@@ -1664,8 +1664,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                 held={last}
                 focusedContent={chat || undefined}
                 onZoom={zooming ? undefined : (key) => void zoomTo(key, true)}
-                onResize={editing ? undefined : (key, direction, amount) =>
-                  void edit('Resize', () => api<void>(`/api/panes/${encodeURIComponent(key)}/resize`, { direction, amount } satisfies ResizeBody))}
+                onResize={(key, direction, amount) =>
+                  editing ? undefined : void edit('Resize', () => api<void>(`/api/panes/${encodeURIComponent(key)}/resize`, { direction, amount } satisfies ResizeBody))}
                 onMeasure={onGridMeasure}
               />
             ) : (
@@ -1802,7 +1802,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                 { label: 'Split down', group: 'Layout', disabled: editing, onClick: () => void split('down') },
                 ...(active.panes.length > 1 ? [{ label: 'Swap with…', group: 'Layout', onClick: () => setLayoutSheet('swap') }] : []),
                 { label: 'Move to…', group: 'Layout', onClick: () => setLayoutSheet('move') },
-                ...(active.panes.length > 1 ? [{ label: 'Resize…', group: 'Layout', hint: '5 cells a step', onClick: () => setLayoutSheet('resize') }] : []),
+                ...(active.panes.length > 1 ? [{ label: 'Resize…', group: 'Layout', hint: `${RESIZE_STEP} cells a step`, onClick: () => setLayoutSheet('resize') }] : []),
               ]
             : []),
           { label: fit ? 'Fit to width: on' : 'Fit to width: off', hint: grid, onClick: () => setFit(!fit) },

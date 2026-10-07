@@ -530,7 +530,7 @@ try {
       await wide.getByRole('button', { name: /^Zoom Pane/ }).click();
       // Zoomed: no split, the chips row with its Zoomed pill, and a marker on the strip Tab.
       const chips = wide.getByRole('group', { name: 'Panes in this Tab' });
-      await chips.getByRole('button', { name: /^Unzoom\s*show/ }).waitFor({ timeout: 8_000 });
+      await chips.getByRole('button', { name: 'Unzoom' }).waitFor({ timeout: 8_000 });
       assert(await wide.getByTestId('split-view').count() === 0, 'split gone while zoomed');
       assert(await chips.getByText('Zoomed', { exact: true }).count() === 1, 'Zoomed pill');
       assert(await wide.getByRole('tab', { name: /zoomed/ }).count() === 1, 'zoomed marker on the Tab');
@@ -542,8 +542,8 @@ try {
       assert(await chips.count() === 0, 'chips gone after unzoom');
       // And the cell's own zoom button does the same, from the title row.
       await wide.locator(`[data-pane="${keyA}"]`).getByRole('button', { name: /^Zoom / }).click();
-      await chips.getByRole('button', { name: /^Unzoom\s*show/ }).waitFor({ timeout: 8_000 });
-      await chips.getByRole('button', { name: /^Unzoom\s*show/ }).click();
+      await chips.getByRole('button', { name: 'Unzoom' }).waitFor({ timeout: 8_000 });
+      await chips.getByRole('button', { name: 'Unzoom' }).click();
       await wide.getByTestId('split-cell').nth(1).waitFor({ timeout: 8_000 });
       await wide.screenshot({ path: '/tmp/tautan-zoom/e2e-unzoomed.png' });
       const after = await wide.evaluate(() => performance.getEntriesByType('navigation').length + ':' + performance.timeOrigin);
