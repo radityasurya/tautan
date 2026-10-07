@@ -4,7 +4,7 @@ Date: 2026-10-07
 
 ## Status
 
-Proposed (awaiting the user's approval)
+Accepted (2026-10-07, by the user, with the eight-generation amendment below)
 
 ## Context
 
@@ -42,11 +42,16 @@ fetch answers `reset: true`, which is today's behaviour and stays correct.
 The cursor is an opaque string: the hash of `sessionId, agent, inode, size, mtime` — the
 existing strong ETag minus its volatile parts (`at`, the subagent digest), so it names
 exactly the parse its Turns came from. The server never decodes it. Per conversation (a
-Pane's main view, or one `?agent=` view) it remembers the previous generation — the turns
-it replaced on the last re-parse — with the cursor that names them. A `since` equal to the
-current cursor answers nothing new; equal to the remembered one answers the diff;
-anything else (older, forged, from before a restart, another transcript) answers
-`reset: true` with the full list. Because the cursor hashes the signature of the parse it
+Pane's main view, or one `?agent=` view) it remembers the last **eight** generations, each
+as its cursor plus a fingerprint: every Turn's id mapped to a short hash of that Turn's
+content — not the Turns themselves. A `since` equal to the current cursor answers nothing
+new; equal to any remembered cursor answers the diff against that fingerprint (upsert every
+current Turn whose hash differs or whose id is new; `reset` if a remembered id is gone);
+anything else (older than eight, forged, from before a restart, another transcript) answers
+`reset: true` with the full list. *Amended at approval:* one remembered generation would
+send a phone that wakes two or more parses behind — common while an Agent works or under
+the fallback poll — a full refetch every time; eight fingerprints cost a few KB per
+conversation. Because the cursor hashes the signature of the parse it
 names, a match guarantees the baseline turns were parsed from identical bytes.
 
 ### Reset or upsert
@@ -137,8 +142,8 @@ tick. The protocol does not depend on that choice.
 
 - A change costs the changed Turns, not the history; with results and images out of band,
   a new Turn stays under Wave 11's 50 KB target.
-- The Hub holds two generations per watched conversation, about twice the parsed-turn
-  memory.
+- The Hub holds the current parse plus eight fingerprints (id → content hash) per watched
+  conversation: the parsed-turn memory once, plus a few KB.
 - Correctness never depends on event delivery; a dropped stream only slows the view to
   the fallback poll.
 - pi branch switches and truncations still pay one full refetch.

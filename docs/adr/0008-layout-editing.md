@@ -4,7 +4,7 @@ Date: 2026-10-07
 
 ## Status
 
-Proposed (awaiting the user's approval)
+Accepted (2026-10-07, by the user)
 
 ## Context
 
