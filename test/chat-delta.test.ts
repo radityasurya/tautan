@@ -92,8 +92,20 @@ describe('ChatLens deltas (ADR 0007)', () => {
     expect(first?.reset).toBe(true);
     state.main += '\n' + line({ type: 'assistant', message: { content: 'reply' } });
     const second = await lens.delta(paneKey, first!.cursor);
-    expect(second?.reset).toBe(true); // its own cursor is never remembered
+    expect(second?.reset).toBe(true); // no fingerprints are kept, so a moved cursor still resets
     expect(second?.upserts).toHaveLength(2);
+    lens.close();
+  });
+
+  test('a transcript without native ids answers a quiet delta for the cursor it holds', async () => {
+    const { lens } = fixture(line({ type: 'user', message: { content: 'no uuids here' } }));
+    const first = await lens.delta(paneKey, 'unknown');
+    const cursor = first!.cursor;
+    expect(first?.reset).toBe(true);
+    const again = await lens.delta(paneKey, cursor);
+    expect(again).toMatchObject({ sessionId: id, reset: false, upserts: [] });
+    expect(again!.cursor).toBe(cursor);
+    expect(again!.subagents).toBeUndefined(); // the quiet answer re-renders nothing
     lens.close();
   });
 
@@ -111,6 +123,21 @@ describe('ChatLens deltas (ADR 0007)', () => {
     expect(await lens.output(paneKey, 'toolu_big')).toEqual({ text: lines.join('\n') });
     expect(await lens.output(paneKey, 'toolu_none')).toEqual({ text: undefined });
     expect(await lens.output('local/fake/p9', 'toolu_big')).toBeUndefined();
+    lens.close();
+  });
+
+  test('a transient stat miss keeps the remembered generations', async () => {
+    const { state, io, lens } = fixture(line({ uuid: 'run1', type: 'user', message: { content: 'hi' } }));
+    const old = (await lens.delta(paneKey, 'unknown'))!.cursor;
+    state.main += '\n' + line({ uuid: 'run2', type: 'assistant', message: { content: 'again' } });
+    await lens.delta(paneKey, old); // two generations remembered
+    const realStat = io.stat;
+    let missed = false;
+    io.stat = async (path, target) => { if (!missed) { missed = true; return undefined; } return realStat(path, target); };
+    expect(await lens.query(paneKey)).toBeUndefined(); // the blip
+    const after = await lens.delta(paneKey, old);
+    expect(after?.reset).toBe(false); // the older baseline survived it
+    expect(after!.upserts.map(turn => turn.id)).toEqual(['run2']);
     lens.close();
   });
 

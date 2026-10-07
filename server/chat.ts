@@ -262,8 +262,9 @@ export async function resolveSession(hub: SessionHub, paneKey: string): Promise<
 }
 
 type Cached = { sessionId: string; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; outputs: Map<string, string>; subagents: Subagent[]; at: number };
-/** One remembered generation (ADR 0007): the cursor that names it, every Turn's fingerprint,
- *  and the subagents digest at parse time. The lens keeps the newest eight per conversation. */
+/** One remembered generation (ADR 0007): the cursor that names it, every Turn's fingerprint
+ *  (none for an id-less transcript, which keeps its digest only), and the subagents digest
+ *  at parse time. The lens keeps the newest eight per conversation. */
 type Generation = { cursor: string; prints: Map<string, string>; subs: string };
 /** ADR 0007: how many generations back a `?since=` cursor can name. */
 const GENERATIONS = 8;
@@ -389,6 +390,8 @@ export class ChatLens {
   onChat?: (event: ChatEvent) => void;
   private cache = new Map<string, Cached>();
   private generations = new Map<string, Generation[]>();
+  /** The session each conversation's generations belong to; a change is the one thing that retires them. */
+  private sessions = new Map<string, string>();
   private subagents = new Map<string, Subagents>();
   /** The main transcript's completion records per Pane, re-derived only on a fresh parse. */
   private parents = new Map<string, { sessionId: string; parent: ParentDone }>();
@@ -414,13 +417,27 @@ export class ChatLens {
     };
   }
 
-  /** ADR 0007: the conversation's change since a cursor it handed out. A `since` naming a
-   *  remembered generation answers its diff; anything else — unknown, older than eight
-   *  generations, from before a restart, or another transcript — answers a full `reset`. */
+  /** ADR 0007: the conversation's change since a cursor it handed out. A `since` equal to
+   *  the current cursor answers nothing new; one naming an older remembered generation
+   *  answers its diff; anything else — unknown, older than eight generations, from before
+   *  a restart, or another transcript — answers a full `reset`. */
   async delta(paneKey: string, since: string, agent?: string): Promise<ChatDelta | undefined> {
     const value = await this.value(paneKey, agent);
     if (!value) return undefined;
     const gen = this.generations.get(agent ? `${paneKey}\u0000${agent}` : paneKey)?.find(item => item.cursor === since);
+    // The quiet answer (ADR 0007): the cursor names exactly this parse, so it holds for a
+    // digest-only generation (an id-less transcript) as surely as for a fingerprinted one.
+    // Only the tree may still ride, when its digest moved past what the client last saw.
+    if (gen && since === value.cursor) {
+      return {
+        sessionId: value.sessionId,
+        cursor: value.cursor,
+        reset: false,
+        upserts: [],
+        ...(gen.subs !== subagentsDigest(value.subagents) ? { subagents: value.subagents } : {}),
+        ...(agent ? { agent } : {}),
+      };
+    }
     const ids = new Set(value.turns.map(turn => turn.id));
     // One uniform shrink rule: a remembered id that ceased to exist (a pi branch switch, a
     // truncation) cannot be expressed as upserts. So can a Turn without a native id.
@@ -488,9 +505,16 @@ export class ChatLens {
   private async refresh(paneKey: string, agent?: string): Promise<Cached | undefined> {
     const cacheKey = agent ? `${paneKey}\u0000${agent}` : paneKey;
     const resolved = await resolveSession(this.hub, paneKey);
-    if (!resolved) { this.cache.delete(cacheKey); this.generations.delete(cacheKey); return; }
+    if (!resolved) { this.cache.delete(cacheKey); return; }
     const target = this.hub.host(await this.hub.paneHost(paneKey))?.target;
     const session = resolved.agent === 'pi' ? piSessionId(resolved.path) : resolved.sessionId;
+    // A failed resolve or stat is a transient miss, not a new conversation: a cursor names
+    // bytes, not cache state, so the generations survive it. Only a session change retires
+    // them — and a cursor hashes the session id, so a stale one can never match anyway.
+    if (this.sessions.get(cacheKey) !== session) {
+      this.sessions.set(cacheKey, session);
+      this.generations.delete(cacheKey);
+    }
     let path: string | undefined;
     let dir: string | undefined;
     if (resolved.agent === 'pi') {
@@ -504,7 +528,7 @@ export class ChatLens {
       path = agent ? join(dir, 'subagents', `agent-${agent}.jsonl`) : transcriptPath(cwd, resolved.sessionId, home);
     }
     const signature = await this.io.stat(path, target);
-    if (!signature) { this.cache.delete(cacheKey); this.generations.delete(cacheKey); return; }
+    if (!signature) { this.cache.delete(cacheKey); return; }
     const cached = this.cache.get(cacheKey);
     if (cached?.sessionId === session && sameSignature(cached.signature, signature)) {
       // The transcript stands still while a subagent runs; its own file keeps moving.
@@ -538,11 +562,12 @@ export class ChatLens {
   }
 
   /** Keep the newest eight generations of a conversation (ADR 0007). One without native Turn
-   *  ids keeps none, so every `?since=` against it resets — today's behaviour, still correct. */
+   *  ids keeps its digest only: the quiet same-cursor answer serves it, while a `?since=`
+   *  naming older bytes still resets — no fingerprint can diff it. */
   private remember(paneKey: string, agent: string | undefined, cacheKey: string, value: Cached): void {
-    if (!value.turns.every(turn => turn.id !== undefined)) return;
+    const prints = value.turns.every(turn => turn.id !== undefined) ? new Map(value.turns.map(turn => [turn.id!, print(turn)])) : new Map<string, string>();
     const list = this.generations.get(cacheKey) ?? [];
-    const fresh: Generation = { cursor: value.cursor, prints: new Map(value.turns.map(turn => [turn.id!, print(turn)])), subs: subagentsDigest(value.subagents) };
+    const fresh: Generation = { cursor: value.cursor, prints, subs: subagentsDigest(value.subagents) };
     if (list[0]?.cursor === value.cursor) list[0] = fresh; // a re-parse of the same bytes (an eviction) is no new generation
     else {
       list.unshift(fresh);
