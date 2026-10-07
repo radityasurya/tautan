@@ -4,7 +4,7 @@ import type { Explain, Mux, Pane, Screen, ScreenMode, Tree, Workspace } from '..
 
 export type TmuxExec = (args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
 
-const FORMAT = '#{session_id}\t#{session_name}\t#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{window_zoomed_flag}';
+const FORMAT = '#{session_id}\t#{session_name}\t#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_title}\t#{pane_width}\t#{pane_height}\t#{pane_left}\t#{pane_top}\t#{window_zoomed_flag}\t#{pane_active}';
 const agents = new Set(['claude', 'pi', 'codex', 'gemini', 'opencode', 'cursor', 'amp', 'grok', 'kimi', 'copilot', 'droid']);
 
 export function parseTree(stdout: string): Tree {
@@ -14,10 +14,10 @@ export function parseTree(stdout: string): Tree {
   for (const line of stdout.split(/\r?\n/)) {
     if (!line) continue;
     const fields = line.split('\t');
-    if (fields.length < 13) continue;
+    if (fields.length < 14) continue;
     const [workspaceId, workspaceLabel, tabId, tabLabel, paneId, command, cwd] = fields;
-    const [width, height, left, top, zoomed] = fields.slice(-5);
-    const rawTitle = fields.slice(7, -5).join('\t');
+    const [width, height, left, top, zoomed, active] = fields.slice(-6);
+    const rawTitle = fields.slice(7, -6).join('\t');
     const title = !rawTitle || rawTitle === hostname() ? command! : rawTitle;
     if (!workspaces.has(workspaceId!)) workspaces.set(workspaceId!, { id: workspaceId!, label: workspaceLabel!, cwd });
     if (!tabs.has(tabId!)) tabs.set(tabId!, { id: tabId!, workspaceId: workspaceId!, label: tabLabel! });
@@ -27,7 +27,8 @@ export function parseTree(stdout: string): Tree {
       cols: Number(width), rows: Number(height),
       // A zoomed window shows one Pane full-size and hides the others, so its rects must not
       // place cells (ADR 0006): x/y are omitted for every Pane of a zoomed window.
-      ...(zoomed === '1' ? {} : { x: Number(left), y: Number(top) }),
+      // The zoomed Pane is the window's active one.
+      ...(zoomed !== '1' ? { x: Number(left), y: Number(top) } : active === '1' ? { zoomed: true as const } : {}),
     });
   }
   return { workspaces: [...workspaces.values()], tabs: [...tabs.values()], panes };
@@ -170,7 +171,8 @@ export class TmuxMux implements Mux {
     try {
       const tree = await this.tree();
       const parts = [
-        ...tree.panes.map(p => `${p.id}|${p.title}|${p.agent ?? ''}|${p.tabId}|${p.workspaceId}`),
+        // x/y/zoomed in the signature: a zoom made in tmux reaches tautan on the next tree poll.
+        ...tree.panes.map(p => `${p.id}|${p.title}|${p.agent ?? ''}|${p.tabId}|${p.workspaceId}|${p.x ?? ''}|${p.y ?? ''}|${p.zoomed ?? ''}`),
         ...tree.tabs.map(t => `${t.id}|${t.label}`), ...tree.workspaces.map(w => `${w.id}|${w.label}`),
       ].sort();
       const signature = parts.join('\n');
@@ -201,6 +203,13 @@ export class TmuxMux implements Mux {
   async newWorkspace(_o: { cwd?: string; label?: string; branch?: string }): Promise<Workspace> { throw new Error('unsupported'); }
   async rename(_target: { workspaceId: string } | { tabId: string } | { paneId: string }, _label: string): Promise<void> { throw new Error('unsupported'); }
   async closePane(_paneId: string): Promise<void> { throw new Error('unsupported'); }
+  async zoom(paneId: string, zoomed: boolean): Promise<void> {
+    // `resize-pane -Z` toggles, so read the window's flag first and toggle only on a mismatch.
+    const flag = (await this.run(['display-message', '-p', '-t', paneId, '#{window_zoomed_flag}'])).trim() === '1';
+    if (flag === zoomed) return;
+    // Unzoom targets the window: whichever Pane is zoomed, `-Z` on any Pane of it restores the layout.
+    await this.run(['resize-pane', '-Z', '-t', paneId]);
+  }
   async closeWorkspace(_workspaceId: string): Promise<void> { throw new Error('unsupported'); }
   async explain(_paneId: string): Promise<Explain | null> { return null; }
   close(): void {

@@ -5,10 +5,10 @@ import { parseTree, TmuxMux, tmuxKey, type TmuxExec } from '../server/tmux.ts';
 import { Hub } from '../server/mux.ts';
 import { AGENT_KEYS, MODIFIERS, SHELL_KEYS, trayGroups } from '../web/keys.ts';
 
-const row = (o: { workspace?: string; workspaceLabel?: string; tab?: string; tabLabel?: string; pane?: string; command?: string; cwd?: string; title?: string; cols?: number; rows?: number; left?: number; top?: number; zoomed?: string } = {}) => [
+const row = (o: { workspace?: string; workspaceLabel?: string; tab?: string; tabLabel?: string; pane?: string; command?: string; cwd?: string; title?: string; cols?: number; rows?: number; left?: number; top?: number; zoomed?: string; active?: string } = {}) => [
   o.workspace ?? '$0', o.workspaceLabel ?? 'work', o.tab ?? '@1', o.tabLabel ?? 'code', o.pane ?? '%0',
   o.command ?? 'sh', o.cwd ?? '/repo', o.title ?? '', String(o.cols ?? 80), String(o.rows ?? 24),
-  String(o.left ?? 0), String(o.top ?? 0), o.zoomed ?? '0',
+  String(o.left ?? 0), String(o.top ?? 0), o.zoomed ?? '0', o.active ?? '0',
 ].join('\t');
 
 describe('parseTree', () => {
@@ -29,10 +29,12 @@ describe('parseTree', () => {
   test('omits x and y for every pane of a zoomed window', () => {
     const tree = parseTree([
       row({ pane: '%7', tab: '@7', left: 0, top: 0, zoomed: '1' }),
-      row({ pane: '%8', tab: '@7', left: 80, top: 0, zoomed: '1' }),
+      row({ pane: '%8', tab: '@7', left: 80, top: 0, zoomed: '1', active: '1' }),
     ].join('\n'));
     // ADR 0006: a zoomed window's rects are hidden bookkeeping, so no cell placement.
     for (const pane of tree.panes) { expect(pane.x).toBeUndefined(); expect(pane.y).toBeUndefined(); }
+    // The active Pane is the zoomed one.
+    expect(tree.panes.map(pane => pane.zoomed)).toEqual([undefined, true]);
   });
 });
 

@@ -437,13 +437,19 @@ export function startHttp(hub: Hub, opts: {
           try { key = decodeURIComponent(mouseMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           await hub.input(key, { raw: mouseBytes(body) }); return new Response(null, { status: 204 });
         }
-        const match = url.pathname.match(/^\/api\/panes\/([^/]+)\/(screen|input|seen|explain|attach|suggest|close)$/);
+        const match = url.pathname.match(/^\/api\/panes\/([^/]+)\/(screen|input|seen|explain|attach|suggest|close|zoom)$/);
         if (match) {
           let key: string;
           try { key = decodeURIComponent(match[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
           const action = match[2];
           if (req.method === 'POST' && action === 'close') { await hub.closePane(key); return new Response(null, { status: 204 }); }
+          if (req.method === 'POST' && action === 'zoom') {
+            let body: unknown;
+            try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
+            if (!plainObject(body) || typeof body.zoomed !== 'boolean') return json({ error: 'body' }, 400);
+            await hub.zoomPane(key, body.zoomed); return new Response(null, { status: 204 });
+          }
           if (req.method === 'POST' && action === 'suggest') return json(await hub.forceSuggest(key));
           if (req.method === 'POST' && action === 'attach') {
             if (!req.body) return json({ error: 'body' }, 400);

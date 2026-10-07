@@ -16,7 +16,7 @@ const snapshot = {
     tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1' }, { tab_id: 'w1:t2', workspace_id: 'w1' }],
     layouts: [
       { zoomed: false, panes: [{ pane_id: 'w1:p1', rect: { x: 0, y: 0, width: 80, height: 50 } }, { pane_id: 'w1:p2', rect: { x: 80, y: 0, width: 40, height: 50 } }] },
-      { zoomed: true, panes: [{ pane_id: 'w1:p3', rect: { x: 0, y: 0, width: 120, height: 50 } }] },
+      { zoomed: true, focused_pane_id: 'w1:p3', panes: [{ pane_id: 'w1:p3', rect: { x: 0, y: 0, width: 120, height: 50 } }] },
     ],
     panes: [
       { pane_id: 'w1:p1', tab_id: 'w1:t1', workspace_id: 'w1', revision: 7, agent_status: 'idle' },
@@ -101,6 +101,9 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tr
     expect(zoomed).toMatchObject({ cols: 120, rows: 50 });
     expect(zoomed.x).toBeUndefined();
     expect(zoomed.y).toBeUndefined();
+    // The layout's focused Pane is the zoomed one; a split Pane carries no flag.
+    expect(zoomed.zoomed).toBe(true);
+    expect(panes.find(pane => pane.id === 'w1:p1')!.zoomed).toBeUndefined();
     mux.close();
   });
 });

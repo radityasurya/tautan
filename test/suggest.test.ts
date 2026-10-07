@@ -20,7 +20,7 @@ const fakeMux = (pane: Pane, onRead?: () => void): Mux => {
     read: async (_id: string, mode: ScreenMode): Promise<Screen> => { onRead?.(); return { text: '\n first \n\n latest output \n', ansi: false, revision: pane.revision, mode }; },
     sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
     newTab: async (): Promise<Pane> => pane, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
-    rename: async () => {}, closePane: async () => {}, closeWorkspace: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+    rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
   };
 };
 

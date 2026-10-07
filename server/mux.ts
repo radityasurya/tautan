@@ -280,6 +280,14 @@ export class Hub {
     await this.refreshAfterWrite(found.muxKey);
   }
 
+  async zoomPane(paneKey: string, zoomed: boolean): Promise<void> {
+    await this.state();
+    const found = this.resolve(paneKey);
+    if (!found) throw new Error('pane not found');
+    await found.entry.mux.zoom(found.paneId, zoomed);
+    await this.refreshAfterWrite(found.muxKey);
+  }
+
   async closeWorkspace(muxKey: string, workspaceId: string): Promise<void> {
     const entry = this.entries.get(muxKey);
     if (!entry) throw new Error('mux not found');

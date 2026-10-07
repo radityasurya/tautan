@@ -209,3 +209,17 @@ export const Check = (p: Props) => (
     <path d="M5 12.5l4.5 4.5L19 7.5" />
   </Icon>
 );
+
+/** Zoom a Pane to fill its Tab: two corners pulled outward. */
+export const ZoomIn = (p: Props) => (
+  <Icon size={14} {...p}>
+    <path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5" />
+  </Icon>
+);
+
+/** Unzoom: the same corners pushed back in. */
+export const ZoomOut = (p: Props) => (
+  <Icon size={14} {...p}>
+    <path d="M20 10h-6V4M4 14h6v6M14 10l6.5-6.5M10 14l-6.5 6.5" />
+  </Icon>
+);

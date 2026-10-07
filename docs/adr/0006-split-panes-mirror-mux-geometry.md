@@ -45,6 +45,10 @@ to 4 Panes. A Screen payload was 3–9 KB.
   down to it, never below 0.75; past that the cell scrolls sideways inside itself. The
   10.8c build forced Fit on every cell, which scaled a 122-column `pnpm dev` to about half
   size in a 490 px cell; this replaces it (2026-10-07).
+- tautan can zoom and unzoom a Pane (`POST /api/panes/:key/zoom`, both Muxes). The zoomed
+  Pane carries `zoomed: true` in state, so a zoomed Tab is the Tab that has one; the Tab
+  strip and the chips row mark it, and Unzoom brings the split back on the next `state`
+  event (2026-10-07). This is a Mux write the user asks for, not a layout tautan invents.
 - ADR 0001 holds: every cell renders the Mux's snapshot. A split view never takes a Phone
   width lease (ADR 0004).
 

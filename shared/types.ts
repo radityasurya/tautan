@@ -10,6 +10,8 @@ export interface Pane {
   agent?: string; agentSession?: string; status: Status; revision: number; cols?: number; rows?: number;
   /** cell origin in cells, relative to the Tab (ADR 0006); both absent when the Tab's layout is zoomed */
   x?: number; y?: number;
+  /** set only on the Pane that fills its zoomed Tab (herdr: the layout's focused Pane; tmux: the active Pane) */
+  zoomed?: true;
   /** foreground command name (tmux: pane_current_command; herdr: last foreground process), used to pick the App profile */ command?: string;
 }
 export interface Tree { workspaces: Workspace[]; tabs: Tab[]; panes: Pane[] }
@@ -41,6 +43,8 @@ export interface Mux {
   newWorkspace(o: { cwd?: string; label?: string; branch?: string }): Promise<Workspace>;
   rename(t: { workspaceId: string } | { tabId: string } | { paneId: string }, label: string): Promise<void>;
   closePane(paneId: string): Promise<void>;
+  /** zoom this Pane to fill its Tab, or unzoom the Tab; both backends */
+  zoom(paneId: string, zoomed: boolean): Promise<void>;
   closeWorkspace(workspaceId: string): Promise<void>;
   explain(paneId: string): Promise<Explain | null>;
   close(): void;
@@ -75,6 +79,8 @@ export interface StatePane {
   cols?: number; rows?: number;
   /** cell origin in cells, relative to the Tab (ADR 0006); both absent when the Tab's layout is zoomed */
   x?: number; y?: number;
+  /** set only on the Pane that fills its zoomed Tab; a Tab is zoomed when one of its Panes has it */
+  zoomed?: true;
   /** foreground command name (tmux: pane_current_command; herdr: last foreground process), used to pick the App profile */ command?: string;
   /** last non-empty line of the visible Screen; agent Panes only, cached per revision by the Hub */
   lastLine?: string;
@@ -109,6 +115,8 @@ export interface NewWorkspaceBody { cwd?: string; label?: string; branch?: strin
 export interface NewWorkspaceResult { workspaceKey: string }
 /** POST /api/rename → 204; exactly one of workspaceId | tabId | paneId */
 export type RenameBody = { muxKey: string; label: string } & ({ workspaceId: string } | { tabId: string } | { paneId: string });
+/** POST /api/panes/:key/zoom → 204. `zoomed: true` zooms this Pane; `false` unzooms its Tab. */
+export interface ZoomBody { zoomed: boolean }
 /** POST /api/panes/:key/close → 204. Errors on all four: `{ error: string }` — 400 body, 403 origin, 404 unknown, 501 'unsupported', 502 herdr error code. */
 /** POST /api/workspaces/:key/close → 204; `key` is the workspaceKey. Same error set as the Pane close. */
 /** POST /api/panes/:key/attach */

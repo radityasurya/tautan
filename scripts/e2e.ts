@@ -494,6 +494,48 @@ try {
       await wide.close().catch(() => {});
     }
   });
+  await flow('zoom: ⋯ Zoom Pane drops the split for the chips row and a Zoomed pill, Unzoom brings the split back without a reload', async () => {
+    const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-zoom' });
+    const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
+    await herdrRpc(fixture.sock, 'workspace.focus', { workspace_id: workspace.id });
+    await herdrRpc(fixture.sock, 'pane.split', { pane_id: first, direction: 'right' });
+    let both = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id);
+    for (let i = 0; i < 20 && both.length < 2; i++) { await Bun.sleep(250); both = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id); }
+    both.sort((l, r) => (l.x ?? 0) - (r.x ?? 0));
+    assert(both.length === 2, `panes=${both.length}`);
+    const keyA = `HireOpz/default/${both[0]!.id}`;
+    await fetch(`${BASE}/api/hosts/HireOpz/retry`, { method: 'POST' }).catch(() => {});
+    const wide = await browser.newPage({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
+    try {
+      await wide.goto(`${BASE}/#/pane/${encodeURIComponent(keyA)}`, { waitUntil: 'networkidle' });
+      await wide.getByTestId('split-cell').nth(1).waitFor({ timeout: 8_000 });
+      const reloads = await wide.evaluate(() => performance.getEntriesByType('navigation').length + ':' + performance.timeOrigin);
+      await wide.getByRole('button', { name: 'More' }).click();
+      await wide.getByRole('button', { name: /^Zoom Pane/ }).click();
+      // Zoomed: no split, the chips row with its Zoomed pill, and a marker on the strip Tab.
+      const chips = wide.getByRole('group', { name: 'Panes in this Tab' });
+      await chips.getByRole('button', { name: 'Unzoom' }).waitFor({ timeout: 8_000 });
+      assert(await wide.getByTestId('split-view').count() === 0, 'split gone while zoomed');
+      assert(await chips.getByText('Zoomed', { exact: true }).count() === 1, 'Zoomed pill');
+      assert(await wide.getByRole('tab', { name: /zoomed/ }).count() === 1, 'zoomed marker on the Tab');
+      await wide.screenshot({ path: '/tmp/tautan-zoom/e2e-zoomed.png' });
+      // Unzoom from ⋯: the split comes back on the next state event, no reload.
+      await wide.getByRole('button', { name: 'More' }).click();
+      await wide.getByRole('button', { name: /^Unzoom\s*show every Pane/ }).click();
+      await wide.getByTestId('split-cell').nth(1).waitFor({ timeout: 8_000 });
+      assert(await chips.count() === 0, 'chips gone after unzoom');
+      // And the cell's own zoom button does the same, from the title row.
+      await wide.locator(`[data-pane="${keyA}"]`).getByRole('button', { name: /^Zoom / }).click();
+      await chips.getByRole('button', { name: 'Unzoom' }).waitFor({ timeout: 8_000 });
+      await chips.getByRole('button', { name: 'Unzoom' }).click();
+      await wide.getByTestId('split-cell').nth(1).waitFor({ timeout: 8_000 });
+      await wide.screenshot({ path: '/tmp/tautan-zoom/e2e-unzoomed.png' });
+      const after = await wide.evaluate(() => performance.getEntriesByType('navigation').length + ':' + performance.timeOrigin);
+      return assert(after === reloads, 'zoomed from ⋯, unzoomed from ⋯, zoomed from the cell, unzoomed from the chips; no reload');
+    } finally {
+      await wide.close().catch(() => {});
+    }
+  });
 } finally {
   await browser.close().catch(() => {});
   try { process.kill(-hub.pid!, 'SIGTERM'); } catch {}

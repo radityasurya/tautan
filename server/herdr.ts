@@ -59,12 +59,14 @@ export class HerdrMux implements Mux {
     const result = await this.rpc('session.snapshot', {});
     const snap = result.snapshot;
     if (typeof snap.version === 'string') this.serverVersion = { value: snap.version, at: Date.now() };
-    const sizes = new Map<string, { cols?: number; rows?: number; x?: number; y?: number }>();
+    const sizes = new Map<string, { cols?: number; rows?: number; x?: number; y?: number; zoomed?: true }>();
     for (const layout of snap.layouts ?? []) for (const item of layout.panes ?? []) {
       // A zoomed layout shows one Pane at the Tab's size and its rects are bookkeeping, so
       // a split must not place cells from it (ADR 0006): x/y are omitted for every Pane.
-      sizes.set(item.pane_id, { cols: item.rect?.width, rows: item.rect?.height,
-        ...(layout.zoomed ? {} : { x: item.rect?.x, y: item.rect?.y }) });
+      // The zoomed Pane is the layout's focused one (herdr zooms and focuses together).
+      const place = !layout.zoomed ? { x: item.rect?.x, y: item.rect?.y }
+        : item.pane_id === layout.focused_pane_id ? { zoomed: true as const } : {};
+      sizes.set(item.pane_id, { cols: item.rect?.width, rows: item.rect?.height, ...place });
     }
     const rawPanes: Json[] = snap.panes ?? [];
     const sessions = new Map(await Promise.all(rawPanes.map(async pane => {
@@ -221,6 +223,7 @@ export class HerdrMux implements Mux {
     else await this.rpc('pane.rename', { pane_id: target.paneId, label });
   }
   async closePane(paneId: string): Promise<void> { await this.rpc('pane.close', { pane_id: paneId }); }
+  async zoom(paneId: string, zoomed: boolean): Promise<void> { await this.rpc('pane.zoom', { pane_id: paneId, mode: zoomed ? 'on' : 'off' }); }
   async closeWorkspace(workspaceId: string): Promise<void> { await this.rpc('workspace.close', { workspace_id: workspaceId }); }
 
   private paneRecord(pane: Json): Pane {

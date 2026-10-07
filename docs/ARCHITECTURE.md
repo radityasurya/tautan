@@ -196,6 +196,7 @@ capability flags: the UI hides write actions when `kind === 'tmux'`.
 | `POST /api/muxes/:key/workspaces` `{cwd?, label?, branch?}` | new Workspace; `branch` makes it a git worktree → 201 `{workspaceKey}` |
 | `POST /api/rename` `{muxKey, label, workspaceId\|tabId\|paneId}` | rename one of the three → 204 |
 | `POST /api/panes/:key/close` | close the Pane → 204 |
+| `POST /api/panes/:key/zoom` | `{zoomed}`: `true` zooms this Pane to fill its Tab, `false` unzooms its Tab → 204; herdr and tmux; the zoomed Pane carries `zoomed: true` in state |
 | `GET /api/push/vapid` | the Hub's VAPID public key, base64url |
 | `POST /api/push/subscribe` (a `PushSubscription` as JSON) | store the subscription |
 | `DELETE /api/push/subscribe` `{endpoint}` | forget it |

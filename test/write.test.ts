@@ -32,6 +32,7 @@ describe('write routes', () => {
       newWorkspace: async (body): Promise<Workspace> => { fail(); const workspace = { id: 'w2', label: body.label!, cwd: body.cwd }; tree.workspaces.push(workspace); return workspace; },
       rename: async (target, label) => { fail(); if ('workspaceId' in target) tree.workspaces.find(x => x.id === target.workspaceId)!.label = label; else if ('tabId' in target) tree.tabs.find(x => x.id === target.tabId)!.label = label; else tree.panes.find(x => x.id === target.paneId)!.title = label; },
       closePane: async id => { fail(); tree.panes = tree.panes.filter(x => x.id !== id); },
+      zoom: async (id, zoomed) => { fail(); const pane = tree.panes.find(x => x.id === id)!; if (zoomed) pane.zoomed = true; else delete pane.zoomed; },
       closeWorkspace: async id => { fail(); tree.workspaces = tree.workspaces.filter(x => x.id !== id); tree.tabs = tree.tabs.filter(x => x.workspaceId !== id); tree.panes = tree.panes.filter(x => x.workspaceId !== id); }, close: () => {},
     };
     hub = new Hub({ refreshMs: 0, suggest: null }); hub.add('local', mux); await hub.state();
@@ -113,6 +114,21 @@ describe('write routes', () => {
   test('renames and closes', async () => {
     expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', label: 'Renamed' })).status).toBe(204);
     expect((await request('/api/panes/local%2Ffake%2Fp1/close')).status).toBe(204);
+  });
+
+  test('zooms and unzooms a Pane, refreshing state before the reply', async () => {
+    const path = '/api/panes/local%2Ffake%2Fp1/zoom';
+    const zoomedState = async () => ((await (await handle(new Request('http://tautan.test/api/state'))).json()) as { panes: Pane[] }).panes[0]!.zoomed;
+    expect((await request(path, { zoomed: true })).status).toBe(204);
+    expect(await zoomedState()).toBe(true);
+    expect((await request(path, { zoomed: false })).status).toBe(204);
+    expect(await zoomedState()).toBeUndefined();
+    expect((await request(path, { zoomed: 'yes' })).status).toBe(400);
+    expect((await request('/api/panes/local%2Ffake%2Fmissing/zoom', { zoomed: true })).status).toBe(404);
+    failure = 'pane_not_found: gone';
+    const herdrError = await request(path, { zoomed: true });
+    expect(herdrError.status).toBe(502); expect(await herdrError.json()).toEqual({ error: 'pane_not_found' });
+    failure = undefined;
   });
 
   test('closes a workspace and refreshes state', async () => {

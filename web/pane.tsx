@@ -4,7 +4,7 @@ import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
 import { boxInner, classify, continues, fillOf, hangOf, splitAt, tuiScreen, type LineKind } from '../shared/layout.ts';
 import type {
-  NewTabBody, NewTabResult, RenameBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
+  NewTabBody, NewTabResult, RenameBody, ZoomBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
 import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordances.tsx';
 
@@ -15,7 +15,7 @@ import { Composer, FADE } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, unseen } from './home.tsx';
-import { ChevronDown, Down, Plus } from './icons.tsx';
+import { ChevronDown, Down, Plus, ZoomIn, ZoomOut } from './icons.tsx';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet } from './sheets.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
@@ -360,6 +360,7 @@ function DesktopTab({
   label,
   status,
   paneCount,
+  zoomed,
   selected,
   onOpen,
   onClose,
@@ -368,6 +369,8 @@ function DesktopTab({
   label: string;
   status: Status;
   paneCount: number;
+  /** one Pane fills this Tab in the Mux; the others are hidden there */
+  zoomed?: boolean;
   selected: boolean;
   onOpen: () => void;
   onClose?: () => void;
@@ -394,6 +397,12 @@ function DesktopTab({
         <Dot status={status} seen={status === 'idle' || status === 'unknown'} size={7} />
         <span className="min-w-0 truncate">{label}</span>
         {paneCount > 1 && <span className="shrink-0 font-mono text-[10px] text-muted">{paneCount}</span>}
+        {zoomed && (
+          <span title="Zoomed: one Pane fills this Tab" className="shrink-0 text-accent">
+            <ZoomIn size={12} />
+            <span className="sr-only">, zoomed</span>
+          </span>
+        )}
       </button>
       {onClose && (
         <button
@@ -471,11 +480,17 @@ function TabPicker({
   );
 }
 
-/** The open Tab's Panes, shown only for a split Tab. Same row at both widths until lane
- *  10.8 puts split Panes side by side. */
-function PaneChips({ panes, paneKey, className }: { panes: StatePane[]; paneKey: string; className: string }) {
+/** The open Tab's Panes, shown for a split Tab when the split view does not. A zoomed Tab
+ *  marks its zoomed Pane and ends the row with the Zoomed pill and its Unzoom button. */
+function PaneChips({ panes, paneKey, className, zoom }: {
+  panes: StatePane[];
+  paneKey: string;
+  className: string;
+  zoom?: { busy: boolean; onUnzoom: () => void };
+}) {
+  const zoomed = panes.some((p) => p.zoomed);
   return (
-    <div role="group" aria-label="Panes in this Tab" className={`hscroll flex gap-1.5 ${className}`}>
+    <div role="group" aria-label="Panes in this Tab" className={`hscroll flex items-center gap-1.5 ${className}`}>
       {panes.map((p) => (
         <button
           key={p.key}
@@ -492,8 +507,32 @@ function PaneChips({ panes, paneKey, className }: { panes: StatePane[]; paneKey:
         >
           <Dot status={p.status} size={6} seen={p.key !== paneKey} />
           <span className="min-w-0 truncate">{p.agent ?? 'shell'}</span>
+          {p.zoomed && (
+            <span className="shrink-0 text-accent">
+              <ZoomIn size={11} />
+              <span className="sr-only"> (zoomed)</span>
+            </span>
+          )}
         </button>
       ))}
+      {zoomed && zoom && (
+        <span className="ml-auto flex shrink-0 items-center gap-1 pl-2">
+          <span className="flex h-7 items-center gap-1 px-1.5 text-[12px] text-muted">
+            <ZoomIn size={12} className="text-accent" />
+            Zoomed
+          </span>
+          <button
+            type="button"
+            disabled={zoom.busy}
+            aria-busy={zoom.busy || undefined}
+            onClick={zoom.onUnzoom}
+            className="press flex h-7 shrink-0 items-center gap-1 rounded-chip border border-border px-2.5 text-[12px] font-medium text-accent hover:bg-surface disabled:opacity-50"
+          >
+            <ZoomOut size={12} />
+            Unzoom
+          </button>
+        </span>
+      )}
     </div>
   );
 }
@@ -846,7 +885,7 @@ function useCellSeen(paneKey: string, revision: number | undefined) {
   }, [paneKey, revision, visible]);
 }
 
-function SplitCell({ pane, focused, screen, box, content, onFocus, onMeasure }: {
+function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMeasure }: {
   pane: StatePane;
   focused: boolean;
   screen: ScreenEvent | null;
@@ -854,6 +893,8 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onMeasure }: 
   /** What the focused cell shows instead of its grid: the Chat view in the Chat lens. */
   content?: ReactNode;
   onFocus: () => void;
+  /** Zoom this Pane to fill its Tab in the Mux; absent while a zoom is in flight. */
+  onZoom?: () => void;
   onMeasure?: (measure: GridMeasure) => void;
 }) {
   useCellSeen(focused ? '' : pane.key, focused ? undefined : screen?.revision);
@@ -871,19 +912,39 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onMeasure }: 
       style={box}
       className={`group/cell absolute flex flex-col overflow-hidden bg-bg ${pane.x ? 'border-l border-border' : ''} ${pane.y ? 'border-t border-border' : ''} ${focused ? '' : 'cursor-pointer'}`}
     >
-      <button
-        type="button"
-        onClick={focused ? undefined : onFocus}
-        tabIndex={focused ? -1 : 0}
-        aria-label={focused ? undefined : `Focus ${pane.title}`}
-        className={`flex h-6 shrink-0 items-center gap-1.5 border-b border-border px-2 text-left text-[11px] transition-colors focus-visible:-outline-offset-2! ${
-          focused ? 'cursor-default font-medium text-fg shadow-[inset_0_-2px_0_var(--accent)]' : 'text-muted group-hover/cell:text-fg'
+      <div
+        className={`flex h-6 shrink-0 items-center border-b border-border text-[11px] transition-colors ${
+          focused ? 'font-medium text-fg shadow-[inset_0_-2px_0_var(--accent)]' : 'text-muted group-hover/cell:text-fg'
         }`}
       >
-        <Dot status={pane.status} size={6} seen={!unseen(pane)} />
-        <span className="min-w-0 truncate">{pane.title}</span>
-        <span className="shrink-0 text-muted">{pane.agent ?? 'shell'}</span>
-      </button>
+        <button
+          type="button"
+          onClick={focused ? undefined : onFocus}
+          tabIndex={focused ? -1 : 0}
+          aria-label={focused ? undefined : `Focus ${pane.title}`}
+          className={`flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left focus-visible:-outline-offset-2! ${focused ? 'cursor-default' : ''}`}
+        >
+          <Dot status={pane.status} size={6} seen={!unseen(pane)} />
+          <span className="min-w-0 truncate">{pane.title}</span>
+          <span className="shrink-0 font-normal text-muted">{pane.agent ?? 'shell'}</span>
+        </button>
+        {/* Shown on the focused cell, and on hover or keyboard focus elsewhere, like a Tab's close. */}
+        <button
+          type="button"
+          aria-label={`Zoom ${pane.title}`}
+          title="Zoom Pane"
+          disabled={!onZoom}
+          onClick={(e) => {
+            e.stopPropagation();
+            onZoom?.();
+          }}
+          className={`mr-1 flex size-5 shrink-0 items-center justify-center rounded-[5px] text-muted hover:bg-surface hover:text-fg focus-visible:opacity-100 focus-visible:-outline-offset-2! disabled:opacity-40 ${
+            focused ? '' : 'opacity-0 group-hover/cell:opacity-100'
+          }`}
+        >
+          <ZoomIn size={12} />
+        </button>
+      </div>
       {focused && content ? (
         content
       ) : (
@@ -901,12 +962,14 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onMeasure }: 
  * and sends nothing to the program. View-only cells have no Affordances, no mouse.
  * `focusedContent` replaces the focused cell's grid (the Chat lens); the others stay Screen.
  */
-function SplitView({ panes, focusKey, screens, held, focusedContent, onMeasure }: {
+function SplitView({ panes, focusKey, screens, held, focusedContent, onZoom, onMeasure }: {
   panes: StatePane[];
   focusKey: string;
   screens: Record<string, ScreenEvent>;
   held: ScreenEvent | null;
   focusedContent?: ReactNode;
+  /** absent while a zoom is in flight */
+  onZoom?: (key: string) => void;
   onMeasure: (measure: GridMeasure) => void;
 }) {
   const { W, H } = extent(panes);
@@ -920,6 +983,7 @@ function SplitView({ panes, focusKey, screens, held, focusedContent, onMeasure }
           screen={screens[p.key] ?? held}
           content={focusedContent}
           onMeasure={onMeasure}
+          onZoom={onZoom && (() => onZoom(p.key))}
           onFocus={() => navigate(`#/pane/${encodeURIComponent(p.key)}`, { replace: true, transition: false })}
           box={{ left: `${(p.x! / W) * 100}%`, top: `${(p.y! / H) * 100}%`, width: `${(p.cols! / W) * 100}%`, height: `${(p.rows! / H) * 100}%` }}
         />
@@ -981,6 +1045,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const [tabMenu, setTabMenu] = useState<string | null>(null);
   const [tabRename, setTabRename] = useState<string | null>(null);
   const [tabClose, setTabClose] = useState<string | null>(null);
+  /** A zoom write in flight, and the last one that failed (shown for 4 s). */
+  const [zooming, setZooming] = useState(false);
+  const [zoomFailed, setZoomFailed] = useState(false);
   const desktop = useDesktop();
   /** The Tab picker opens Switch at Tab level; the header's trigger opens it at Pane level. */
   const [switchTabs, setSwitchTabs] = useState(false);
@@ -1168,6 +1235,24 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     return () => removeEventListener('keydown', on);
   }, [desktop, tabs, writable, paneKey]);
 
+  /** Zoom `key` to fill its Tab, or unzoom the Tab. The Hub refreshes before it replies, so
+   *  the next `state` event already carries the change and the split follows it. Zooming a
+   *  cell also focuses it, so the Pane on screen is the one that fills the Tab. */
+  const zoomTo = async (key: string, zoomed: boolean) => {
+    haptic();
+    setZooming(true);
+    setZoomFailed(false);
+    try {
+      await api<void>(`/api/panes/${encodeURIComponent(key)}/zoom`, { zoomed } satisfies ZoomBody);
+      if (zoomed && key !== paneKey) navigate(`#/pane/${encodeURIComponent(key)}`, { replace: true, transition: false });
+    } catch {
+      setZoomFailed(true);
+      setTimeout(() => setZoomFailed(false), 4000);
+    } finally {
+      setZooming(false);
+    }
+  };
+
   const menuTab = tabs.find((t) => t.id === tabMenu);
   const renameTab = tabs.find((t) => t.id === tabRename);
   const closingTab = tabs.find((t) => t.id === tabClose);
@@ -1220,6 +1305,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const agent = pane?.agent;
   const status = pane?.status ?? 'unknown';
   const active = tabs.find((t) => t.id === pane?.tabId);
+  const tabZoomed = !!active?.panes.some((p) => p.zoomed);
+  const chipsZoom = { busy: zooming, onUnzoom: () => void zoomTo(paneKey, false) };
   const activeIndex = active ? tabs.indexOf(active) : -1;
   // Past five Tabs the phone strip turns into a picker. Desktop tabs scroll instead.
   const manyTabs = !desktop && tabs.length > 5 && !!active;
@@ -1232,11 +1319,20 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   // through the card's 150 ms exit too, so the dock never flashes it after an answer.
   const chatLens = !!agent && lens === 'chat';
   const inlineApproval = chatLens && status === 'blocked' && !!explain;
-  const mouseChip = mouseOn && !gridMeasure.effectiveWrap && (
-    // Taps on the grid are going to the program, not to tautan.
-    <span className="shrink-0 rounded-chip border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
-      mouse
-    </span>
+  const stripChips = (
+    <>
+      {zoomFailed && (
+        <span role="status" className="shrink-0 text-[12px] text-danger">
+          Zoom failed
+        </span>
+      )}
+      {mouseOn && !gridMeasure.effectiveWrap && (
+        // Taps on the grid are going to the program, not to tautan.
+        <span className="shrink-0 rounded-chip border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
+          mouse
+        </span>
+      )}
+    </>
   );
   const newTab = writable && (
     <button
@@ -1293,6 +1389,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                   label={t.label}
                   status={t.status}
                   paneCount={t.panes.length}
+                  zoomed={t.panes.some((p) => p.zoomed)}
                   selected={t.id === pane?.tabId}
                   onOpen={() => openTab(t.id)}
                   onClose={writable ? () => requestCloseTab(t) : undefined}
@@ -1303,7 +1400,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
             {newTab}
             <span className="flex-1" />
             <span className="mb-2.5 flex shrink-0 items-center gap-3 text-[12px] text-muted">
-              {mouseChip}
+              {stripChips}
               {MAC && (
                 <span>
                   <span className="font-mono">⌘1–9</span> switch
@@ -1319,7 +1416,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
           </div>
           {/* The split view replaces the chips row when it shows (see showSplit). */}
           {active && active.panes.length > 1 && !showSplit && (
-            <PaneChips panes={active.panes} paneKey={paneKey} className="border-b border-border px-4 py-2" />
+            <PaneChips panes={active.panes} paneKey={paneKey} zoom={chipsZoom} className="border-b border-border px-4 py-2" />
           )}
         </div>
       ) : (
@@ -1353,7 +1450,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                   }}
                   onMenu={tabMenuFor(active!.id)}
                 />
-                {mouseChip}
+                {stripChips}
                 {newTab}
               </div>
               {/* Where the swipe is and what each Tab is doing, without the labels. */}
@@ -1389,13 +1486,13 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                   style={{ width: underline.w, transform: `translateX(${underline.x}px)` }}
                 />
               </div>
-              {mouseChip}
+              {stripChips}
               {newTab}
             </div>
           )}
 
           {/* Row two: the Panes of the open Tab, only when the Tab is split. */}
-          {active && active.panes.length > 1 && <PaneChips panes={active.panes} paneKey={paneKey} className="border-b border-border py-2" />}
+          {active && active.panes.length > 1 && <PaneChips panes={active.panes} paneKey={paneKey} zoom={chipsZoom} className="border-b border-border py-2" />}
         </div>
       )}
 
@@ -1417,7 +1514,15 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         return (
           <div ref={slot} data-split={showSplit ? 'on' : 'off'} className="flex min-h-0 flex-1 flex-col">
             {showSplit && set ? (
-              <SplitView panes={set} focusKey={paneKey} screens={screens} held={last} focusedContent={chat || undefined} onMeasure={onGridMeasure} />
+              <SplitView
+                panes={set}
+                focusKey={paneKey}
+                screens={screens}
+                held={last}
+                focusedContent={chat || undefined}
+                onZoom={zooming ? undefined : (key) => void zoomTo(key, true)}
+                onMeasure={onGridMeasure}
+              />
             ) : (
               chat || <PaneGrid paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
             )}
@@ -1535,6 +1640,14 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
           },
           ...(desktop
             ? [{ label: splitPref ? 'Split view: on' : 'Split view: off', hint: 'Panes side by side', onClick: () => setSplitOn(!splitPref) }]
+            : []),
+          // Both Muxes zoom. Unzoom names the Tab, so it shows whichever Pane is zoomed.
+          ...(active && active.panes.length > 1
+            ? [
+                tabZoomed
+                  ? { label: 'Unzoom', hint: 'show every Pane in this Tab', disabled: zooming, onClick: () => void zoomTo(paneKey, false) }
+                  : { label: 'Zoom Pane', hint: 'this Pane fills the Tab', disabled: zooming, onClick: () => void zoomTo(paneKey, true) },
+              ]
             : []),
           { label: fit ? 'Fit to width: on' : 'Fit to width: off', hint: grid, onClick: () => setFit(!fit) },
           {
