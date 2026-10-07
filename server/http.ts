@@ -10,6 +10,7 @@ import { mouseBytes, type Hub } from './mux.ts';
 import { LeaseError, LeaseHolder } from './lease.ts';
 import { ChatLens } from './chat.ts';
 import { EmptyBody, sanitizeName, TooLarge, writeAttachment } from './attach.ts';
+import { CompleteError, paneCompletion } from './complete.ts';
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 const tautanVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
@@ -394,6 +395,22 @@ export function startHttp(hub: Hub, opts: {
           return host?.target
             ? await remoteFile(pane.cwd, candidate, maxFileBytes(), host.target)
             : await localFile(pane.cwd, candidate, maxFileBytes());
+        }
+        const completeMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/complete$/);
+        if (req.method === 'GET' && completeMatch) {
+          let key: string;
+          try { key = decodeURIComponent(completeMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          const kind = url.searchParams.get('kind') ?? '';
+          if (kind !== 'slash' && kind !== 'file' && kind !== 'model') return json({ error: 'kind' }, 400);
+          const limitRaw = url.searchParams.get('limit');
+          const parsedLimit = Number(limitRaw);
+          if (limitRaw !== null && (!Number.isInteger(parsedLimit) || parsedLimit < 1)) return json({ error: 'limit' }, 400);
+          const limit = Math.min(limitRaw === null ? 50 : parsedLimit, 200);
+          try { return json({ items: await paneCompletion(hub, key, kind, url.searchParams.get('q') ?? '', limit, { runGit }) }); }
+          catch (error) {
+            if (error instanceof CompleteError) return json({ error: error.message }, error.status);
+            throw error;
+          }
         }
         const leaseMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/lease$/);
         if (req.method === 'POST' && leaseMatch) {
