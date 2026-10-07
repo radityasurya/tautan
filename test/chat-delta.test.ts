@@ -216,8 +216,8 @@ describe('chat delta routes', () => {
           { type: 'text', text: 'Check this.' },
           { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png } },
         ] } }),
-        line({ uuid: 'run2', type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_b1', name: 'Bash', input: { command: 'seq 60' } }] } }),
-        line({ uuid: 'run3', type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_b1', content: lines.join('\n') }] } }),
+        line({ uuid: 'run2', type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_b1', name: 'Bash', input: { command: 'seq 60' } }, { type: 'tool_use', id: 'call_x|fc_y', name: 'Bash', input: { command: 'seq 60' } }] } }),
+        line({ uuid: 'run3', type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_b1', content: lines.join('\n') }, { type: 'tool_result', tool_use_id: 'call_x|fc_y', content: lines.join('\n') }] } }),
       ].join('\n');
       const io: TranscriptIo = {
         stat: async () => state.main ? { inode: '1', size: state.main.length, mtime: Bun.hash(state.main).toString(36) } : undefined,
@@ -261,6 +261,10 @@ describe('chat delta routes', () => {
     expect(text.split('\n')).toHaveLength(60);
     expect(text.startsWith('line 1\n')).toBe(true); // the whole text, not the inline slice
     expect((await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/bad%20id`))).status).toBe(400);
+    const piped = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/${encodeURIComponent('call_x|fc_y')}`));
+    expect(piped.status).toBe(200); // pi ids carry a pipe
+    expect((await piped.text()).split('\n')).toHaveLength(60);
+    for (const bad of ['a%2Fb', '..', 'a..b']) expect((await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/${bad}`))).status).toBe(400);
     const unknown = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/toolu_none`));
     expect(unknown.status).toBe(404);
     expect(await unknown.json()).toEqual({ error: 'no-output' });

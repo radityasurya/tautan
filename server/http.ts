@@ -392,12 +392,14 @@ export function startHttp(hub: Hub, opts: {
         if (req.method === 'GET' && chatOutputMatch) {
           let key: string;
           try { key = decodeURIComponent(chatOutputMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
-          // ADR 0007: the tool's native id, validated like an agent id; it never names a path.
-          if (!agentId.test(chatOutputMatch[2]!)) return json({ error: 'id' }, 400);
+          // ADR 0007: the tool's native id (pi ids carry a pipe), a strict allow-list; it is only a map key and never names a path.
+          let toolId: string;
+          try { toolId = decodeURIComponent(chatOutputMatch[2]!); } catch { return json({ error: 'id' }, 400); }
+          if (!/^[A-Za-z0-9_|.:-]{1,256}$/.test(toolId) || toolId.includes('..')) return json({ error: 'id' }, 400);
           if (!await hub.hasPane(key)) return json({ error: 'no-session' }, 404);
           const agent = url.searchParams.get('agent') ?? undefined;
           if (agent !== undefined && (!agentId.test(agent) || !(await chats.subagentList(key))?.some(item => item.id === agent))) return json({ error: 'no-agent' }, 404);
-          const found = await chats.output(key, chatOutputMatch[2]!, agent);
+          const found = await chats.output(key, toolId, agent);
           if (!found) return json({ error: 'no-session' }, 404);
           if (found.text === undefined) return json({ error: 'no-output' }, 404);
           return new Response(found.text, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
