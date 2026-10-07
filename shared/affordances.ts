@@ -1,3 +1,4 @@
+import { strWidth } from './wcwidth.ts';
 import type { Action, Affordance, Span } from './types.ts';
 
 export interface AffordanceProfile {
@@ -11,6 +12,13 @@ export function herdrKey(name: string): string {
     '↑': 'up', '↓': 'down', '←': 'left', '→': 'right', escape: 'esc', return: 'enter',
   };
   return aliases[key] ?? key;
+}
+
+/** A run of SGR wheel reports as one raw string, so a swipe's notches leave the phone in
+ *  one POST — the mouse route takes a single report. A wheel notch has no release report.
+ *  Mirrors `mouseBytes` in server/mux.ts; keep the two in step. */
+export function wheelBytes(up: boolean, col: number, row: number, count: number): string {
+  return `\x1b[<${up ? 64 : 65};${col};${row}M`.repeat(Math.max(0, count));
 }
 
 const generic: { pattern: RegExp; action: (match: RegExpExecArray) => Action; label: (match: RegExpExecArray) => string; range?: (match: RegExpExecArray) => [number, number] }[] = [
@@ -33,11 +41,15 @@ const generic: { pattern: RegExp; action: (match: RegExpExecArray) => Action; la
 ];
 
 export function findAffordances(lines: Span[][], profile: AffordanceProfile): Affordance[] {
-  // ponytail: terminal columns are UTF-16 code-unit indexes; upgrade to wcwidth if wide glyph taps need exact ranges.
+  // Match in UTF-16 indexes, place in display columns (shared/wcwidth.ts): a wide glyph
+  // covers two cells and a combining mark none, so the box sits under what the eye sees.
   const textLines = lines.map(line => line.map(span => span.text).join(''));
   const found: Affordance[] = [];
-  const add = (row: number, colStart: number, colEnd: number, label: string, action: Action) => {
-    if (colEnd <= colStart || found.some(item => item.row === row && colStart < item.colEnd && colEnd > item.colStart)) return;
+  const add = (row: number, text: string, start: number, end: number, label: string, action: Action) => {
+    if (end <= start) return;
+    const colStart = strWidth(text.slice(0, start));
+    const colEnd = strWidth(text.slice(0, end));
+    if (found.some(item => item.row === row && colStart < item.colEnd && colEnd > item.colStart)) return;
     found.push({ row, colStart, colEnd, label, action });
   };
 
@@ -50,7 +62,7 @@ export function findAffordances(lines: Span[][], profile: AffordanceProfile): Af
       const withoutFrame = item.text.replace(/\s*[│┃|]\s*$/, '');
       const end = withoutFrame.trimEnd().length;
       const label = item.match![3]!.replace(/\s*[│┃|]\s*$/, '').trim();
-      add(item.row, start, end, label, { keys: Array(Math.abs(index - cur)).fill(index > cur ? 'down' : 'up') });
+      add(item.row, item.text, start, end, label, { keys: Array(Math.abs(index - cur)).fill(index > cur ? 'down' : 'up') });
     });
   }
 
@@ -59,23 +71,23 @@ export function findAffordances(lines: Span[][], profile: AffordanceProfile): Af
     if (!text) continue;
     for (const item of profile.statusItems ?? []) {
       const pattern = new RegExp(item.pattern.source, item.pattern.flags.includes('g') ? item.pattern.flags : `${item.pattern.flags}g`);
-      for (const match of text.matchAll(pattern)) add(row, match.index, match.index + match[0].length, match[0], item.action);
+      for (const match of text.matchAll(pattern)) add(row, text, match.index, match.index + match[0].length, match[0], item.action);
     }
     for (const item of generic) for (const match of text.matchAll(item.pattern)) {
-      add(row, match.index, match.index + match[0].length, item.label(match), item.action(match));
+      add(row, text, match.index, match.index + match[0].length, item.label(match), item.action(match));
     }
     // Profile Hint convention: capture group 1 is the key and group 2 is its label.
     for (const hint of profile.hints ?? []) {
       const pattern = new RegExp(hint.source, hint.flags.includes('g') ? hint.flags : `${hint.flags}g`);
-      for (const match of text.matchAll(pattern)) if (match[1] && match[2]) add(row, match.index, match.index + match[0].length, match[2].trim(), { keys: [herdrKey(match[1])] });
+      for (const match of text.matchAll(pattern)) if (match[1] && match[2]) add(row, text, match.index, match.index + match[0].length, match[2].trim(), { keys: [herdrKey(match[1])] });
     }
     for (const match of text.matchAll(/https?:\/\/\S+/g)) {
       const value = match[0].replace(/[).,]+$/, '');
-      add(row, match.index, match.index + value.length, value, { copy: value });
+      add(row, text, match.index, match.index + value.length, value, { copy: value });
     }
     for (const match of text.matchAll(/(?:^|\s)((?:~|\/)[\w./-]{3,})/g)) {
       const value = match[1]!; const start = match.index + match[0].indexOf(value);
-      add(row, start, start + value.length, value, { copy: value });
+      add(row, text, start, start + value.length, value, { copy: value });
     }
   }
   return found;

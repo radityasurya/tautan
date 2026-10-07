@@ -4,6 +4,7 @@
 // places it, sends it, and says what it does.
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, RefObject } from 'react';
+import { wheelBytes } from '../shared/affordances.ts';
 import type { Action, Affordance, InputBody, MouseBody } from '../shared/types.ts';
 import { haptic, navigate, post } from './app.tsx';
 import { keyGlyph } from './keys.ts';
@@ -301,15 +302,16 @@ export function useMouseForward(o: {
       const at = cellAt(e);
       if (!at || down.current.held) return;
       // One wheel report per row of movement, the way a terminal counts notches. Dragging
-      // the screen down looks back up the buffer, which is what a touch scroll means.
-      // ponytail: eight per move event is the ceiling; batch them in one POST if a fast
-      // swipe ever floods the Hub.
+      // the screen down looks back up the buffer, which is what a touch scroll means. The
+      // whole run leaves as raw SGR bytes in ONE POST — the mouse route takes a single
+      // report, and one POST per notch (eight per move event) flooded the Hub. Eight
+      // notches per move stays the ceiling; the next move catches up the rest.
       const want = Math.trunc(dy / o.cell.rh);
-      for (let i = 0; i < 8 && down.current.wheel !== want; i += 1) {
-        const up = want > down.current.wheel;
-        down.current.wheel += up ? 1 : -1;
-        send(up ? 'wheelUp' : 'wheelDown', at.col, at.row);
-      }
+      const steps = clamp(want - down.current.wheel, -8, 8);
+      if (!steps) return;
+      down.current.wheel += steps;
+      haptic();
+      void post(o.paneKey, 'input', { raw: wheelBytes(steps > 0, at.col, at.row, Math.abs(steps)) });
     },
     onPointerUp: (e: ReactPointerEvent) => {
       clearTimeout(timer.current);

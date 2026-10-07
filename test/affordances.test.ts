@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { parseAnsi } from '../shared/ansi.ts';
 import { findAffordances, herdrKey } from '../shared/affordances.ts';
+import { strWidth, wcwidth } from '../shared/wcwidth.ts';
 import { PROFILES } from '../web/profiles.ts';
 
 describe('Screen affordances', () => {
@@ -51,5 +52,28 @@ describe('Screen affordances', () => {
   test('normalises Herdr key tokens', () => {
     expect(['ctrl-d', 'shift-f', 'F5', '↑', '↓', '←', '→', 'escape', 'return', 'space', 'a', '7'].map(herdrKey))
       .toEqual(['ctrl+d', 'shift+f', 'f5', 'up', 'down', 'left', 'right', 'esc', 'enter', 'space', 'a', '7']);
+  });
+
+  test('places boxes in display columns, not UTF-16 indexes', () => {
+    // Three wide glyphs then a space cover 7 columns, so the Hint starts at column 7
+    // even though its UTF-16 index is 4.
+    const found = findAffordances(parseAnsi('日本語 <h> help'), PROFILES.claude!);
+    expect(found.find(item => item.label === 'help')).toMatchObject({ colStart: 7, colEnd: 15 });
+    // A combining mark covers no column: the Hint starts one column past its UTF-16 index.
+    const combined = findAffordances(parseAnsi('modé <h> go'), PROFILES.claude!);
+    expect(combined.find(item => item.label === 'go')).toMatchObject({ colStart: 5, colEnd: 11 });
+  });
+
+  test('wcwidth counts wide CJK and emoji 2, combining 0, the rest 1', () => {
+    expect(wcwidth('a'.codePointAt(0)!)).toBe(1);
+    expect(wcwidth('ｱ'.codePointAt(0)!)).toBe(1);
+    expect(wcwidth('中'.codePointAt(0)!)).toBe(2);
+    expect(wcwidth('あ'.codePointAt(0)!)).toBe(2);
+    expect(wcwidth('😀'.codePointAt(0)!)).toBe(2);
+    expect(wcwidth(0x0301)).toBe(0);
+    expect(wcwidth(0x200d)).toBe(0);
+    expect(strWidth('café')).toBe(4);
+    expect(strWidth('日本語 ')).toBe(7);
+    expect(strWidth('a😀b')).toBe(4);
   });
 });

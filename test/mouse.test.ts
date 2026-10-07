@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { startHttp } from '../server/http.ts';
 import { Hub, mouseBytes } from '../server/mux.ts';
+import { wheelBytes } from '../shared/affordances.ts';
 import type { Explain, MouseBody, Mux, Pane, Screen, Tree, Workspace } from '../shared/types.ts';
 
 test('mouseBytes emits exact SGR reports', () => {
@@ -10,6 +11,15 @@ test('mouseBytes emits exact SGR reports', () => {
   expect(mouseBytes(body('double'))).toBe('\x1b[<0;5;7M\x1b[<0;5;7m\x1b[<0;5;7M\x1b[<0;5;7m');
   expect(mouseBytes(body('wheelUp'))).toBe('\x1b[<64;5;7M');
   expect(mouseBytes(body('wheelDown'))).toBe('\x1b[<65;5;7M');
+});
+
+test('wheelBytes batches a run of notches into one SGR string', () => {
+  // Parity with the server's own builder for a single notch, then a batched run: the
+  // client sends a swipe's wheel notches as one raw string in one POST (17b.3).
+  expect(wheelBytes(true, 5, 7, 1)).toBe(mouseBytes({ kind: 'wheelUp', col: 5, row: 7, allow: true }));
+  expect(wheelBytes(false, 1, 1, 1)).toBe(mouseBytes({ kind: 'wheelDown', col: 1, row: 1, allow: true }));
+  expect(wheelBytes(true, 5, 7, 3)).toBe('\x1b[<64;5;7M\x1b[<64;5;7M\x1b[<64;5;7M');
+  expect(wheelBytes(false, 1, 1, 2)).toBe('\x1b[<65;1;1M\x1b[<65;1;1M');
 });
 
 describe('mouse route', () => {
