@@ -284,7 +284,9 @@ describe('chat delta routes', () => {
     const piped = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/${encodeURIComponent('call_x|fc_y')}`));
     expect(piped.status).toBe(200); // pi ids carry a pipe
     expect((await piped.text()).split('\n')).toHaveLength(60);
-    for (const bad of ['a%2Fb', '..', 'a..b']) expect((await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/${bad}`))).status).toBe(400);
+    // The URL parser turns `a%2Fb` into an extra segment and `..` into a parent path, so no route matches: either status rejects them.
+    for (const bad of ['a%2Fb', '..']) expect([400, 404]).toContain((await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/${bad}`))).status);
+    expect((await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/a..b`))).status).toBe(400);
     const unknown = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent(paneKey)}/chat/output/toolu_none`));
     expect(unknown.status).toBe(404);
     expect(await unknown.json()).toEqual({ error: 'no-output' });
