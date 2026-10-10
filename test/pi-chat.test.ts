@@ -17,7 +17,7 @@ const entry = (id: string, parentId: string | null, body: Record<string, unknown
 const jsonl = (entries: Record<string, unknown>[]) => entries.map(item => JSON.stringify(item)).join('\n');
 
 describe('parsePiTranscript', () => {
-  test('keeps display turns, drops thinking, renders tool rows with their results', () => {
+  test('keeps display turns, renders thinking, tool rows with their results', () => {
     const source = jsonl([
       { type: 'session', version: 3, id: piSession, timestamp: '2026-10-05T21:16:32.763Z', cwd: '/home/tama/projects/taut' },
       entry('m1', null, { type: 'model_change', provider: 'zai', modelId: 'glm-5.3' }),
@@ -36,12 +36,14 @@ describe('parsePiTranscript', () => {
     ]);
     expect(parsePiTranscript(source)).toEqual([
       { id: 'u1', role: 'user', text: 'Check the failing test.', tools: [], at: Date.parse('2026-10-05T21:16:32.763Z') },
-      { id: 'a1', role: 'assistant', text: 'I will inspect it.\n\nIt passes now.', at: Date.parse('2026-10-05T21:16:32.763Z'), tools: [
+      { id: 'a1', role: 'assistant', text: 'I will inspect it.', thinking: 'hidden reasoning', at: Date.parse('2026-10-05T21:16:32.763Z'), tools: [
         { id: 'call_1', name: 'bash', brief: 'bun test chat', detail: 'bun test chat', result: 'test output', resultLines: 1 },
         { id: 'call_2', name: 'read', brief: 'shared/chat.ts', detail: 'shared/chat.ts' },
         { id: 'call_3', name: 'edit', brief: 'server/chat.ts', detail: 'server/chat.ts\n\n- one\n- two\n+ three' },
         { id: 'call_4', name: 'grep', brief: 'TODO', detail: 'TODO\nin web' },
       ] },
+      // Words after the tool rows open the next Turn, so the order on screen is the real one.
+      { id: 'a2', role: 'assistant', text: 'It passes now.', tools: [], at: Date.parse('2026-10-05T21:16:32.763Z') },
     ]);
   });
 
@@ -99,8 +101,39 @@ describe('parsePiTranscript', () => {
     ]);
     const turns = parsePiTranscript(source);
     expect(turns[0]).toEqual({ id: 'u1', role: 'user', text: 'plain string prompt', tools: [], at: Date.parse('2026-10-05T21:16:32.763Z') });
-    expect(turns[1]!.text).toHaveLength(4_000);
-    expect(turns[1]!.text.endsWith('…')).toBe(true);
+    expect(turns[1]!.text).toHaveLength(3_000 + 2 + 3_000); // the merged run is not capped
+  });
+
+  test('a stopped run renders its stop marker, with or without a message', () => {
+    const source = jsonl([
+      entry('u1', null, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Run it.' }] } }),
+      entry('e1', 'u1', { type: 'message', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '401 {"error":{"message":"token expired or incorrect","type":"401"}}' } }),
+      entry('u2', 'e1', { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Again.' }] } }),
+      entry('e2', 'u2', { type: 'message', message: { role: 'assistant', content: [], stopReason: 'aborted' } }),
+    ]);
+    expect(parsePiTranscript(source).map(turn => [turn.id, turn.role, turn.text])).toEqual([
+      ['u1', 'user', 'Run it.'],
+      ['e1', 'assistant', '**Stopped:** 401 {"error":{"message":"token expired or incorrect","type":"401"}}'],
+      ['u2', 'user', 'Again.'],
+      ['e2', 'assistant', '**Stopped.**'],
+    ]);
+  });
+
+  test('display custom messages, compactions and bash executions render; hidden ones do not', () => {
+    const source = jsonl([
+      entry('u1', null, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Run the lanes.' }] } }),
+      entry('k1', 'u1', { type: 'custom_message', customType: 'agent-result', display: true,
+        content: 'agent agent-24 "Fast-worker: P2-06b selection controls" finished\n\n1. **Changed:** Added selection primitives.' }),
+      entry('k2', 'k1', { type: 'custom_message', customType: 'i-have-adhd-rules', display: false, content: 'ADHD MODE ACTIVE.' }),
+      entry('b1', 'k2', { type: 'message', message: { role: 'bashExecution', command: 'gh auth refresh -h github.com -s user', output: '…', exitCode: 1, cancelled: false, truncated: false, timestamp: 1790980772911, excludeFromContext: false } }),
+      entry('c1', 'b1', { type: 'compaction', summary: '## Goal\nMultiple tasks in a single run.' }),
+    ]);
+    expect(parsePiTranscript(source).map(turn => [turn.id, turn.role, turn.text])).toEqual([
+      ['u1', 'user', 'Run the lanes.'],
+      ['k1', 'assistant', 'agent agent-24 "Fast-worker: P2-06b selection controls" finished\n\n1. **Changed:** Added selection primitives.'],
+      ['b1', 'user', '!gh auth refresh -h github.com -s user\n\n```\n…\n```'],
+      ['c1', 'assistant', '_Conversation compacted._'],
+    ]);
   });
 });
 

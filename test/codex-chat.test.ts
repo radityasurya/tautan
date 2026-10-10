@@ -47,6 +47,14 @@ describe('parseCodexRollout', () => {
     expect(parseCodexRollout(readFileSync(join(import.meta.dir, 'fixtures/codex-overlap.jsonl'), 'utf8'))).toBeUndefined();
     expect(parseCodexRollout(readFileSync(join(import.meta.dir, 'fixtures/codex-no-ids.jsonl'), 'utf8'))).toBeUndefined();
   });
+
+  test('caps each text block at 16 000 and leaves the merged turn whole', () => {
+    const line = (text: string, turnId: string) => `{"timestamp":"2026-10-07T10:00:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":${JSON.stringify(text)}}],"internal_chat_message_metadata_passthrough":{"turn_id":"${turnId}"}}}`;
+    const turns = parseCodexRollout([line('a'.repeat(3_000), 'turn-t1'), line('b'.repeat(20_000), 'turn-t1')].join('\n'));
+    expect(turns).toHaveLength(1);
+    expect(turns![0]!.text).toHaveLength(3_000 + 2 + 16_000); // the merged run keeps its end
+    expect(turns![0]!.text.endsWith('…')).toBe(true); // the one oversized block was cut
+  });
 });
 
 describe('resolveCodexPath', () => {

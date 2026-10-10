@@ -17,7 +17,7 @@ describe('parseTranscript', () => {
       { type: 'assistant', message: { content: [{ type: 'text', text: 'I will inspect it.' }, { type: 'tool_use', name: 'Bash', input: { command: 'git status --short' } }] } },
       { type: 'user', message: { content: [{ type: 'tool_result', content: 'ignored' }] } },
       { type: 'assistant', isSidechain: true, message: { content: [{ type: 'text', text: 'hidden' }] } },
-      { type: 'user', message: { content: '<command-name>git status</command-name>' } },
+      { type: 'user', message: { content: '<local-command-stdout>Switched model.</local-command-stdout>' } },
     ].map(entry => JSON.stringify(entry)).join('\n');
     expect(parseTranscript(jsonl)).toEqual([
       { role: 'user', text: 'Explain this failure.', tools: [], at: Date.parse('2026-10-06T00:00:00.000Z') },
@@ -44,14 +44,93 @@ describe('parseTranscript', () => {
     expect(task!.detail.endsWith('…')).toBe(true);
   });
 
-  test('merges adjacent turns and caps their text', () => {
+  test('merges adjacent turns uncapped; each source block caps at 16 000', () => {
     const jsonl = [
       { type: 'assistant', message: { content: 'a'.repeat(3_000) } },
       { type: 'assistant', message: { content: 'b'.repeat(3_000) } },
+      { type: 'assistant', message: { content: 'c'.repeat(20_000) } },
     ].map(entry => JSON.stringify(entry)).join('\n');
     const [turn] = parseTranscript(jsonl);
-    expect(turn!.text).toHaveLength(4_000);
-    expect(turn!.text.endsWith('…')).toBe(true);
+    expect(turn!.text).toHaveLength(3_000 + 2 + 3_000 + 2 + 16_000); // the merged run keeps its end
+    expect(turn!.text.endsWith('…')).toBe(true); // the one oversized block was cut
+  });
+
+  test('recovers a human queued prompt as a user turn; the flushed copy does not double it', () => {
+    const jsonl = [
+      { type: 'assistant', timestamp: '2026-10-06T00:00:00.000Z', message: { content: 'Working.' } },
+      { type: 'attachment', isSidechain: false, timestamp: '2026-10-06T00:00:01.000Z', uuid: 'q-1',
+        attachment: { type: 'queued_command', prompt: 'Ship it next.', commandMode: 'prompt', origin: { kind: 'human' }, timestamp: '2026-10-06T00:00:01.000Z' } },
+      { type: 'attachment', timestamp: '2026-10-06T00:00:02.000Z',
+        attachment: { type: 'queued_command', prompt: 'no origin is human too', commandMode: 'prompt' } },
+      { type: 'attachment', timestamp: '2026-10-06T00:00:03.000Z',
+        attachment: { type: 'queued_command', prompt: 'peer is not the user', commandMode: 'prompt', origin: { kind: 'peer' } } },
+      { type: 'queue-operation', operation: 'dequeue', timestamp: '2026-10-06T00:00:04.000Z' },
+      { type: 'assistant', timestamp: '2026-10-06T00:00:05.000Z', message: { content: 'Done.' } },
+      { type: 'user', timestamp: '2026-10-06T00:00:06.000Z', message: { content: 'Ship it next.' } }, // the flushed copy
+      { type: 'assistant', timestamp: '2026-10-06T00:00:07.000Z', message: { content: 'Shipping.' } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    expect(parseTranscript(jsonl).map(turn => [turn.id, turn.role, turn.text])).toEqual([
+      [undefined, 'assistant', 'Working.'],
+      ['q-1', 'user', 'Ship it next.\n\nno origin is human too'], // two queued prompts merge, like typed ones
+      [undefined, 'assistant', 'Done.\n\nShipping.'], // the flushed copy merged away
+    ]);
+  });
+
+  test('renders slash commands and shell lines as the user sent them', () => {
+    const jsonl = [
+      { type: 'user', message: { content: '<command-message>lead</command-message>\n<command-name>/lead</command-name>\n<command-args>extend the chat view</command-args>' } },
+      { type: 'assistant', message: { content: 'Leading.' } },
+      { type: 'user', message: { content: '<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>' } },
+      { type: 'assistant', message: { content: 'Cleared.' } },
+      { type: 'user', message: { content: '<bash-input>npm login</bash-input>' } },
+      { type: 'user', message: { content: '<local-command-stdout>Logged in</local-command-stdout>' } },
+      { type: 'user', message: { content: '<bash-stderr>not logged in</bash-stderr>' } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    // a `!` line's output follows it as its own entry and shows under it; a slash command's does not
+    expect(parseTranscript(jsonl).map(turn => turn.text)).toEqual(['/lead extend the chat view', 'Leading.', '/clear', 'Cleared.', '!npm login\n\n```\nnot logged in\n```']);
+  });
+
+  test("a shell line's long output keeps its last 40 lines, fenced past any backticks inside", () => {
+    const out = [...Array.from({ length: 50 }, (_, n) => `line ${n + 1}`), '```done```'].join('\n');
+    const jsonl = [
+      { type: 'user', message: { content: '<bash-input>make dev</bash-input>' } },
+      { type: 'user', message: { content: `<bash-stdout>\x1b[32m${out}\x1b[0m</bash-stdout><bash-stderr></bash-stderr>` } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const [turn] = parseTranscript(jsonl);
+    const [command, block] = turn!.text.split('\n\n');
+    expect(command).toBe('!make dev');
+    expect(block!.split('\n').slice(0, 3)).toEqual(['````', '…', 'line 12']);
+    expect(block!.endsWith('```done```\n````')).toBe(true);
+  });
+
+  test('drops isMeta records and compacts a compact summary', () => {
+    const jsonl = [
+      { type: 'user', isMeta: true, message: { content: 'A skill body or image placeholder.' } },
+      { type: 'user', isCompactSummary: true, uuid: 'c-1', timestamp: '2026-10-06T00:00:00.000Z',
+        message: { content: 'This conversation is being continued from a previous one. Giant summary follows.' } },
+      { type: 'assistant', message: { content: 'Continuing.' } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    expect(parseTranscript(jsonl)).toEqual([
+      { id: 'c-1', role: 'assistant', text: '_Conversation compacted._\n\nContinuing.', tools: [], at: Date.parse('2026-10-06T00:00:00.000Z') },
+    ]);
+  });
+
+  test('keeps thinking, joined with a blank line, and caps it like text', () => {
+    const jsonl = [
+      { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: '', signature: 'CAIS1xUKpgEIERgC' }, // signature-only: no words
+        { type: 'thinking', thinking: 'Weigh the two fixes.' },
+        { type: 'redacted_thinking', data: 'ZW5jcnlwdGVk' },
+      ] } },
+      { type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'Then ship.' },
+        { type: 'thinking', thinking: 'y'.repeat(20_000) },
+        { type: 'text', text: 'Take the first.' },
+      ] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const [turn] = parseTranscript(jsonl);
+    expect(turn!.thinking).toBe(`Weigh the two fixes.\n\nThen ship.\n\n${'y'.repeat(15_999)}…`);
+    expect(turn!.text).toBe('Take the first.');
   });
   // A real z.ai turn (GLM through Claude Code), the signed image URL shortened.
   const zaiTurn = "This environment reads images through the analyze-image tool \u2014 inspecting both flagged slides:\n\n**\ud83c\udf10 Z.ai Built-in Tool: analyze_image**\n\n**Input:**\n```json\n{\"imageSource\":\"https://maas-log-prod.cn-wlcb.ufileos.com/anthropic/9ba4f7e5-4c2a-467b-bd24-c00186ba3758/dark-slide-3.png?sig=x\",\"prompt\":\"This is a 1920x1080 presentation slide with a chart. Measure and report the approximate pixel heights of the capital text (x-height or cap-height) for each of these elements, and state which is the largest text on the slide: (1) the slide headline at the top (\\\"Where the p99 goes\\\" or similar), (2) the small badge/pill label above the headline, (3) the chart's axis tick labels (numbers on the axes), (4) the chart legend labels at the bottom of the chart, (5) the footer text at the very bottom of the slide, (6) any chart card title inside the chart card. Also report: is any text clipped, overflowing its container, or overlapping? Does the type hierarchy read clearly (headline dominant)? Be specific with pixel estimates.\"}\n```\n*Executing on server...*\n\n\n**Output:**\n**analyze_image_result_summary:** [{\"text\": \"\\\"# Text Measurement Analysis\\\\n\\\\n## Approximate Cap Heights (pixel measurements)\\\\n\\\\n| Element | Cap Height | Notes |\\\\n|---|---|---|\\\\n| (1) Headline \\\\\\\"Where the p99 goes\\\\\\\" | **~45\u201348 px** | Cap height of \\\\\\\"W\\\\\\\"; full font size ~62\u201364 px |\\\\n| (2) Badge/pill \\\\\\\"Latency\\\\\\\" | *...\n                                                \n\ndark-slide-3 fixed: headline ~62-64px font vs ticks ~20-22px, chart title between them, no clipping. Now the acme one:\n";
@@ -77,8 +156,9 @@ describe('parseTranscript', () => {
       { type: 'assistant', message: { content: [{ type: 'text', text: `Checking both.\n${call('a.png')}\n${call('b.png')}` }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: `${out('**A** fine')}\n   \n\n${out('B cut...')}\nDone.` }] } },
     ].map(entry => JSON.stringify(entry)).join('\n');
-    const [turn] = parseTranscript(jsonl);
-    expect(turn!.text).toBe('Checking both.\n\nDone.');
+    const [turn, after] = parseTranscript(jsonl);
+    expect(turn!.text).toBe('Checking both.');
+    expect(after!.text).toBe('Done.'); // words after the tool rows open the next Turn
     expect(turn!.tools.map(t => [t.brief, t.output, t.truncated])).toEqual([['a.png', '**A** fine', undefined], ['b.png', 'B cut…', true]]);
   });
 
@@ -91,8 +171,9 @@ describe('parseTranscript', () => {
       { type: 'assistant', message: { content: [{ type: 'text', text: cut }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: `${out}\nDone.` }] } },
     ].map(entry => JSON.stringify(entry)).join('\n');
-    const [turn] = parseTranscript(jsonl);
-    expect(turn!.text).toBe('Loose one.\n\nDone.');
+    const [turn, after] = parseTranscript(jsonl);
+    expect(turn!.text).toBe('Loose one.');
+    expect(after!.text).toBe('Done.');
     expect(turn!.tools.map(t => [t.name, t.brief, t.output])).toEqual([
       ['web_search', 'tautan', 'found'],
       // the cut input never parsed, so its brief keeps the raw JSON head

@@ -119,9 +119,15 @@ export interface Turn {
   id?: string;
   role: 'user' | 'assistant';
   text: string;
+  /** The run's reasoning text, when the transcript keeps it (pi; Claude only with thinking
+   *  summaries on). Empty and signature-only blocks leave it absent. */
+  thinking?: string;
   tools: Tool[];
   images?: Pasted[];
   at?: number;
+  /** A message another Agent of the team sent this one (`@orchestrator`): `text` is its body.
+   *  Such a Turn stands alone, never merged with the run around it. */
+  from?: string;
 }
 
 /**
@@ -143,9 +149,9 @@ export function pendingTools(turns: Turn[]): { turn: number; tool: number }[] {
   return out;
 }
 
-type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; image_url?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
+type Block = { type?: unknown; text?: unknown; thinking?: unknown; name?: unknown; input?: unknown; arguments?: unknown; data?: unknown; mimeType?: unknown; source?: unknown; image_url?: unknown; id?: unknown; tool_use_id?: unknown; content?: unknown; is_error?: unknown };
 
-const commandWrapper = /^(?:command-name|command-message|local-command(?:-[\w-]+)?|task-notification|bash-(?:input|stdout))$/;
+const commandWrapper = /^(?:command-name|command-message|local-command(?:-[\w-]+)?|task-notification|bash-(?:input|stdout|stderr))$/;
 const shortened = (text: string) => text.length > 80 ? `${text.slice(0, 79)}…` : text;
 const turnText = (content: unknown) => typeof content === 'string' ? content : '';
 
@@ -162,6 +168,59 @@ function wrapper(text: string): boolean {
   return Boolean(tag && commandWrapper.test(tag));
 }
 
+// The user's own words inside control wrappers: a slash command (the tag order varies, the
+// name already carries its slash) and a `!` shell line.
+const COMMAND_NAME = /<command-name>([^<]*)<\/command-name>/;
+const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+const BASH_INPUT = /<bash-input>([\s\S]*?)<\/bash-input>/;
+const BASH_OUTPUT = /<bash-(stdout|stderr)>([\s\S]*?)<\/bash-\1>/g;
+const SHELL_LINES = 40;
+
+/** A `!` line's output as a fenced block under it: ANSI stripped, the last SHELL_LINES lines
+ *  (the end is where an error or a "moved to the background" notice lands), and a fence
+ *  longer than any backtick run inside. Empty output is no block at all. */
+function shellOutput(output: string): string | undefined {
+  const lines = output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\s+$/, '').split(/\r?\n/);
+  if (!lines.join('').trim()) return;
+  const shown = lines.length > SHELL_LINES ? ['…', ...lines.slice(-SHELL_LINES)] : lines;
+  const body = cap(shown.join('\n'));
+  const fence = '`'.repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map(run => run[0].length + 1)));
+  return `${fence}\n${body}\n${fence}`;
+}
+function commandText(text: string): string | undefined {
+  const name = text.match(COMMAND_NAME)?.[1]?.trim();
+  const args = text.match(COMMAND_ARGS)?.[1]?.trim();
+  if (name !== undefined) return capTurn(`${name.startsWith('/') ? '' : '/'}${name}${args ? ` ${args}` : ''}`);
+  const bash = text.match(BASH_INPUT)?.[1]?.trim();
+  return bash === undefined ? undefined : `!${bash}`;
+}
+
+/** A prompt the user queued while Claude worked, as a human's words: `origin.kind` `peer`
+ *  and `task-notification` are not the user's, and neither is a missing prompt. */
+function queuedPrompt(entry: Record<string, unknown>): string | undefined {
+  const attachment = entry.attachment;
+  if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) return;
+  const record = attachment as Record<string, unknown>;
+  if (record.type !== 'queued_command') return;
+  const origin = record.origin;
+  const kind = origin && typeof origin === 'object' && !Array.isArray(origin) ? (origin as Record<string, unknown>).kind : undefined;
+  if (kind !== undefined && kind !== 'human') return;
+  return str(record.prompt);
+}
+
+/** A teammate's message as Claude queued it (`origin.kind: peer`): who sent it, and its body. */
+function peerMessage(entry: Record<string, unknown>): { from: string; text: string } | undefined {
+  const attachment = entry.attachment;
+  if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) return;
+  const record = attachment as Record<string, unknown>;
+  const origin = record.origin;
+  if (record.type !== 'queued_command' || !origin || typeof origin !== 'object' || Array.isArray(origin)) return;
+  const peer = origin as Record<string, unknown>;
+  const text = str(peer.body);
+  if (peer.kind !== 'peer' || !text) return;
+  return { from: str(peer.name) ?? str(peer.from) ?? 'agent', text };
+}
+
 function brief(input: unknown): string {
   if (input && typeof input === 'object' && !Array.isArray(input)) {
     const value = input as Record<string, unknown>;
@@ -171,6 +230,12 @@ function brief(input: unknown): string {
 }
 
 function cap(text: string): string { return text.length > 4_000 ? `${text.slice(0, 3_999)}…` : text; }
+
+// ADR 0007's amendment (2026-10-10): each source text block caps at 16 000 before it merges;
+// the merged Turn caps not at all. A Turn is a whole agent run, so its end — the final
+// summary — must survive (the old 4 000 cap on the merged text cut pi's final ~23 %).
+const TURN_CHARS = 16_000;
+const capTurn = (text: string) => text.length > TURN_CHARS ? `${text.slice(0, TURN_CHARS - 1)}…` : text;
 
 const str = (value: unknown) => typeof value === 'string' && value.trim() ? value : undefined;
 const preview = (text: string) => text.length > 600 ? `${text.slice(0, 599)}…` : text;
@@ -384,6 +449,11 @@ function imageSource(source: unknown): { mediaType: string; data: string } | und
 /** Parse Claude Code's JSONL into display-safe turns; raw transcript lines never leave this module.
  *  `opts.images` and `opts.previews`, when given, collect what tool_results returned and the Agent
  *  wrote, numbered as their `imageId`s and `previewId`s. */
+/** Whether an entry folds into the Turn before it: same role, except that an Agent's words
+ *  after its tool rows open a new Turn, so text and tools read in the order they happened. */
+const joins = (previous: Turn | undefined, role: Turn['role'], words: string): previous is Turn =>
+  previous?.role === role && !previous.from && !(role === 'assistant' && previous.tools.length > 0 && !!words);
+
 export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   const turns: Turn[] = [];
   const pending: Tool[] = [];
@@ -399,6 +469,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     return slot;
   };
   const artifactHtml = new Map<string, string>(); // Artifact tool_use id → the source its file_path matched
+  const queuedText = new Set<string>(); // queued prompts already shown; a flushed copy is dropped below
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line) continue;
     let entry: Record<string, unknown>;
@@ -407,12 +478,26 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
       entry = value as Record<string, unknown>;
     } catch { continue; }
+    // A queued prompt exists only as its attachment entry; when the queue flushes, Claude
+    // also writes it as a user entry, which `queuedText` then keeps from showing twice.
+    const peer = entry.type === 'attachment' ? peerMessage(entry) : undefined;
+    if (peer && (opts?.sidechain || !entry.isSidechain)) {
+      const at = time(entry.timestamp);
+      turns.push({ role: 'assistant', from: peer.from, text: capTurn(peer.text), tools: [], ...(typeof entry.uuid === 'string' ? { id: entry.uuid } : {}), ...(at !== undefined ? { at } : {}) });
+      continue;
+    }
+    const queued = entry.type === 'attachment' ? queuedPrompt(entry) : undefined;
+    if (queued !== undefined) { queuedText.add(queued); entry = { type: 'user', message: { role: 'user', content: queued }, timestamp: entry.timestamp, uuid: entry.uuid, isSidechain: entry.isSidechain }; }
     if ((!opts?.sidechain && entry.isSidechain) || (entry.type !== 'user' && entry.type !== 'assistant')) continue;
+    if (entry.type === 'user' && entry.isMeta === true) continue; // skill bodies, placeholders, injected agent messages
+    if (entry.type === 'user' && entry.isCompactSummary === true)
+      entry = { type: 'assistant', message: { role: 'assistant', content: '_Conversation compacted._' }, timestamp: entry.timestamp, uuid: entry.uuid };
     const message = entry.message;
     if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
     const content = (message as Record<string, unknown>).content;
-    const role = entry.type;
-    let text = turnText(content);
+    const role = entry.type === 'user' ? 'user' : 'assistant'; // transforms above may have rewritten it
+    let text = capTurn(turnText(content));
+    let thinking = '';
     const tools: Turn['tools'] = [];
     const images: Pasted[] = [];
     if (Array.isArray(content)) for (const item of content) {
@@ -421,9 +506,12 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       if (block.type === 'text' && typeof block.text === 'string') {
         // ponytail: lifted z.ai rows join the turn's tool list after its text, like tool_use rows; split the turn into segments if their position matters.
         const lifted = role === 'assistant' ? liftZai(block.text, pending) : { text: block.text, tools: [] };
-        text += lifted.text;
+        text += capTurn(lifted.text);
         tools.push(...lifted.tools);
       }
+      // Signature-only thinking blocks (`thinking: ""`) and `redacted_thinking` carry no words.
+      if (role === 'assistant' && block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim())
+        thinking += (thinking ? '\n\n' : '') + capTurn(block.thinking);
       if (block.type === 'tool_use' && typeof block.name === 'string') {
         const image = block.name === 'Read' ? readImage(block.input) : undefined;
         const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
@@ -486,16 +574,29 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         else images.push({}); // malformed or over the memory bound: a placeholder, no id consumed
       }
     }
-    if (role === 'user' && wrapper(text)) continue;
-    if (!text && !tools.length && !images.length) continue;
+    if (role === 'user' && wrapper(text)) {
+      const command = commandText(text);
+      if (command === undefined) {
+        // A `!` line's output is the next entry; it shows under the line, as Claude prints it.
+        const previous = turns.at(-1);
+        const output = shellOutput([...text.matchAll(BASH_OUTPUT)].map(match => match[2]!).filter(part => part.trim()).join('\n'));
+        if (output && previous?.role === 'user' && previous.text.split('\n\n').at(-1)?.startsWith('!')) previous.text += `\n\n${output}`;
+        continue; // stdout, caveats, task notifications: control records
+      }
+      text = command;
+    }
+    // ponytail: only the first later copy of a queued prompt is swallowed — a user who retypes the same words on purpose loses that repeat
+    if (role === 'user' && queued === undefined && text && queuedText.delete(text)) continue;
+    if (!text && !tools.length && !images.length && !thinking) continue;
     const at = time(entry.timestamp);
     const uuid = typeof entry.uuid === 'string' ? entry.uuid : undefined;
     const previous = turns.at(-1);
-    if (previous?.role === role) {
-      previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
+    if (joins(previous, role, text || thinking)) {
+      previous.text = previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text;
+      if (thinking) previous.thinking = previous.thinking ? `${previous.thinking}\n\n${thinking}` : thinking;
       previous.tools.push(...tools);
       if (images.length) previous.images = [...previous.images ?? [], ...images];
-    } else turns.push({ role, text: cap(text), tools, ...(uuid ? { id: uuid } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
+    } else turns.push({ role, text, tools, ...(thinking ? { thinking } : {}), ...(uuid ? { id: uuid } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
   }
   return turns;
 }
@@ -525,13 +626,29 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   let imageSeq = 0;
   let forked = false; // a message from another branch sat between two active ones: no merging across it
   for (const [index, entry] of entries.entries()) {
-    if (entry.type !== 'message') continue;
+    if (entry.type !== 'message' && entry.type !== 'custom_message' && entry.type !== 'compaction') continue;
     if (!active.has(index)) { forked = true; continue; }
-    const message = entry.message;
-    if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
-    const record = message as Record<string, unknown>;
-    const role = record.role === 'user' ? 'user' : record.role === 'assistant' ? 'assistant' : undefined;
-    if (!role) {
+    const record = entry.message && typeof entry.message === 'object' && !Array.isArray(entry.message) ? entry.message as Record<string, unknown> : undefined;
+    let role: 'user' | 'assistant';
+    let text = '';
+    let thinking = '';
+    const tools: Turn['tools'] = [];
+    const images: Pasted[] = [];
+    if (entry.type === 'compaction') { role = 'assistant'; text = '_Conversation compacted._'; }
+    else if (entry.type === 'custom_message') {
+      if (entry.display !== true) continue; // display:false feeds the model, not the reader
+      role = 'assistant';
+      text = capTurn(resultText(entry.content)); // a string, or text blocks
+    }
+    else if (!record) continue;
+    else if (record.role === 'bashExecution') {
+      const command = str(record.command);
+      if (command === undefined) continue;
+      role = 'user';
+      const output = shellOutput(str(record.output) ?? '');
+      text = output ? `!${command}\n\n${output}` : `!${command}`;
+    }
+    else if (record.role !== 'user' && record.role !== 'assistant') {
       if (record.role !== 'toolResult' || !Array.isArray(record.content)) continue;
       attachResult(typeof record.toolCallId === 'string' ? toolUses.get(record.toolCallId) : undefined, record.content, record.isError, opts?.outputs);
       for (const item of record.content) {
@@ -545,37 +662,49 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       }
       continue;
     }
-    const content = record.content;
-    let text = turnText(content);
-    const tools: Turn['tools'] = [];
-    const images: Pasted[] = [];
-    if (Array.isArray(content)) for (const item of content) {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
-      const block = item as Block;
-      if (block.type === 'text' && typeof block.text === 'string') text += block.text;
-      if (block.type === 'image' && role === 'user') {
-        if (typeof block.mimeType === 'string' && PASTED_TYPE.test(block.mimeType) && typeof block.data === 'string' && block.data.length <= RESULT_MAX && BASE64.test(block.data)) {
-          opts?.images?.push({ mediaType: block.mimeType, data: block.data });
-          images.push({ imageId: imageSeq++ });
-        } else images.push({}); // malformed or over the memory bound: a placeholder, no id consumed
+    else {
+      role = record.role === 'user' ? 'user' : 'assistant';
+      const content = record.content;
+      text = capTurn(turnText(content));
+      if (Array.isArray(content)) for (const item of content) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+        const block = item as Block;
+        if (block.type === 'text' && typeof block.text === 'string') text += capTurn(block.text);
+        if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim())
+          thinking += (thinking ? '\n\n' : '') + capTurn(block.thinking);
+        if (block.type === 'image' && role === 'user') {
+          if (typeof block.mimeType === 'string' && PASTED_TYPE.test(block.mimeType) && typeof block.data === 'string' && block.data.length <= RESULT_MAX && BASE64.test(block.data)) {
+            opts?.images?.push({ mediaType: block.mimeType, data: block.data });
+            images.push({ imageId: imageSeq++ });
+          } else images.push({}); // malformed or over the memory bound: a placeholder, no id consumed
+        }
+        if (block.type === 'toolCall' && typeof block.name === 'string') {
+          const image = block.name === 'read' ? readImage(block.arguments) : undefined;
+          const tool: Tool = { name: block.name, brief: brief(block.arguments), detail: detail(block.name, block.arguments), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
+          if (block.name === 'Agent' && typeof block.id === 'string') {
+            const subagent = opts?.subagentIds?.get(block.id);
+            if (subagent) tool.subagentId = subagent;
+          }
+          if (typeof block.id === 'string') toolUses.set(block.id, tool);
+          cutDetail(tool, opts);
+          tools.push(tool);
+        }
       }
-      if (block.type === 'toolCall' && typeof block.name === 'string') {
-        const image = block.name === 'read' ? readImage(block.arguments) : undefined;
-        const tool: Tool = { name: block.name, brief: brief(block.arguments), detail: detail(block.name, block.arguments), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
-        if (typeof block.id === 'string') toolUses.set(block.id, tool);
-        cutDetail(tool, opts);
-        tools.push(tool);
+      if (role === 'assistant' && (record.stopReason === 'error' || record.stopReason === 'aborted')) {
+        const message = str(record.errorMessage);
+        text += (text ? '\n\n' : '') + (message ? `**Stopped:** ${message}` : '**Stopped.**');
       }
     }
-    if (!text && !tools.length && !images.length) continue;
+    if (!text && !tools.length && !images.length && !thinking) continue;
     const at = time(entry.timestamp);
     const previous = forked ? undefined : turns.at(-1);
     forked = false;
-    if (previous?.role === role) {
-      previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
+    if (joins(previous, role, text || thinking)) {
+      previous.text = previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text;
+      if (thinking) previous.thinking = previous.thinking ? `${previous.thinking}\n\n${thinking}` : thinking;
       previous.tools.push(...tools);
       if (images.length) previous.images = [...previous.images ?? [], ...images];
-    } else turns.push({ role, text: cap(text), tools, ...(typeof entry.id === 'string' ? { id: entry.id } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
+    } else turns.push({ role, text, tools, ...(thinking ? { thinking } : {}), ...(typeof entry.id === 'string' ? { id: entry.id } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
   }
   return turns;
 }
@@ -659,7 +788,7 @@ export function parseCodexRollout(jsonl: string, opts?: ParseOpts): Turn[] | und
         if (Array.isArray(record.content)) for (const item of record.content) {
           if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
           const block = item as Block;
-          if ((block.type === 'input_text' || block.type === 'output_text') && typeof block.text === 'string') text += block.text;
+          if ((block.type === 'input_text' || block.type === 'output_text') && typeof block.text === 'string') text += capTurn(block.text);
           if (block.type === 'input_image') pasted.push(image(block.image_url));
         }
         // `local_images` rides the payload beside `content`; no sample exists on this host, so
@@ -678,9 +807,9 @@ export function parseCodexRollout(jsonl: string, opts?: ParseOpts): Turn[] | und
         if (!text && !pasted.length) continue;
         const previous = turns.at(-1);
         if (previous?.role === role && previous.id === id) {
-          previous.text = cap(previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text);
+          previous.text = previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text;
           if (pasted.length) previous.images = [...previous.images ?? [], ...pasted];
-        } else turns.push({ role, text: cap(text), tools: [], ...(id ? { id } : {}), ...(pasted.length ? { images: pasted } : {}), ...(at !== undefined ? { at } : {}) });
+        } else turns.push({ role, text, tools: [], ...(id ? { id } : {}), ...(pasted.length ? { images: pasted } : {}), ...(at !== undefined ? { at } : {}) });
       } else if (CODEX_CALLS.has(record.type as string)) {
         const name = str(record.name) ?? (record.type as string);
         let tool: Tool;

@@ -82,8 +82,8 @@ lanes are not capped.
 
 **Why now:** the Chat view refetches the whole conversation on every change: 3.2–4.0 MB on
 the busiest Claude Pane (1 444 of 1 529 tools carry a result), 0.54–0.88 MB on a pi Pane.
-The 4 000-character tool-output cap (`shared/chat.ts:257`) and the 4 MB pasted-image budget
-(`shared/chat.ts:239`) exist only to keep that size down. Wave 12 builds on this transport.
+The 4 000-character tool-output cap (`shared/chat.ts:202`) and the 4 MB pasted-image budget
+(`shared/chat.ts:402`) exist only to keep that size down. Wave 12 builds on this transport.
 
 | # | Lane | Specialist | Parallel |
 |---|---|---|---|

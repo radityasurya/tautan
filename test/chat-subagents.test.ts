@@ -275,4 +275,82 @@ describe('chat subagents and previews', () => {
       expect((await bgLens.query(bgKey))!.turns.map(turn => turn.role)).toEqual(['user', 'assistant']); // the wrapper line stays out
     } finally { bgLens?.close(); rmSync(bgHome, { recursive: true, force: true }); }
   });
+
+  test("a string 'true' run_in_background reads as background, and a launch receipt is not the finish", async () => {
+    const bgHome = mkdtempSync(join(tmpdir(), 'tautan-chat-str-'));
+    const sid = '66666666-6666-6666-6666-666666666666';
+    const bgKey = 'local/fake/p10';
+    let bgLens: ChatLens | undefined;
+    try {
+      const dir = transcriptDir('/repo', sid, bgHome);
+      mkdirSync(join(dir, 'subagents'), { recursive: true });
+      // Claude writes run_in_background as the string "true"; the receipt the parent gets at
+      // once ("Async agent launched…") arrives as plain text and as a content block.
+      const main = [
+        line({ type: 'user', timestamp: '2026-10-06T00:00:00.000Z', message: { content: 'Go.' } }),
+        line({ type: 'assistant', timestamp: '2026-10-06T00:00:01.000Z', message: { content: [
+          { type: 'tool_use', id: 'toolu_bgs', name: 'Task', input: { prompt: 'Scan.', run_in_background: 'true' } },
+          { type: 'tool_use', id: 'toolu_bgp', name: 'Task', input: { prompt: 'Port.' } },
+        ] } }),
+        line({ type: 'user', timestamp: '2026-10-06T00:00:02.000Z', message: { content: [
+          { type: 'tool_result', tool_use_id: 'toolu_bgs', content: 'Async agent launched in background. It will continue running independently.' },
+          { type: 'tool_result', tool_use_id: 'toolu_bgp', content: [{ type: 'text', text: 'Async agent launched in background. Use TaskOutput to check on it.' }] },
+        ] } }),
+      ].join('\n');
+      writeFileSync(join(dir, '..', `${sid}.jsonl`), main);
+      writeFileSync(join(dir, 'subagents', 'agent-bgs11111.meta.json'), JSON.stringify({ agentType: 'recon', toolUseId: 'toolu_bgs' }));
+      writeFileSync(join(dir, 'subagents', 'agent-bgs11111.jsonl'), t2Jsonl); // fresh, ends on a user entry
+      writeFileSync(join(dir, 'subagents', 'agent-bgp22222.meta.json'), JSON.stringify({ agentType: 'worker', toolUseId: 'toolu_bgp' }));
+      writeFileSync(join(dir, 'subagents', 'agent-bgp22222.jsonl'), t2Jsonl);
+      const chatHub: ChatHub = {
+        resolvePane: () => ({ paneId: 'p10', entry: { mux: { kind: 'herdr' }, tree: { panes: [{ id: 'p10', agentSession: sid }] } } }),
+        state: async () => ({ panes: [{ key: bgKey, cwd: '/repo' }] }) as State,
+        paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
+      };
+      bgLens = new ChatLens(chatHub, localIo, bgHome);
+      const states = (await bgLens.query(bgKey))?.subagents!;
+      expect(states.find(item => item.id === 'bgs11111')!.state).toBe('running'); // the string form reads background
+      expect(states.find(item => item.id === 'bgp22222')!.state).toBe('running'); // neither receipt reads as the finish
+    } finally { bgLens?.close(); rmSync(bgHome, { recursive: true, force: true }); }
+  });
+
+  test('a finished subagent that resumes reads running again until it settles', async () => {
+    const bgHome = mkdtempSync(join(tmpdir(), 'tautan-chat-rs-'));
+    const sid = '77777777-7777-7777-7777-777777777777';
+    const bgKey = 'local/fake/p11';
+    let bgLens: ChatLens | undefined;
+    try {
+      const dir = transcriptDir('/repo', sid, bgHome);
+      mkdirSync(join(dir, 'subagents'), { recursive: true });
+      const child = join(dir, 'subagents', 'agent-bgr33333.jsonl');
+      const main = [
+        line({ type: 'user', timestamp: '2026-10-06T00:00:00.000Z', message: { content: 'Go.' } }),
+        line({ type: 'assistant', timestamp: '2026-10-06T00:00:01.000Z', message: { content: [
+          { type: 'tool_use', id: 'toolu_bgr', name: 'Task', input: { prompt: 'Scan.', run_in_background: true } },
+        ] } }),
+      ].join('\n');
+      writeFileSync(join(dir, '..', `${sid}.jsonl`), main);
+      writeFileSync(join(dir, 'subagents', 'agent-bgr33333.meta.json'), JSON.stringify({ agentType: 'recon', toolUseId: 'toolu_bgr' }));
+      writeFileSync(child, t2Jsonl);
+      const chatHub: ChatHub = {
+        resolvePane: () => ({ paneId: 'p11', entry: { mux: { kind: 'herdr' }, tree: { panes: [{ id: 'p11', agentSession: sid }] } } }),
+        state: async () => ({ panes: [{ key: bgKey, cwd: '/repo' }] }) as State,
+        paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
+      };
+      bgLens = new ChatLens(chatHub, localIo, bgHome);
+      const live = bgLens; // the closure below needs the narrowed type, not the let
+      const state = async () => (await live.query(bgKey))?.subagents?.[0]!.state;
+      expect(await state()).toBe('running');
+      writeFileSync(join(dir, '..', `${sid}.jsonl`), `${main}\n${line({ type: 'user', timestamp: '2026-10-06T00:00:09.000Z', message: { content: [
+        { type: 'text', text: '<task-notification><task-id>bgr33333</task-id><tool-use-id>toolu_bgr</tool-use-id><status>completed</status></task-notification>' },
+      ] } })}`);
+      expect(await state()).toBe('done');
+      const resumed = Date.now() / 1000 + 5; // a resume wrote again: the mtime moves past the record
+      utimesSync(child, resumed, resumed);
+      expect(await state()).toBe('running');
+      const quiet = Date.now() / 1000 - 200; // nothing since: STALE_MS reads the child done
+      utimesSync(child, quiet, quiet);
+      expect(await state()).toBe('done');
+    } finally { bgLens?.close(); rmSync(bgHome, { recursive: true, force: true }); }
+  });
 });

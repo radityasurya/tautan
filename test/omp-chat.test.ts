@@ -15,13 +15,15 @@ describe('parsePiTranscript (omp)', () => {
     const turns = parsePiTranscript(source, { images });
     expect(turns?.map(turn => [turn.id, turn.role, turn.text])).toEqual([
       ['u1', 'user', 'Read the screenshot.'],
-      ['a1', 'assistant', 'Running.'],
+      ['a1', 'assistant', ''],
+      ['a2', 'assistant', 'Running.'], // words after tool rows open the next Turn
       ['a3', 'assistant', 'new answer'], // the inactive fork never renders, but splits the merge
     ]);
     expect(turns![0]!.images).toEqual([{ imageId: 0 }]);
     expect(images).toEqual([{ mediaType: 'image/png', data: 'iVBORw0KGgo=' }, { mediaType: 'image/png', data: 'iVBORw0KGgo=' }]);
     expect(JSON.stringify(turns)).not.toContain('iVBORw0KGgo');
-    const [read, bash] = turns![1]!.tools;
+    const [read] = turns![1]!.tools;
+    const [bash] = turns![2]!.tools;
     expect(read).toMatchObject({ id: 'omp_call_1', name: 'read', image: '/tmp/shot.png', imageId: 1, result: 'Read image file [image/png]' });
     expect(bash).toMatchObject({ id: 'omp_call_2', name: 'bash', result: 'exit 1', isError: true });
   });
@@ -63,7 +65,7 @@ describe('ChatLens (omp)', () => {
     const chat = await lens.query(paneKey);
     expect(chat?.sessionId).toBe('omp-session');
     expect(chat?.agentKind).toBe('omp');
-    expect(chat?.turns).toHaveLength(3);
+    expect(chat?.turns).toHaveLength(4);
     expect(chat?.subagents).toEqual([]);
     await expect(lens.subagentList(paneKey)).resolves.toEqual([]);
     lens.close();

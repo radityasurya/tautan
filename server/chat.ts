@@ -30,7 +30,7 @@ export interface TranscriptIo {
   realpaths?(cwd: string, path: string, target: string): Promise<[string, string] | undefined>;
   /** The file's first `bytes` (a remote preview's read, capped at read time): `undefined`
    *  only when the file is unreadable — judging the cap is the caller's. */
-  first?(path: string, bytes: number, target: string): Promise<string | undefined>;
+  first?(path: string, bytes: number, target?: string): Promise<string | undefined>;
 }
 
 type Process = { pid?: number; name?: string; argv?: string[] };
@@ -171,6 +171,14 @@ export const localIo: TranscriptIo = {
     const handle = await open(path, 'r');
     try { return (await readHead(handle)).split('\n', 1)[0] ?? ''; } finally { await handle.close(); }
   },
+  async first(path, bytes) {
+    const handle = await open(path, 'r');
+    try {
+      const buffer = Buffer.alloc(bytes);
+      const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+      return buffer.subarray(0, bytesRead).toString('utf8');
+    } finally { await handle.close(); }
+  },
   async subagents(dir) {
     try {
       const info = await stat(dir);
@@ -241,6 +249,7 @@ const remoteIo: TranscriptIo = {
     return lines.length === 2 && lines[0] && lines[1] ? [lines[0]!, lines[1]!] : undefined;
   },
   first: async (path, bytes, target) => {
+    if (!target) return localIo.first!(path, bytes);
     // The read stops at `bytes` on the Host itself, and the adapter's 10 s RPC ceiling ends
     // a read that never would (a swapped-in FIFO).
     const result = await ssh(target, `head -c ${bytes} -- ${quoteShell(path)}`, 10_000);
@@ -451,6 +460,16 @@ function subagentsOf(agents: SubagentDir['agents']): Subagent[] {
  *  says it ended. The notification rides any entry kind, so this scans the raw lines. */
 export interface ParentDone { finished: Set<string>; notified: Set<string> }
 
+/** A background Task's launch receipt: the tool_result Claude returns at once when the child
+ *  starts, whose text begins "Async agent launched". The real finish rides a later
+ *  `<task-notification>`, so this result must not read as the call's end. */
+function launched(content: unknown): boolean {
+  if (typeof content === 'string') return content.trimStart().startsWith('Async agent launched');
+  if (!Array.isArray(content)) return false;
+  return content.some(block => typeof (block as { text?: unknown } | null)?.text === 'string' &&
+    (block as { text: string }).text.trimStart().startsWith('Async agent launched'));
+}
+
 export function parentFinished(jsonl: string): ParentDone {
   const calls = new Map<string, boolean>(); // Task tool_use id → started with run_in_background
   const results = new Set<string>();
@@ -484,15 +503,22 @@ export function parentFinished(jsonl: string): ParentDone {
     for (const item of content) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const block = item as Record<string, unknown>;
-      if (block.type === 'tool_use' && (block.name === 'Task' || block.name === 'Agent') && typeof block.id === 'string')
-        calls.set(block.id, (block.input as Record<string, unknown> | undefined)?.run_in_background === true);
-      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') results.add(block.tool_use_id);
+      if (block.type === 'tool_use' && (block.name === 'Task' || block.name === 'Agent') && typeof block.id === 'string') {
+        // Claude writes run_in_background as the string "true" in many transcripts; both spell
+        // the same background launch, and only the string form was reading as foreground.
+        const background = (block.input as Record<string, unknown> | undefined)?.run_in_background;
+        calls.set(block.id, background === true || background === 'true');
+      }
+      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string' && !launched(block.content)) results.add(block.tool_use_id);
     }
   }
   const finished = new Set<string>();
   for (const [id, background] of calls) if (background ? notified.has(id) : results.has(id)) finished.add(id);
   return { finished, notified };
 }
+
+/** The stop reasons of a final message: a subagent may end on a stop sequence, not end_turn. */
+const FINAL_STOPS = new Set(['end_turn', 'stop_sequence']);
 
 /** Whether a conversation's tail ends with a final assistant message, Claude Code's own
  *  end-of-run record. Most finished subagents miss it — the answer goes to the parent as the
@@ -511,7 +537,7 @@ function endsDone(tail: string): boolean {
     if (entry.type !== 'assistant' && entry.type !== 'user') continue; // reminders and attachments ride last
     const message = entry.message;
     return entry.type === 'assistant' && !!message && typeof message === 'object' && !Array.isArray(message)
-      && (message as Record<string, unknown>).stop_reason === 'end_turn';
+      && FINAL_STOPS.has((message as Record<string, unknown>).stop_reason as string);
   }
   return false;
 }
@@ -520,6 +546,156 @@ function endsDone(tail: string): boolean {
 // (a slow build) reads done until its next write or the parent's record corrects it.
 const STALE_MS = 90_000;
 const TAIL_BYTES = 16_384;
+
+/** What a pi parent transcript records about one `Agent` tool call (pi-agents' subagents). */
+export interface PiAgentCall {
+  toolCallId: string;
+  at?: number;
+  /** The child's id (`agent-N`), from the toolResult's `details.id`; absent until the spawn answers. */
+  agentId?: string;
+  type?: string;
+  description?: string;
+  prompt?: string;
+  /** The child's cwd: the toolResult's `details.cwd`, else the call's `working_dir`. */
+  cwd?: string;
+  /** A foreground call's toolResult already carried a status: it ended. */
+  done?: boolean;
+}
+
+export interface PiAgentScan { calls: PiAgentCall[]; finished: Set<string>; links: Map<string, string> }
+
+const stamp = (value: unknown): number | undefined => {
+  const parsed = typeof value === 'string' ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+/** pi-agents' subagent records in a parent transcript: the `Agent` toolCalls, the toolResults
+ *  whose `details.id` names each child (`agent-N`), and the `agent-result` custom entries that
+ *  say one finished. A call whose toolResult has not landed yet carries no agentId: it stays
+ *  out of the tree until the parent records the spawn. */
+export function scanPiAgents(jsonl: string): PiAgentScan {
+  const calls: PiAgentCall[] = [];
+  const byCall = new Map<string, PiAgentCall>();
+  const finished = new Set<string>();
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.includes('"Agent"') && !line.includes('agent-result')) continue;
+    let entry: Record<string, unknown>;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      entry = value as Record<string, unknown>;
+    } catch { continue; }
+    if (entry.type === 'custom_message' && entry.customType === 'agent-result') {
+      const id = text(record(entry.details).id);
+      if (id) finished.add(id);
+      continue;
+    }
+    if (entry.type !== 'message') continue;
+    const message = record(entry.message);
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+      const at = stamp(entry.timestamp);
+      for (const item of message.content) {
+        const block = record(item);
+        if (block.type !== 'toolCall' || block.name !== 'Agent' || typeof block.id !== 'string') continue;
+        const args = record(block.arguments);
+        const call: PiAgentCall = { toolCallId: block.id, ...(at !== undefined ? { at } : {}), ...(text(args.subagent_type) ? { type: text(args.subagent_type) } : {}), ...(text(args.description) ? { description: text(args.description) } : {}), ...(text(args.prompt) ? { prompt: text(args.prompt) } : {}), ...(text(args.working_dir) ? { cwd: text(args.working_dir) } : {}) };
+        calls.push(call);
+        byCall.set(call.toolCallId, call);
+      }
+    } else if (message.role === 'toolResult' && message.toolName === 'Agent' && typeof message.toolCallId === 'string') {
+      const details = record(message.details);
+      let call = byCall.get(message.toolCallId);
+      if (!call) { call = { toolCallId: message.toolCallId }; calls.push(call); byCall.set(message.toolCallId, call); }
+      const id = text(details.id);
+      if (id) call.agentId = id;
+      const cwd = text(details.cwd);
+      if (cwd) call.cwd = cwd;
+      if (typeof details.status === 'string' && details.status !== 'running') call.done = true;
+    }
+  }
+  const links = new Map<string, string>();
+  for (const call of calls) if (call.agentId) links.set(call.toolCallId, call.agentId);
+  return { calls, finished, links };
+}
+
+/** pi's per-project directory under the sessions root: the cwd without its boundary slashes,
+ *  every inner `/` a `-`, wrapped in double dashes — dots stay (observed across this host's
+ *  sessions tree: all 37 dirs read `--…--`). */
+const piSlug = (cwd: string) => `--${cwd.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\//g, '-')}--`;
+
+/** A pi session file's name starts with its header's ISO timestamp, dashes for `:` and `.`:
+ *  `2026-10-07T15-56-11-632Z_<uuid>.jsonl`. */
+const piNameStamp = (name: string): number | undefined => {
+  const found = name.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d+)Z/);
+  return found ? stamp(`${found[1]}T${found[2]}:${found[3]}:${found[4]}.${found[5]}Z`) : undefined;
+};
+
+// The spawn window: a child's file appears within seconds of its call. The low slack covers a
+// clock tick; past the high bound the file belongs to another conversation.
+const PI_SPAWN_SLACK = 2_000;
+const PI_SPAWN_WINDOW = 30_000;
+// ponytail: one head read per candidate file, once per spawn; a system line past this pushes
+// the first user message out of the window and the session_info name matches instead — grow it
+// if that ever shows up.
+const PI_HEAD = 131_072;
+
+/** The child-recognition fields of a session file's first bytes: its `session_info` name and
+ *  its first user message's text — the spawn prompt, verbatim. */
+function piHead(source: string): { name?: string; user?: string } {
+  let name: string | undefined, user: string | undefined;
+  for (const line of source.split('\n')) {
+    if (!line) continue;
+    let entry: Record<string, unknown>;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      entry = value as Record<string, unknown>;
+    } catch { continue; } // the window's cut line
+    if (entry.type === 'session_info' && typeof entry.name === 'string') name = entry.name;
+    if (entry.type !== 'message') continue;
+    const message = entry.message;
+    const record = message && typeof message === 'object' && !Array.isArray(message) ? message as Record<string, unknown> : {};
+    if (record.role !== 'user') continue;
+    const first = Array.isArray(record.content) ? (record.content as Record<string, unknown>[]).find(item => item && typeof item === 'object' && !Array.isArray(item) && item.type === 'text') : undefined;
+    user = typeof first?.text === 'string' ? first.text : typeof record.content === 'string' ? record.content : undefined;
+    if (user !== undefined) break;
+  }
+  return { name, user };
+}
+
+/** Whether a pi child's tail ends with a final assistant message (`stopReason: 'stop'`), its
+ *  end-of-run record — the same one-signal rule as `endsDone`. */
+function endsStop(tail: string): boolean {
+  const lines = tail.split('\n');
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index];
+    if (!line) continue;
+    let entry: Record<string, unknown>;
+    try {
+      const value: unknown = JSON.parse(line);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      entry = value as Record<string, unknown>;
+    } catch { continue; } // a line the tail window cut
+    if (entry.type !== 'message') continue; // session_info and friends ride last
+    const message = entry.message;
+    const record = message && typeof message === 'object' && !Array.isArray(message) ? message as Record<string, unknown> : {};
+    if (record.role !== 'user' && record.role !== 'assistant') continue; // a trailing toolResult pair
+    return record.role === 'assistant' && record.stopReason === 'stop';
+  }
+  return false;
+}
+
+/** pi and omp subagents per Pane: the parent's scan (re-derived on each fresh parse), each
+ *  child's discovered session file, and each child's judged ending. */
+type PiAgents = {
+  sessionId: string;
+  callsKey: string;
+  scan: PiAgentScan;
+  paths: Map<string, string>; // agent-N → the child's session file
+  endings: Map<string, { mtime: number; done: boolean }>;
+  list: Subagent[];
+};
 
 export class ChatLens {
   /** ADR 0007: called once per new generation of any conversation (its cursor moved) —
@@ -531,11 +707,14 @@ export class ChatLens {
   private sessions = new Map<string, string>();
   /** Remembered pi session files per ssh target + id, stat-checked like `rollouts` on every use. */
   private piFiles: PiFiles = new Map();
+  /** Each pi Pane's subagent scan, children and judged endings, kept while the pane lives. */
+  private piAgents = new Map<string, PiAgents>();
   private subagents = new Map<string, Subagents>();
   /** The main transcript's completion records per Pane, re-derived only on a fresh parse. */
   private parents = new Map<string, { sessionId: string; parent: ParentDone }>();
-  /** Each subagent file's judged ending per Pane; the cached mtime says when to read again. */
-  private tails = new Map<string, { sessionId: string; tails: Map<string, { mtime: number; done: boolean }> }>();
+  /** Each subagent file's judged ending per Pane; the cached mtime says when to read again.
+   *  `recordedAt` is the mtime the parent's finish record stamped (fix 2's resume rule). */
+  private tails = new Map<string, { sessionId: string; tails: Map<string, { mtime: number; done: boolean; recordedAt?: number }> }>();
   private reads = new Map<string, Promise<Cached | undefined>>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -638,6 +817,8 @@ export class ChatLens {
     const target = await this.target(paneKey);
     const resolved = await resolveSession(this.hub, paneKey, this.io, this.home, target, this.piFiles);
     if (!resolved) return undefined;
+    // pi and omp: the tree rides the parent's own parse, which also refreshes the children.
+    if (resolved.agent === 'pi' || resolved.agent === 'omp') return (await this.value(paneKey))?.subagents ?? [];
     if (resolved.agent !== 'claude') return []; // only Claude Code writes a subagents directory
     const cwd = (await this.hub.state()).panes.find(item => item.key === paneKey)?.cwd;
     if (!cwd) return undefined;
@@ -748,8 +929,11 @@ export class ChatLens {
       dir = transcriptDir(cwd, resolved.sessionId, home);
       path = agent ? join(dir, 'subagents', `agent-${agent}.jsonl`) : transcriptPath(cwd, resolved.sessionId, home);
     } else {
-      if (agent) return; // pi and omp keep no subagent directory either
-      path = resolved.path;
+      // pi and omp: the parent file itself; a subagent view reads the mapped child session.
+      if (agent) {
+        path = this.piAgents.get(paneKey)?.paths.get(agent);
+        if (!path) return; // the route pre-checks; a race only misses the cache
+      } else path = resolved.path;
     }
     const signature = await this.io.stat(path, target);
     if (!signature) { this.cache.delete(cacheKey); return; }
@@ -757,6 +941,10 @@ export class ChatLens {
     if (cached?.sessionId === session && sameSignature(cached.signature, signature)) {
       // The transcript stands still while a subagent runs; its own file keeps moving.
       if (dir) cached.subagents = await this.states(paneKey, join(dir, 'subagents'), target, session, (await this.list(paneKey, join(dir, 'subagents'), target, session))?.list ?? cached.subagents);
+      else if (!agent) {
+        const pi = this.piAgents.get(paneKey);
+        if (pi?.sessionId === session) cached.subagents = await this.piStates(pi, target);
+      }
       return cached;
     }
     let list: Subagent[] = [];
@@ -772,13 +960,22 @@ export class ChatLens {
     // sit in another subagent's file, which this scan does not read — those fall back to the
     // ending and freshness rules.
     if (subagentDir && !agent) this.parents.set(paneKey, { sessionId: session, parent: parentFinished(jsonl) });
+    let piLinks: Map<string, string> | undefined;
+    if (resolved.agent === 'pi' || resolved.agent === 'omp') {
+      if (agent) list = this.piAgents.get(paneKey)?.list ?? []; // the parent's tree rides the child view
+      else {
+        const pi = await this.piScan(paneKey, session, resolved.path, jsonl, target);
+        list = pi.list;
+        piLinks = pi.scan.links;
+      }
+    }
     const images: TranscriptImage[] = [];
     const previews: string[] = [];
     const previewFiles = new Map<number, string>();
     const outputs = new Map<string, string>();
     const details = new Map<string, string>();
-    const subagentIds = new Map<string, string>();
-    for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
+    const subagentIds = piLinks ?? new Map<string, string>();
+    if (!piLinks) for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
     const opts: ParseOpts = { images, previews, previewFiles, outputs, details, subagentIds, ...(agent ? { sidechain: true } : {}) };
     if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
     const parsed = resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
@@ -867,6 +1064,14 @@ export class ChatLens {
       if (mtime === undefined) { out.push(agent); continue; } // the file is gone; the listing catches up when the directory moves
       const recorded = records && agent.toolUseId !== undefined && (records.finished.has(agent.toolUseId) || records.notified.has(agent.id));
       let done = Boolean(recorded);
+      if (recorded) {
+        // A finish is not forever: resuming the subagent appends newer bytes, so a file moved
+        // past the mtime the record stamped judges fresh again (STALE_MS still reads a quiet
+        // one done). The stamp rides the tails entry so one map serves both rules.
+        const mark = cache.tails.get(agent.id);
+        if (mark?.recordedAt === undefined) cache.tails.set(agent.id, { mtime, done: true, recordedAt: mtime });
+        else if (mtime > mark.recordedAt) done = false;
+      }
       if (!done) {
         let tail = cache.tails.get(agent.id);
         if (tail?.mtime !== mtime) {
@@ -875,7 +1080,7 @@ export class ChatLens {
             try { ending = endsDone(await readTail(join(dir, `agent-${agent.id}.jsonl`), TAIL_BYTES, target)); }
             catch { /* a failing read leaves the judgement to freshness */ }
           }
-          tail = { mtime, done: ending };
+          tail = { mtime, done: ending, recordedAt: tail?.recordedAt };
           cache.tails.set(agent.id, tail);
         }
         done = tail.done || Date.now() - mtime > STALE_MS;
@@ -883,6 +1088,115 @@ export class ChatLens {
       out.push({ ...agent, updatedAt: mtime, state: done ? 'done' : 'running' });
     }
     return out;
+  }
+
+  /** The pi scan of one parent parse: the parent's records re-derive every time, the child
+   *  files are discovered only when the calls moved, and the states refresh always — the
+   *  transcript stands still while a child runs, its own file does not. */
+  private async piScan(paneKey: string, sessionId: string, parentPath: string, jsonl: string, target: string | undefined): Promise<PiAgents> {
+    const scan = scanPiAgents(jsonl);
+    const callsKey = Bun.hash(JSON.stringify([scan.calls.map(call => [call.toolCallId, call.agentId ?? '', call.at ?? 0, call.done ?? false]), [...scan.finished].sort()])).toString(36);
+    let cache = this.piAgents.get(paneKey);
+    if (cache?.sessionId !== sessionId) {
+      cache = { sessionId, callsKey: '', scan, paths: new Map(), endings: new Map(), list: [] };
+      this.piAgents.set(paneKey, cache);
+    }
+    const grew = cache.callsKey !== callsKey;
+    cache.callsKey = callsKey;
+    cache.scan = scan;
+    if (grew) await this.piDiscover(cache, parentPath, target);
+    cache.list = await this.piStates(cache, target);
+    return cache;
+  }
+
+  /** Locate each new subagent's session file. Candidates are the sessions dir's files named
+   *  within the spawn window (pi's file names start with the header's ISO timestamp); the one
+   *  whose first user message is the call's exact prompt wins, its `session_info` name breaks
+   *  ties. An already-mapped id (a resume) keeps its file: the call is matched by id, not
+   *  prompt. Works over the remote io too: one find, then one head per candidate. */
+  private async piDiscover(cache: PiAgents, parentPath: string, target: string | undefined): Promise<void> {
+    const find = this.io.find, first = this.io.first;
+    if (!find || !first) return;
+    const parentDir = parentPath.split('/').slice(0, -1).join('/');
+    const root = target ? '$HOME/.pi/agent/sessions' : join(this.home, '.pi', 'agent', 'sessions');
+    const listings = new Map<string, string[] | null>();
+    const heads = new Map<string, { name?: string; user?: string }>();
+    for (const call of cache.scan.calls) {
+      if (!call.agentId || cache.paths.has(call.agentId) || call.prompt === undefined || call.at === undefined) continue;
+      const dir = call.cwd !== undefined ? join(root, piSlug(call.cwd)) : parentDir;
+      let names = listings.get(dir);
+      if (names === undefined) {
+        try { names = (await find(dir, '*.jsonl', target)) ?? null; } catch { names = null; } // a failing walk leaves the child unfound
+        listings.set(dir, names);
+      }
+      if (!names) continue;
+      const taken = new Set(cache.paths.values());
+      const candidates = names.filter(name => {
+        const at = piNameStamp(name.split('/').at(-1) ?? '');
+        return !taken.has(name) && at !== undefined && at >= call.at! - PI_SPAWN_SLACK && at <= call.at! + PI_SPAWN_WINDOW;
+      }).sort(); // chronological: parallel spawns keep file order
+      let byPrompt: string | undefined, byName: string | undefined;
+      for (const name of candidates) {
+        let head = heads.get(name);
+        if (head === undefined) { head = piHead(await first(name, PI_HEAD, target).catch(() => '') ?? ''); heads.set(name, head); }
+        if (byPrompt === undefined && head.user === call.prompt) byPrompt = name;
+        if (byName === undefined && call.description !== undefined && head.name === `agent: ${call.description}`) byName = name;
+      }
+      const hit = byPrompt ?? byName;
+      if (hit) cache.paths.set(call.agentId, hit);
+    }
+  }
+
+  /** The pi tree with each subagent judged `running` or `done`: done when the parent's records
+   *  name it (an `agent-result` entry, or a foreground toolResult that carried a status), else
+   *  its own file ends with a final assistant message, else quiet past STALE_MS. One stat per
+   *  child per refresh — ponytail: N round trips where Claude's mtimes listing takes one; batch
+   *  them into one listing if remote Panes with many subagents ever show up. */
+  private async piStates(cache: PiAgents, target: string | undefined): Promise<Subagent[]> {
+    const per = new Map<string, { first: PiAgentCall; last: PiAgentCall; done: boolean }>();
+    for (const call of cache.scan.calls) {
+      if (!call.agentId) continue;
+      const held = per.get(call.agentId);
+      if (!held) per.set(call.agentId, { first: call, last: call, done: Boolean(call.done) });
+      else {
+        if ((call.at ?? 0) < (held.first.at ?? 0)) held.first = call;
+        if ((call.at ?? 0) >= (held.last.at ?? 0)) held.last = call;
+        held.done ||= Boolean(call.done);
+      }
+    }
+    const signatures = new Map<string, TranscriptSignature>();
+    const ids = [...per.keys()].filter(id => cache.paths.has(id));
+    await Promise.all(ids.map(async id => {
+      const found = await this.io.stat(cache.paths.get(id)!, target).catch(() => undefined);
+      if (found) signatures.set(id, found);
+    }));
+    const out: Subagent[] = [];
+    for (const [id, { first, last, done: recorded }] of per) {
+      const description = last.description ?? first.description;
+      const sub: Subagent = { id, ...(last.type ? { type: last.type } : {}), ...(description ? { description } : {}), toolUseId: last.toolCallId, ...(first.at !== undefined ? { at: first.at } : {}) };
+      let done = recorded || cache.scan.finished.has(id);
+      const signature = signatures.get(id);
+      if (signature) {
+        const numeric = signature.mtime.trim() !== '' ? Number(signature.mtime) : Number.NaN; // Number('') is 0
+        const mtime = Number.isFinite(numeric) ? numeric : stamp(signature.mtime);
+        if (mtime !== undefined && Number.isFinite(mtime)) {
+          sub.updatedAt = mtime;
+          if (!done) {
+            let ending = cache.endings.get(id);
+            if (ending?.mtime !== mtime) {
+              let stop = false;
+              try { stop = endsStop(await this.io.tail?.(cache.paths.get(id)!, TAIL_BYTES, target) ?? ''); } catch { /* freshness judges */ }
+              ending = { mtime, done: stop };
+              cache.endings.set(id, ending);
+            }
+            done = ending.done || Date.now() - mtime > STALE_MS;
+          }
+        }
+      }
+      if (done || sub.updatedAt !== undefined) sub.state = done ? 'done' : 'running';
+      out.push(sub);
+    }
+    return out.sort((a, b) => (a.at ?? Number.MAX_SAFE_INTEGER) - (b.at ?? Number.MAX_SAFE_INTEGER));
   }
 
   private schedule(paneKey: string, agent?: string): void {

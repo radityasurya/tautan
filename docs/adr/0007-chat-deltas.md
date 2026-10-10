@@ -16,7 +16,9 @@ transcripts, so the protocol cannot lean on Claude's file shape.
 
 `ChatLens` already caches parsed turns per Pane on the transcript's `inode + size + mtime`
 signature; a change means one fresh parse of the whole file. That parse is holistic:
-adjacent same-role entries merge into one Turn, a tool result attaches by id to a tool row
+adjacent same-role entries merge into one Turn (amended 2026-10-10: an Agent's text after
+its tool rows opens a new Turn, so text and tools read in the order they happened; ids stay
+native, the opening entry's), a tool result attaches by id to a tool row
 in an earlier Turn, z.ai outputs pair with calls from earlier messages, image ids are
 numbered in file order, and pi renders only the branch that ends at the last entry.
 
@@ -107,8 +109,11 @@ merged list and do not change.
 - The inline tool-result slice becomes the last 40 lines in the current tail-keeping
   shape; `resultLines` still reports the whole. The pasted-image caps
   (`PASTED_MAX/PER_TURN/TOTAL`, the 4 MB budget) are removed once images ride by id. The
-  4 000-character caps on Turn text and tool `detail` stay: they bound echoes, not
-  results. `RESULT_MAX` stays as the Hub's per-image memory bound.
+  4 000-character cap on tool `detail` stays: it bounds echoes, not results. Turn text
+  (amended 2026-10-10): each source text block caps at 16 000 characters before it
+  merges and the merged Turn caps not at all — a Turn is a stretch of an agent run, so its end,
+  the final summary, must survive; the old 4 000 cap on the merged text cut pi's final
+  ~23 % of assistant text. `RESULT_MAX` stays as the Hub's per-image memory bound.
 
 ### ETag, and the wake-up
 
