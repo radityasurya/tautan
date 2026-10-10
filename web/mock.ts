@@ -654,7 +654,7 @@ const MOCK_REPOS: Record<string, BranchList> = {
   // One checkout: the sheet is artboard 3, branches only.
   'mbp/herdr/digivaley': {
     current: 'main',
-    branches: ['main', 'deps/astro-5', 'seo/listings'],
+    branches: ['main', 'deps/astro-5', 'fix/ios-zoom', 'seo/listings'],
     worktrees: [{ path: `${HOME}/projects/digivaley.com`, branch: 'main', head: '5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a', current: true }],
   },
 };

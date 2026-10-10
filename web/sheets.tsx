@@ -5,7 +5,7 @@ import type { BranchList, Worktree } from '../shared/types.ts';
 import { Toggle } from './hosts.tsx';
 import { FolderBrowser } from './folders.tsx';
 import { basename } from './folders-logic.ts';
-import { Check, ChevronRight } from './icons.tsx';
+import { Check } from './icons.tsx';
 import { tildePath } from './spaces.ts';
 import { AlertDialog, Button, Caption, Chip, Sheet as KitSheet, TextInput, usePal } from './halaska-kit';
 
@@ -303,12 +303,10 @@ export function MenuSheet({
   );
 }
 
-/** A small tinted label on a branch or worktree row. */
-function Tag({ tone, children }: { tone: 'accent' | 'warn'; children: ReactNode }) {
+/** A worktree's `locked` or `prunable` mark, in the warn tint. */
+function Tag({ children }: { children: ReactNode }) {
   return (
-    <span className={`shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[11.5px] ${tone === 'accent' ? 'bg-accent/12 text-accent' : 'bg-warn/15 text-[color-mix(in_srgb,var(--warn)_65%,var(--fg))]'}`}>
-      {children}
-    </span>
+    <span className="shrink-0 rounded-md bg-warn/12 px-1.5 py-px text-[11px] text-[color-mix(in_srgb,var(--warn)_65%,var(--fg))]">{children}</span>
   );
 }
 
@@ -341,9 +339,8 @@ export function BranchSheet({
   const many = list.worktrees.length > 1;
   // A known code reads as a sentence; anything else the Hub sent is git's own stderr.
   const refused = Boolean(error) && !(error in WHY) && !/^http \d+$/.test(error);
-  const ROW = 'flex min-h-12 w-full items-center gap-2.5 px-6 py-1.5 text-left outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)]';
   return (
-    <Sheet open={open} title={many ? 'Branch' : 'Switch branch'} onClose={onClose} flush>
+    <Sheet open={open} title="Switch branch" onClose={onClose} flush>
       <div className="flex flex-col" style={FLUSH_BODY}>
         <div className="shrink-0 border-b border-border px-6 pb-3">
           <div className="-mt-3.5 truncate">
@@ -371,18 +368,18 @@ export function BranchSheet({
                         submit(branch);
                       }
                     }}
-                    className={`${ROW} font-mono text-[14px] text-fg disabled:cursor-default ${
-                      current ? 'bg-surface' : failed ? 'bg-danger/10' : 'hover:bg-bg active:bg-bg disabled:opacity-40'
+                    className={`${MENU_ROW} font-mono text-[14px] text-fg outline-none focus-visible:bg-bg focus-visible:shadow-[inset_2px_0_0_var(--accent)] disabled:cursor-default ${
+                      current ? 'bg-surface' : 'hover:bg-bg active:bg-bg disabled:opacity-40'
                     }`}
                   >
                     <span className="min-w-0 flex-1 truncate">{branch}</span>
                     {current ? (
                       <>
                         <span className="font-sans text-caption text-muted">current</span>
-                        <Check size={18} className="shrink-0 text-accent" />
+                        <Check size={16} className="shrink-0 text-accent" />
                       </>
                     ) : elsewhere ? (
-                      <Tag tone="accent">in {basename(elsewhere.path)}</Tag>
+                      <span className="shrink-0 font-sans text-caption text-muted">in {basename(elsewhere.path)}</span>
                     ) : busy && pick === branch ? (
                       <span className="font-sans text-caption text-muted">Switching…</span>
                     ) : failed ? (
@@ -395,8 +392,8 @@ export function BranchSheet({
           </ul>
           {error &&
             (refused ? (
-              <div role="alert" className="mx-4 mt-2 flex flex-col gap-2 rounded-card border border-danger/35 bg-danger/8 p-3">
-                <p className="text-caption font-semibold text-danger">git refused the switch</p>
+              <div role="alert" className="mx-6 mt-2.5 flex flex-col gap-1.5 rounded-chip bg-danger/10 p-3">
+                <p className="text-[13px] font-semibold text-danger">git refused the switch</p>
                 <pre className="font-mono text-[11.5px] leading-normal whitespace-pre-wrap text-danger [overflow-wrap:anywhere]">{error}</pre>
               </div>
             ) : (
@@ -406,7 +403,7 @@ export function BranchSheet({
             ))}
           {many && (
             <>
-              <h3 className={`${MENU_HEADING} mt-3 border-t border-border/60 pt-4`}>Worktrees</h3>
+              <h3 className={`${MENU_HEADING} mt-1.5 border-t border-border/60`}>Worktrees</h3>
               <ul>
                 {list.worktrees.map((w) => (
                   <li key={w.path}>
@@ -414,18 +411,18 @@ export function BranchSheet({
                       type="button"
                       aria-current={w.current ? 'true' : undefined}
                       onClick={() => onOpen(w)}
-                      className={`flex min-h-12 w-full flex-col gap-0.5 px-6 py-2.5 text-left outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)] ${
+                      className={`flex min-h-12 w-full flex-col justify-center gap-0.5 px-6 py-1.5 text-left outline-none focus-visible:bg-bg focus-visible:shadow-[inset_2px_0_0_var(--accent)] ${
                         w.current ? 'bg-surface' : 'hover:bg-bg active:bg-bg'
                       }`}
                     >
-                      <span className="flex w-full min-w-0 items-center gap-2">
-                        <span className="min-w-0 truncate text-body font-semibold text-fg">{basename(w.path)}</span>
+                      <span className="flex w-full min-w-0 items-baseline gap-2">
+                        <span className="min-w-0 truncate text-body text-fg">{basename(w.path)}</span>
                         {/* A short SHA never truncates; a long branch name may. */}
-                        <span className={`font-mono text-caption text-fg/80 ${w.branch ? 'min-w-0 truncate' : 'shrink-0'}`}>{w.branch ?? `@${w.head.slice(0, 7)}`}</span>
-                        <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                          {w.locked && <Tag tone="warn">locked</Tag>}
-                          {w.prunable && <Tag tone="warn">prunable</Tag>}
-                          {w.current ? <span className="text-caption text-muted">current</span> : <ChevronRight className="text-muted" />}
+                        <span className={`font-mono text-caption text-muted ${w.branch ? 'min-w-0 truncate' : 'shrink-0'}`}>{w.branch ?? `@${w.head.slice(0, 7)}`}</span>
+                        <span className="ml-auto flex shrink-0 items-baseline gap-1.5">
+                          {w.locked && <Tag>locked</Tag>}
+                          {w.prunable && <Tag>prunable</Tag>}
+                          {w.current && <span className="text-caption text-muted">current</span>}
                         </span>
                       </span>
                       <span dir="rtl" className="block w-full truncate text-left font-mono text-caption text-muted">
@@ -438,7 +435,7 @@ export function BranchSheet({
             </>
           )}
         </div>
-        <p className="shrink-0 border-t border-border px-6 pt-3.5 pb-[max(env(safe-area-inset-bottom),24px)] text-caption leading-normal text-muted">
+        <p className="shrink-0 border-t border-border px-6 pt-3 pb-[max(env(safe-area-inset-bottom),24px)] text-caption text-muted">
           {many
             ? 'Tap a worktree to browse its files and see its diff. Agents create these with git worktree. tautan never creates or removes one.'
             : 'Switching changes the files every Pane in this Workspace sees. tautan never creates, commits or stashes.'}

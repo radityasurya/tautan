@@ -15,7 +15,7 @@ import { bracketMatching, HighlightStyle, syntaxHighlighting } from '@codemirror
 import { tags as t } from '@lezer/highlight';
 import { AlertDialog } from './halaska-kit';
 import { lineBreakOf } from './folders-logic.ts';
-import { Warn } from './icons.tsx';
+import { ON_WARN } from './blocked.tsx';
 import { why } from './sheets.tsx';
 
 /** Each language is its own chunk, loaded into a Compartment once the editor is up. */
@@ -57,9 +57,10 @@ const THEME = EditorView.theme({
   '.cm-scroller': { fontFamily: 'var(--font-mono, ui-monospace, monospace)', lineHeight: '1.5', overscrollBehavior: 'contain' },
   '.cm-content': { caretColor: 'var(--accent)', padding: '10px 0' },
   '.cm-line': { padding: '0 12px 0 10px' },
-  '.cm-gutters': { backgroundColor: 'var(--surface)', color: 'var(--muted)', border: 'none', borderRight: '1px solid var(--border)' },
-  '.cm-lineNumbers .cm-gutterElement': { fontSize: '13px', padding: '0 8px 0 10px', minWidth: '30px' },
-  '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--fg) 5%, transparent)' },
+  '.cm-gutters': { backgroundColor: 'transparent', color: 'var(--muted)', border: 'none' },
+  // 24 px is the 16 px text's line, so a number sits on its line's middle.
+  '.cm-lineNumbers .cm-gutterElement': { fontSize: '13px', lineHeight: '24px', padding: '0 8px 0 10px', minWidth: '30px' },
+  '.cm-activeLine': { backgroundColor: 'var(--surface)' },
   '&.cm-focused .cm-matchingBracket': { backgroundColor: 'color-mix(in srgb, var(--accent) 22%, transparent)' },
   '&.cm-focused .cm-nonmatchingBracket': { color: 'var(--danger)' },
 });
@@ -293,25 +294,25 @@ export default function Editor({
       </header>
 
       {status === 'conflict' && (
-        <div role="alert" className="mx-3 my-3 flex shrink-0 flex-col gap-2.5 rounded-card border border-warn/50 bg-warn/10 p-3.5">
-          <div className="flex gap-2.5">
-            <Warn className="mt-px shrink-0 text-warn" />
-            <div className="flex flex-col gap-1">
-              <p className="text-body font-semibold">Changed on disk after you opened it</p>
-              <p className="text-[13.5px] leading-snug">
-                Your edits are not saved, so nothing an Agent wrote is lost. Copy your text, then reload to see the new version.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2 pl-[30px]">
-            <button type="button" onClick={copy} className="press min-h-11 rounded-chip border border-warn/50 bg-bg px-3.5 text-body font-medium">
+        // The blocked card's shape: it asks for a decision the same way.
+        <div role="alert" className="mx-3 mt-3 flex shrink-0 flex-col gap-2.5 rounded-card border border-warn/35 bg-warn/8 p-3.5">
+          {/* The warn colour pulled toward the text colour, so a 12 px heading keeps its contrast in light themes. */}
+          <p className="flex items-center gap-2 text-[12px] font-semibold text-[color-mix(in_srgb,var(--warn)_65%,var(--fg))]">
+            <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-warn" />
+            Changed on disk after you opened it
+          </p>
+          <p className="text-[14px] leading-snug">
+            Your edits are not saved, so nothing an Agent wrote is lost. Copy your text, then reload to see the new version.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={copy} className="press min-h-[38px] rounded-chip border border-border bg-bg px-3.5 text-[13px] font-medium">
               <span aria-live="polite">{copied ? 'Copied' : 'Copy my text'}</span>
             </button>
-            {/* The warn colour pulled toward the text colour, so the label keeps its contrast in both themes. */}
             <button
               type="button"
               onClick={reload}
-              className="press min-h-11 rounded-chip bg-[color-mix(in_srgb,var(--warn)_70%,var(--fg))] px-4 text-body font-semibold text-bg"
+              className="press min-h-[38px] rounded-chip bg-warn px-4 text-[13px] font-semibold"
+              style={{ color: ON_WARN }}
             >
               Reload
             </button>
@@ -324,7 +325,7 @@ export default function Editor({
         </p>
       )}
 
-      <div ref={host} className="min-h-0 flex-1" />
+      <div ref={host} className={`min-h-0 flex-1 ${status === 'conflict' ? 'mt-3 border-t border-border' : ''}`} />
 
       <AlertDialog
         open={leaving !== null}

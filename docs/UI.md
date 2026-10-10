@@ -655,25 +655,30 @@ Agents screen, which reads through the Workspace's first Pane. It opens at `dir`
 Workspace cwd, else the Pane cwd.
 
 Header: Back, the Workspace label over `Files · <Host>`, the **branch chip**, and a **Diff**
-link to `#/diff/<workspaceKey>`. The body is the folder browser (`FolderBrowser`, the same one
+link (accent text) to `#/diff/<workspaceKey>`. The body is the folder browser (`FolderBrowser`, the same one
 the sheets use, with files): crumbs, **Filter**, **Hidden**, folders first. Opening a file
 first replaces the hash with `?dir=<its folder>`, so Back from the file returns to that
 folder, not to wherever Files first opened. Desktop is the same single column, centred.
 
 ### The branch chip and sheet
 
-The chip (`BranchChip` in `web/diff.tsx`) shows the checkout's branch in mono, or
-`@<short sha>` on a detached HEAD. It renders nothing until the Hub answers
+The chip (`BranchChip` in `web/diff.tsx`) is a small mono chip — 11 px text, a hairline border,
+26 px tall inside a 44 px tap target — with a small chevron. It shows the checkout's branch,
+or `@<short sha>` on a detached HEAD. It renders nothing until the Hub answers
 `GET /api/workspaces/:key/branches`, and nothing on any error, so a folder outside a
 repository has no chip. It sits in the Files and Diff headers only.
 
-Tapping it opens the branch sheet (`BranchSheet` in `web/sheets.tsx`) on a fresh list:
+Tapping it opens the branch sheet (`BranchSheet` in `web/sheets.tsx`) on a fresh list. It is
+the standard `Sheet`, titled **Switch branch**, with the Workspace and Host under the title
+(`· local branches` when there is one checkout), and its rows and headings are the menu sheet's
+(`MENU_ROW`, `MENU_HEADING`):
 
-- One row per local branch, in mono. The current one is checked, says `current`, and is
-  disabled. Tapping another posts `POST …/switch {branch}`; the row reads `Switching…`, and on
+- One row per local branch, in mono. The current one sits on the surface colour, is checked,
+  says `current`, and is disabled. Tapping another posts `POST …/switch {branch}`; the row reads `Switching…`, and on
   success the sheet closes and the chip and the list under it refresh.
-- git's refusal shows verbatim: the row turns red with `not switched`, and a red box under
-  the list reads `git refused the switch` over git's own stderr in mono. A known code reads as
+- git's refusal shows verbatim: the row says `not switched` in the danger colour, and a
+  danger-tinted block under the list reads `git refused the switch` over git's own stderr in
+  mono. A known code reads as
   a sentence instead (`git took too long, so tautan stopped waiting`, `That branch is gone`,
   `Not a git repository`, `That worktree is gone`).
 - The footer: `Switching changes the files every Pane in this Workspace sees. tautan never
@@ -683,18 +688,18 @@ tautan never creates, commits, stashes or force-switches; the Hub runs a plain s
 
 ### Worktrees
 
-When the repository has more than one worktree, the sheet is titled **Branch** and splits into
-**Branches** and **Worktrees**:
+When the repository has more than one worktree, the sheet drops `· local branches` and splits
+into **Branches** and **Worktrees**:
 
-- A worktree row is its folder name in bold, its branch in mono (or `@<short sha>` when
-  detached), and its path, tilde-shortened and truncated from the left. The checkout the list
-  is about says `current`; `locked` and `prunable` show as amber tags; the others carry a
-  chevron.
+- A worktree row is its folder name, its branch in muted mono (or `@<short sha>` when
+  detached) beside it, and its path under it in muted mono, tilde-shortened and truncated from
+  the left. The checkout the list is about is on the surface colour and says `current`;
+  `locked` and `prunable` show as tags in the warn tint.
 - Tapping a worktree closes the sheet and opens Files there:
   `#/file/<paneKey>?dir=<path>&worktree=<path>`. The Workspace's own checkout (the deepest
   worktree holding the Workspace cwd) opens plainly, without `worktree=`.
-- A branch checked out in another worktree carries `in <worktree name>`; tapping it opens that
-  worktree instead of switching.
+- A branch checked out in another worktree carries a muted `in <worktree name>`; tapping it
+  opens that worktree instead of switching.
 - The footer: `Tap a worktree to browse its files and see its diff. Agents create these with
   git worktree. tautan never creates or removes one.`
 
@@ -746,7 +751,8 @@ HTML, CSS, Python, YAML) is its own chunk, loaded into a Compartment after the e
   `● Edited` (warn), `Saving…`, `Saved` (ok), `● Not saved` (danger). **Save** is enabled only
   with unsaved edits; `⌘S` / `Ctrl+S` saves too.
 - Text is 16 px, so iOS does not zoom; line numbers, history, bracket matching, line wrapping
-  and Tab to indent. Syntax colours come from the theme's `--ansi-*` palette. There is no
+  and Tab to indent. The editor reads only CSS variables (`--bg`, `--fg`, `--muted`, `--surface`, `--accent`, and `--ansi-*` for
+  syntax), so it follows light, dark and the named palettes; the active line is `--surface`. There is no
   drawn selection, so iOS keeps its own caret and handles. Autocorrect and capitalisation are
   off.
 - The bytes round-trip. The doc splits and joins on the file's own line break (CRLF, a lone
@@ -757,9 +763,10 @@ HTML, CSS, Python, YAML) is its own chunk, loaded into a Compartment after the e
   browser's own leave prompt guards a reload or a closed tab while edits are unsaved.
 
 **Changed on disk (412).** When the file changed since it was opened, nothing is written.
-An amber banner reads **Changed on disk after you opened it** and `Your edits are not saved,
-so nothing an Agent wrote is lost. Copy your text, then reload to see the new version.`, with
-**Copy my text** and **Reload**. **Save** is disabled and the status reads `● Not saved`. There
+A banner in the blocked card's shape (`border-warn/35 bg-warn/8`, a warn dot and a 12 px
+heading) reads **Changed on disk after you opened it** and `Your edits are not saved, so
+nothing an Agent wrote is lost. Copy your text, then reload to see the new version.`, with
+**Copy my text** (bordered) and **Reload** (warn fill, dark ink). **Save** is disabled and the status reads `● Not saved`. There
 is no overwrite. Copy uses the clipboard; over plain http, where there is none, it selects the
 whole text for the system Copy. **Reload** before a copy asks `Discard your edits?` first.
 
@@ -947,8 +954,8 @@ title and the meta line.
 - **More**: the ⋯ menu — the theme picker (`ThemePicker` from `web/settings.tsx`,
   the same control the Settings screen shows), then Wrap, **Phone width** with
   `the pane draws at your columns` as its hint, **Fit to width** with the
-  grid size as its hint, **Theme colors**, **Mouse taps**, **Files** (`Browse, read, edit,
-  preview`), **Diff** (`Changes in this Workspace`), Rename, Close Pane, and a
+  grid size as its hint, **Theme colors**, **Mouse taps**, **Files** (`Browse, read and edit
+  this Workspace`), **Diff**, Rename, Close Pane, and a
   disabled `Resize to phone` marked `v2`. Desktop adds **Split view: on/off**, zoom in and
   out, and the **Layout** group.
 - **Close Pane** is a Dialog, not a drawer, so a destructive action cannot be

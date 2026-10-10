@@ -4,7 +4,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { BranchList, DiffFile, DiffResult, DiffScope, State, SwitchBody, Worktree } from '../shared/types.ts';
 import { api, Link, navigate, useDesktop } from './app.tsx';
-import { Back, Branch, ChevronDown, ChevronRight, Refresh } from './icons.tsx';
+import { Back, ChevronDown, ChevronRight, Refresh } from './icons.tsx';
 import { FADE } from './composer.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
 import { basename, filesHash } from './folders-logic.ts';
@@ -260,14 +260,13 @@ export function BranchChip({
           // Agents move branches; the sheet opens on a fresh list, and keeps the old one on a miss.
           api<BranchList>(url, undefined, 'GET').then(setList, () => {});
         }}
-        // A 44 px target around a 36 px chip, so the header keeps its height.
+        // A 44 px target around a 26 px chip, so the header keeps its height.
         className="group press flex min-h-11 max-w-[9.5rem] min-w-0 shrink items-center outline-none lg:max-w-[16rem]"
       >
-        <span className="flex h-9 min-w-0 items-center gap-1.5 rounded-chip border border-border bg-bg px-2.5 font-mono text-caption text-fg group-hover:border-muted/50 group-focus-visible:ring-2 group-focus-visible:ring-accent">
-          <Branch className="shrink-0 text-muted" />
+        <span className="flex h-[26px] min-w-0 items-center gap-1.5 rounded-chip border border-border px-2 font-mono text-[11px] text-fg group-hover:border-muted/50 group-focus-visible:ring-2 group-focus-visible:ring-accent">
           <span className="sr-only">Branch </span>
           <span className="min-w-0 truncate">{label}</span>
-          <ChevronDown className="shrink-0 text-muted" />
+          <ChevronDown size={10} className="shrink-0 text-muted" />
         </span>
       </button>
       <BranchSheet

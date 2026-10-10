@@ -1954,10 +1954,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
               setOverride((n) => n + 1);
             },
           },
-          { label: 'Files', hint: 'Browse, read, edit, preview', onClick: () => navigate(filesHash(paneKey), { transition: false }) },
-          ...(ws
-            ? [{ label: 'Diff', hint: 'Changes in this Workspace', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }]
-            : []),
+          { label: 'Files', sub: 'Browse, read and edit this Workspace', onClick: () => navigate(filesHash(paneKey), { transition: false }) },
+          ...(ws ? [{ label: 'Diff', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }] : []),
           ...(writable
             ? [
                 { label: 'Rename', onClick: () => setRename(true) },
