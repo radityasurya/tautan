@@ -230,9 +230,11 @@ export function Row({ pane, first, actions, context, compact, current }: {
             <span className={`truncate text-body ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
           </span>
           <span className={`truncate text-caption text-muted ${pane.lastLine ? '' : 'font-mono'}`}>
+            {/* Status, then where it runs, then the line: a long line truncates last, so the
+                Workspace always shows. */}
             {word && <span className={statusText[pane.status]}>{word} · </span>}
+            {context && <span className="text-muted/70">{context} · </span>}
             {preview(pane)}
-            {context && <span className="text-muted/70"> · {context}</span>}
           </span>
         </span>
       )}
