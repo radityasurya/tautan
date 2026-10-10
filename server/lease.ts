@@ -33,7 +33,9 @@ export class LeaseHolder {
   constructor(private hub: Hub) {
     // A lease never outlives the watchers: reaped every 15 s. A pane that closed, or that no
     // SSE client watches any more, releases — the desktop gets its width back.
-    setInterval(() => void this.reap(), 15_000).unref();
+    // A failed reap must never surface as an unhandled rejection: this interval can outlive
+    // the Hub it was built with (a test's stub Hub lacks watchedPaneKeys); the next beat retries.
+    setInterval(() => void this.reap().catch(() => {}), 15_000).unref();
     // ADR 0006: an owned lease follows its owner stream, not the watch set — a desktop split
     // watching the same Pane must not keep a phone's lease alive after the phone leaves.
     this.hub.onStreamEnd?.(stream => {
