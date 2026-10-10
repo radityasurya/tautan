@@ -126,6 +126,35 @@ describe('completion route', () => {
     expect(top.some(item => item.value === '/model')).toBe(true);
   });
 
+  test('user skills through symlinks, folded descriptions, enabled plugins, and pi skills', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'tautan-complete-home-'));
+    try {
+      const write = (path: string, text: string) => { mkdirSync(join(home, path, '..'), { recursive: true }); writeFileSync(join(home, path), text); };
+      // A skill installer links the folder in rather than copying it.
+      write('shared/skills/grill-me/SKILL.md', '---\nname: grill-me\ndescription: >\n  Interview the user\n  until it is clear.\nother: x\n---\n');
+      mkdirSync(join(home, '.claude', 'skills'), { recursive: true });
+      symlinkSync(join(home, 'shared/skills/grill-me'), join(home, '.claude/skills/grill-me'));
+      write('plugins/codex/commands/rescue.md', '---\ndescription: Hand the task to Codex\n---\n');
+      write('plugins/codex/skills/runtime/SKILL.md', '---\nname: runtime\ndescription: "Codex \\"runtime\\" notes"\n---\n');
+      write('plugins/off/commands/hidden.md', '---\ndescription: Disabled plugin\n---\n');
+      write('.claude/plugins/installed_plugins.json', JSON.stringify({ version: 2, plugins: {
+        'codex@openai': [{ scope: 'user', installPath: join(home, 'plugins/codex') }],
+        'off@x': [{ scope: 'user', installPath: join(home, 'plugins/off') }],
+      } }));
+      write('.claude/settings.json', JSON.stringify({ apiKey: 'never-read', enabledPlugins: { 'codex@openai': true, 'off@x': false } }));
+      write('.pi/agent/skills/lead/SKILL.md', '---\nname: lead\ndescription: Split thinking from doing\n---\n');
+
+      const claude = await paneCompletion(hub, 'local/fake/p1', 'slash', '', 400, { home });
+      expect(claude.find(item => item.value === '/grill-me')?.detail).toBe('Interview the user until it is clear.');
+      expect(claude.find(item => item.value === '/codex:rescue')?.detail).toBe('Hand the task to Codex');
+      expect(claude.find(item => item.value === '/codex:runtime')?.detail).toBe('Codex "runtime" notes');
+      expect(claude.some(item => item.value === '/off:hidden')).toBe(false);
+      expect(claude.some(item => item.value === '/login')).toBe(true);
+      const pi = await paneCompletion(hub, 'local/fake/p3', 'slash', 'lead', 1, { home });
+      expect(pi).toEqual([{ value: '/skill:lead', label: '/skill:lead', detail: 'Split thinking from doing' }]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   test('pi Panes get the built-in list; shell Panes get none', async () => {
     const pi = await items('kind=slash&q=mod&limit=10', 'local/fake/p3');
     expect(pi[0]).toEqual({ value: '/model', label: '/model', detail: 'Select a model' });
