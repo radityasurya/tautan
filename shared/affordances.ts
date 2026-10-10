@@ -81,10 +81,8 @@ export function findAffordances(lines: Span[][], profile: AffordanceProfile): Af
       const pattern = new RegExp(hint.source, hint.flags.includes('g') ? hint.flags : `${hint.flags}g`);
       for (const match of text.matchAll(pattern)) if (match[1] && match[2]) add(row, text, match.index, match.index + match[0].length, match[2].trim(), { keys: [herdrKey(match[1])] });
     }
-    for (const match of text.matchAll(/https?:\/\/\S+/g)) {
-      const value = match[0].replace(/[).,]+$/, '');
-      add(row, text, match.index, match.index + value.length, value, { copy: value });
-    }
+    // A link is not a chip: the Screen draws it as a real link (`linksIn`), whole even when
+    // the terminal wrapped it, and a long-press on it offers Copy.
     for (const match of text.matchAll(/(?:^|\s)((?:~|\/)[\w./-]{3,})/g)) {
       const value = match[1]!; const start = match.index + match[0].indexOf(value);
       add(row, text, start, start + value.length, value, { copy: value });

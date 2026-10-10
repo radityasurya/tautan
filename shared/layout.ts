@@ -192,3 +192,31 @@ export function caretAt(rows: string[]): { row: number; col: number } | null {
   for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.trim()) return { row: i, col: end(rows[i]!) };
   return null;
 }
+
+/**
+ * Each http(s) link on a Screen, joined across the rows the terminal wrapped it over: a link
+ * that reaches the row's last two columns continues on the next row when that row is one bare
+ * token (Claude's sign-in link spans several rows this way). Every part points at the whole
+ * link, so a tap on any row opens it. Trailing punctuation stays out of the link.
+ */
+export function linksIn(rows: string[], cols: number): { row: number; start: number; end: number; href: string }[] {
+  const found: { row: number; start: number; end: number; href: string }[] = [];
+  for (let row = 0; row < rows.length; row++) {
+    for (const match of rows[row]!.matchAll(/https?:\/\/[^\s<>"'`│┃]+/g)) {
+      const parts = [{ row, start: match.index, end: match.index + match[0].length }];
+      let href = match[0];
+      for (let next = row + 1; parts.at(-1)!.end >= cols - 2 && next < rows.length; next++) {
+        const tail = rows[next]!.match(/^(\s{0,2})([^\s<>"'`│┃]+)\s*[│┃]?\s*$/);
+        if (!tail) break;
+        parts.push({ row: next, start: tail[1]!.length, end: tail[1]!.length + tail[2]!.length });
+        href += tail[2];
+      }
+      const cut = href.length - href.replace(/[).,;:!?\]]+$/, '').length;
+      parts.at(-1)!.end -= cut;
+      href = href.slice(0, href.length - cut);
+      for (const part of parts) if (part.end > part.start) found.push({ ...part, href });
+      if (parts.length > 1) row = parts.at(-1)!.row; // the continuation rows hold no other link
+    }
+  }
+  return found;
+}

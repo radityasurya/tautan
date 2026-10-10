@@ -265,7 +265,7 @@ own widest prose line, so one long code row no longer locks the whole reflow wid
 **Affordances** (`shared/affordances.ts` finds them, `web/affordances.tsx`
 places them) are the tappable tokens tautan reads off the Screen: a Hint
 such as `esc to cancel`, `<d> describe` or `F9Kill`, a row of an option
-list, one of Claude Code's status items, a URL or a path. Each one is a
+list, one of Claude Code's status items, or a path. Each one is a
 transparent button drawn over the grid — no visible text, because the
 grid's own text is what you read — with a 1.5 px accent underline exactly
 under the token and a hit area of at least 44 px, grown around the token
@@ -310,7 +310,14 @@ touch it, or `off while Wrap is on` when Wrap has the last word. It writes
 `tautan.mouse.<paneKey>`; removing the key returns the Pane to its
 profile.
 
-**Copied chip.** Tapping a URL or a path copies it and prints a small
+**Links.** An http(s) address on the Screen is a real link, in Grid and in Wrap: a tap
+opens it in a new tab (Safari, from the phone app) and a long-press offers Copy. A link the
+terminal wrapped over several rows — Claude's `/login` address is one — is joined back into
+one (`linksIn` in `shared/layout.ts`), so a tap on any of its rows opens the whole address.
+Sending a command whose UI lives only on the Screen (`/login`, `/model`, `/resume`, …) from
+the Chat view switches the Pane to the Screen, where its menu or prompt waits.
+
+**Copied chip.** Tapping a path copies it and prints a small
 `Copied` chip above the token for 1.5 s, counter-scaled so it reads at its
 own size under Fit. No toast: the chip stays where your thumb is.
 

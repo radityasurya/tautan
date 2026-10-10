@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { parseAnsi } from '../shared/ansi.ts';
-import { boxInner, caretAt, classify, continues, fillOf, fullScreen, hangOf, splitAt, tuiScreen } from '../shared/layout.ts';
+import { boxInner, caretAt, classify, linksIn, continues, fillOf, fullScreen, hangOf, splitAt, tuiScreen } from '../shared/layout.ts';
 
 const kinds = (text: string) => classify(text, 120).join(',');
 
@@ -341,5 +341,32 @@ describe('caretAt', () => {
   test('a shell: past the last row with text; an empty Screen has no caret', () => {
     expect(caretAt(['$ ls', 'a b', 'tautan ❯ pnpm dev', '', ''])).toEqual({ row: 2, col: 17 });
     expect(caretAt(['', ''])).toBeNull();
+  });
+});
+
+describe('linksIn', () => {
+  test('a link on one row, without its trailing punctuation', () => {
+    expect(linksIn(['See https://example.com/a?b=1.', 'done'], 80)).toEqual([{ row: 0, start: 4, end: 29, href: 'https://example.com/a?b=1' }]);
+  });
+  test("a link wrapped over three rows is one link, each row's part pointing at all of it", () => {
+    const rows = [
+      " Browser didn't open? Use the url below to sign in",
+      '',
+      ' https://claude.ai/oauth/authorize?code=true&cli',
+      ' ent_id=9d1c&response_type=code&redirect_uri=http',
+      ' s%3A%2F%2Fconsole',
+      '',
+      ' Paste code here if prompted >',
+    ];
+    const href = 'https://claude.ai/oauth/authorize?code=true&client_id=9d1c&response_type=code&redirect_uri=https%3A%2F%2Fconsole';
+    expect(linksIn(rows, 50)).toEqual([
+      { row: 2, start: 1, end: 48, href },
+      { row: 3, start: 1, end: 49, href },
+      { row: 4, start: 1, end: 18, href },
+    ]);
+  });
+  test('a short link never swallows the next row, and a row with words is never a continuation', () => {
+    expect(linksIn(['go to https://a.dev', 'next'], 80)).toHaveLength(1);
+    expect(linksIn(['x'.repeat(30) + ' https://a.dev/' + 'p'.repeat(15), 'two words'], 60)[0]!.href).toBe('https://a.dev/' + 'p'.repeat(15));
   });
 });

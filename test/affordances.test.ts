@@ -39,14 +39,14 @@ describe('Screen affordances', () => {
     expect(htop.map(item => item.label)).toEqual(['Help', 'Setup', 'Search', 'Filter', 'Tree', 'SortBy', 'Nice -', 'Nice +', 'Kill', 'Quit']);
   });
 
-  test('recognises Claude status, generic key Hints, and URLs', () => {
+  test('recognises Claude status and generic key Hints; a URL is a link, never a chip', () => {
     const footer = findAffordances(parseAnsi('⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent\n[2 shells]\nesc to cancel\nsee https://example.com/x)'), PROFILES.claude!);
     expect(footer.filter(item => 'keys' in item.action && item.action.keys[0] === 'shift+tab')).toHaveLength(2);
     expect(footer.some(item => item.label === 'auto mode on' && 'keys' in item.action)).toBe(true);
     expect(footer.some(item => item.label === '← 1 agent' && 'command' in item.action && item.action.command === '/tasks')).toBe(true);
     expect(footer.some(item => item.label === '[2 shells]' && 'command' in item.action && item.action.command === '/tasks')).toBe(true);
     expect(footer.some(item => item.label === 'cancel' && 'keys' in item.action && item.action.keys[0] === 'esc')).toBe(true);
-    expect(footer.some(item => 'copy' in item.action && item.action.copy === 'https://example.com/x')).toBe(true);
+    expect(footer.some(item => item.label.includes('example.com'))).toBe(false); // the Screen draws it as a link (linksIn)
   });
 
   test('normalises Herdr key tokens', () => {

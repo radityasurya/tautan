@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
-import { boxInner, caretAt, classify, continues, fillOf, fullScreen, hangOf, splitAt, type LineKind } from '../shared/layout.ts';
+import { boxInner, caretAt, classify, continues, fillOf, fullScreen, hangOf, linksIn, splitAt, type LineKind } from '../shared/layout.ts';
 import type {
   MoveBody, NewTabBody, NewTabResult, RenameBody, ResizeBody, SplitBody, SwapBody, ZoomBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
@@ -135,7 +135,39 @@ function withCaret(lines: Span[][]): Span[][] {
   return out;
 }
 
-const runs = (spans: Span[]) => spans.map((sp, j) => <span key={j} className={caretClass(sp)} style={spanStyle(sp)}>{sp.text}</span>);
+/** A Screen span inside an http(s) link: it renders as the link, so a tap opens it. */
+type LinkSpan = Span & { link?: string };
+
+/** The lines with every link's spans marked, a link the terminal wrapped joined back into one
+ *  (`linksIn`). Only http(s) addresses become links, and they open in a new tab. */
+function withLinks(lines: Span[][], cols: number): Span[][] {
+  const links = linksIn(lines.map(textOf), cols);
+  if (!links.length) return lines;
+  const out = lines.slice();
+  for (const { row, start, end, href } of [...links].sort((a, b) => b.row - a.row || b.start - a.start)) {
+    const spans = out[row]!;
+    out[row] = [
+      ...sliceSpans(spans, 0, start),
+      ...sliceSpans(spans, start, end).map((sp): LinkSpan => ({ ...sp, link: href })),
+      ...sliceSpans(spans, end, textOf(spans).length),
+    ];
+  }
+  return out;
+}
+
+/** One span as the Screen draws it: a link opens in a new tab (Safari, from the phone app). */
+const spanNode = (sp: Span, key: number, style: CSSProperties) => {
+  const href = (sp as LinkSpan).link;
+  return href ? (
+    <a key={key} href={href} target="_blank" rel="noopener noreferrer" className={`underline decoration-dotted underline-offset-2 ${caretClass(sp) ?? ''}`} style={style}>
+      {sp.text}
+    </a>
+  ) : (
+    <span key={key} className={caretClass(sp)} style={style}>{sp.text}</span>
+  );
+};
+
+const runs = (spans: Span[]) => spans.map((sp, j) => spanNode(sp, j, spanStyle(sp)));
 
 /** Box chrome redrawn by CSS: each edge and row is one block, so a run of them stacks into one box. */
 const CHROME: Partial<Record<LineKind, string>> = {
@@ -268,15 +300,8 @@ function Wrapped({ lines, kinds, joins, fills }: {
  * The grid's spans. A painted background is a cell-tall block, so a run of filled rows
  * (a tool block, an echoed prompt) reads as one band instead of stripes split by the leading.
  */
-const gridRuns = (spans: Span[]) => spans.map((sp, j) => (
-  <span
-    key={j}
-    className={caretClass(sp)}
-    style={sp.bg !== undefined || sp.inverse ? { ...spanStyle(sp), display: 'inline-block', height: '1lh', verticalAlign: 'top' } : spanStyle(sp)}
-  >
-    {sp.text}
-  </span>
-));
+const gridRuns = (spans: Span[]) => spans.map((sp, j) =>
+  spanNode(sp, j, sp.bg !== undefined || sp.inverse ? { ...spanStyle(sp), display: 'inline-block', height: '1lh', verticalAlign: 'top' } : spanStyle(sp)));
 
 /** Styled ANSI text. Shared by the grid and the blocked card's detection excerpt. */
 export function Ansi({ text }: { text: string }) {
@@ -661,7 +686,10 @@ function PaneGrid({
   // field has focus the grid shows a blinking caret where the input most likely is.
   const typing = useSyncExternalStore(subscribeTyping, typingSnapshot);
   const typingHere = typing?.paneKey === paneKey && !!current ? typing : null;
-  const drawn = useMemo(() => (typingHere?.focused ? withCaret(lines) : lines), [lines, typingHere?.focused]);
+  const drawn = useMemo(() => {
+    const linked = withLinks(lines, pane?.cols ?? Math.max(0, ...lines.map((spans) => textOf(spans).length)));
+    return typingHere?.focused ? withCaret(linked) : linked;
+  }, [lines, pane?.cols, typingHere?.focused]);
 
   const kind = pane?.agent ? 'agent' : 'shell';
   const wrapChoice = readWrapChoice(kind);
@@ -1821,6 +1849,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         // The Chat view answers the prompt in its transcript once it has one on screen; while
         // it loads (or falls back), the dock's card stays.
         hideCard={chatLens && chatShown === paneKey}
+        onScreenCommand={() => setLens('screen')}
       />
 
       <SwitchDrawer

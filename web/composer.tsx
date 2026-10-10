@@ -42,6 +42,11 @@ const writeDraft = (paneKey: string, text: string) => {
   } catch {}
 };
 
+/** Slash commands that open a menu or a prompt on the Screen and write nothing to the
+ *  transcript until they finish, so the Chat view would show nothing while they wait.
+ *  ponytail: a fixed list of Claude's and pi's; extend it when another one turns up. */
+const SCREEN_COMMAND = /^\/(login|logout|model|config|settings|permissions|resume|agents|mcp|hooks|status|theme|tree|fork|hotkeys|plugin)$/;
+
 /** The Pane the Composer types straight into, whether its field has focus, and how to give it
  *  focus: the Screen draws its caret from this, and a tap on the Screen focuses the field. */
 export interface Typing { paneKey: string; focused: boolean; focus: () => void }
@@ -268,6 +273,7 @@ export function Composer({
   onReread,
   cardRef,
   hideCard,
+  onScreenCommand,
 }: {
   paneKey: string;
   pane?: StatePane;
@@ -286,6 +292,8 @@ export function Composer({
   cardRef: RefObject<HTMLDivElement | null>;
   /** The Chat view shows the prompt in the transcript: the card stays out, the text box stays. */
   hideCard?: boolean;
+  /** A command whose whole UI is on the Screen (`/login`) went out from the Chat view. */
+  onScreenCommand?: () => void;
 }) {
   const agent = pane?.agent;
   const status = pane?.status ?? 'unknown';
@@ -454,6 +462,7 @@ export function Composer({
     // A shell has no transcript: its line goes straight to the Pane.
     if (agent) say(body);
     else void post(paneKey, 'input', { text: body, keys: ['enter'] } satisfies InputBody);
+    if (agent && hideCard && SCREEN_COMMAND.test(sent)) onScreenCommand?.();
     if (!agent && mayRemember(screenText)) setHistory(remember(sent));
     setText('');
     writeDraft(paneKey, '');
