@@ -87,11 +87,15 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.re
 
 describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux events fallback', () => {
   test('drops layout.updated after any error reply and reconnects without it', async () => {
+    // `seen` also holds earlier tests' calls: count only this mux's subscribes, and wait for
+    // the reconnect that dropped layout.updated, not for any second subscribe.
+    const from = seen.length;
     const mux = new HerdrMux('test', socketPath);
     mux.onChange(() => {});
-    const subscribes = () => seen.filter(params => params?.subscriptions);
-    while (subscribes().length < 2) await new Promise(resolve => setTimeout(resolve, 50));
-    expect(subscribes().at(-1)!.subscriptions.map((s: any) => s.type)).not.toContain('layout.updated');
+    const types = () => seen.slice(from).filter(params => params?.subscriptions).map(params => params.subscriptions.map((s: any) => s.type));
+    while (types().length < 2) await new Promise(resolve => setTimeout(resolve, 50));
+    expect(types()[0]).toContain('layout.updated');
+    expect(types().at(-1)).not.toContain('layout.updated');
     mux.close();
   }, 10_000);
 });

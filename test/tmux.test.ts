@@ -171,13 +171,13 @@ describe('TmuxMux', () => {
     const off = f.mux.onChange(value => events.push(value));
     await Bun.sleep(30);
     f.setTree(`${row()}\n${row({ pane: '%1' })}`);
-    const treeDeadline = Date.now() + 500;
+    const treeDeadline = Date.now() + 3_000; // the loop exits on the event; the ceiling is for slow CI runners
     while (!events.includes('all') && Date.now() < treeDeadline) await Bun.sleep(10);
     expect(events).toContain('all');
 
     await f.mux.read('%0', 'visible');
     f.setCapture('new screen');
-    const screenDeadline = Date.now() + 500;
+    const screenDeadline = Date.now() + 3_000;
     while (!events.some(value => Array.isArray(value) && value.includes('%0')) && Date.now() < screenDeadline) await Bun.sleep(10);
     expect(events.some(value => Array.isArray(value) && value.includes('%0'))).toBe(true);
 
