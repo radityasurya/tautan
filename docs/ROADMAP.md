@@ -578,6 +578,32 @@ and a reference link renders both; a turn with two pending tools shows two appro
 an Edit of an `.html` file previews; a 2× screen keeps a split cell legible at its floor;
 private mode shows the storage notice once.
 
+## Phase 31 — Files, edit, branches and worktrees
+
+- [ ] `GET /api/panes/:key/file` sends an etag; `PUT` saves with `If-Match` and answers 412
+      when the file changed on disk; `GET …/branches`, `POST …/switch`, and `?worktree=` on
+      branches and diff — `server/`
+- [ ] **Files** in the Pane ⋯ menu and the group menu: the folder browser at the Workspace
+      cwd, the branch chip and a Diff link in its header, and Back from a file returning to its
+      folder — `web/file.tsx`, `web/pane.tsx`, `web/home.tsx`, `web/app.tsx`
+- [ ] **Preview | Source** for Markdown and HTML, HTML in a sandboxed frame with Full screen
+      — `web/file.tsx`, `web/preview.tsx`
+- [ ] **Edit**: CodeMirror loaded on the first tap as `lazy-*` chunks left out of the precache;
+      16 px text, Save above the keyboard, CRLF, lone CR and BOM round-trip, the 412 banner
+      with Copy my text and Reload — `web/editor.tsx`, `vite.config.ts`
+- [ ] The branch chip and sheet in Files and Diff, git's refusal verbatim — `web/diff.tsx`,
+      `web/sheets.tsx`
+- [ ] The Worktrees section: open a worktree in Files and its diff, `in <worktree>` on a
+      branch held elsewhere, switching off while browsing a worktree — `web/sheets.tsx`,
+      `web/file.tsx`, `web/diff.tsx`
+
+Verify: on the iPhone at 390 px, open Files from a Pane, read a README in Preview, edit it,
+and save with the keyboard up (the page must not zoom, Save stays visible); change the same
+file in the Pane and save again to see the amber banner, copy the text, reload; switch to a
+branch with a dirty tree and read git's refusal; open a worktree an Agent made and see its
+diff. On desktop, the same pass, plus `⌘S`. After an app update, the first **Edit** tap
+still opens the editor.
+
 ## Later (explicitly out of v1)
 
 - Per-agent prompt grammars (native widgets for select lists)

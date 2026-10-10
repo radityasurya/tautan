@@ -592,14 +592,20 @@ described under Pane, above.
 
 ## Diff (`#/diff/<workspaceKey>`) — `web/diff.tsx`
 
-Open it from the Pane's ⋯ menu or from a long press on a Workspace heading on
-the Agents screen. Both pass the Workspace key, so the screen always knows
-which directory git runs in. The back chevron returns to where you came from
-(`history.back()`), which is the Pane in one case and the list in the other.
+Open it from the Pane's ⋯ menu, from a long press on a Workspace heading on
+the Agents screen, or from the **Diff** link in Files. All pass the Workspace key, so the
+screen always knows which directory git runs in. The back chevron returns to where you came
+from (`history.back()`).
 
-Top bar: back, the Workspace label, a line with the file count and `+N −M`,
-then the **wrap** chip and **Refresh**. Under it, three scope chips —
-**Changes · Staged · vs base**. In `vs base` a muted line under the chips names
+`?worktree=<path>` reads the diff of that worktree instead of the Workspace's own checkout
+(the Hub's `GET …/diff?worktree=`); the subtitle then starts with `worktree <basename>`, and a
+worktree the Hub no longer knows reads `That worktree is gone` with its path.
+
+Top bar: back, the Workspace label, a line with the file count and `+N −M`, then on desktop
+the **branch chip** (see Files), the **Files** link, the **wrap** chip and **Refresh**. On the
+phone the header has no room for the chip, so it leads the scope row instead. Files opens
+Files in the same checkout: the Workspace cwd, or the worktree. A branch switch from the chip
+refreshes the diff. Under the header, three scope chips — **Changes · Staged · vs base**. In `vs base` a muted line under the chips names
 the branch the Hub resolved, for example `vs main`. Wrap and the scope live in
 the component, not in `localStorage`: a diff is a visit, not a setting.
 
@@ -636,14 +642,78 @@ section with the same right-edge fade as the Pane grid (`FADE`, exported from
 answers uncapped, and replaces the file's hunks in place. The rest of the list
 stays as it is. A failure turns the button into **Try again**.
 
-## File (`#/file/<paneKey>?path=`) — `web/file.tsx`
+## Files and File (`#/file/<paneKey>`) — `web/file.tsx`, `web/editor.tsx`
 
-A clickable path in the Screen or a Chat tool row opens the viewer full screen. The header
-is Back (which follows `history.back()`), the file name over the Pane title and the Host
-label, then **Folder** and **Download**. **Download** streams the file from
-`/api/files/raw` as an attachment. **Folder** swaps the viewer for the folder browser one
-level up — the same browser the sheets use, files included — and picking a file there
-navigates to it.
+One route, two screens. With `?path=` it is the file viewer; without it, it is **Files**.
+Both read through the Pane, so a relative path is under the Pane cwd. `&worktree=<path>`
+rides along on both (see Worktrees below).
+
+### Files (`#/file/<paneKey>[?dir=]`)
+
+Open it from the Pane's ⋯ menu (**Files**, above **Diff**), or from the group menu on the
+Agents screen, which reads through the Workspace's first Pane. It opens at `dir`, else the
+Workspace cwd, else the Pane cwd.
+
+Header: Back, the Workspace label over `Files · <Host>`, the **branch chip**, and a **Diff**
+link to `#/diff/<workspaceKey>`. The body is the folder browser (`FolderBrowser`, the same one
+the sheets use, with files): crumbs, **Filter**, **Hidden**, folders first. Opening a file
+first replaces the hash with `?dir=<its folder>`, so Back from the file returns to that
+folder, not to wherever Files first opened. Desktop is the same single column, centred.
+
+### The branch chip and sheet
+
+The chip (`BranchChip` in `web/diff.tsx`) shows the checkout's branch in mono, or
+`@<short sha>` on a detached HEAD. It renders nothing until the Hub answers
+`GET /api/workspaces/:key/branches`, and nothing on any error, so a folder outside a
+repository has no chip. It sits in the Files and Diff headers only.
+
+Tapping it opens the branch sheet (`BranchSheet` in `web/sheets.tsx`) on a fresh list:
+
+- One row per local branch, in mono. The current one is checked, says `current`, and is
+  disabled. Tapping another posts `POST …/switch {branch}`; the row reads `Switching…`, and on
+  success the sheet closes and the chip and the list under it refresh.
+- git's refusal shows verbatim: the row turns red with `not switched`, and a red box under
+  the list reads `git refused the switch` over git's own stderr in mono. A known code reads as
+  a sentence instead (`git took too long, so tautan stopped waiting`, `That branch is gone`,
+  `Not a git repository`, `That worktree is gone`).
+- The footer: `Switching changes the files every Pane in this Workspace sees. tautan never
+  creates, commits or stashes.`
+
+tautan never creates, commits, stashes or force-switches; the Hub runs a plain switch.
+
+### Worktrees
+
+When the repository has more than one worktree, the sheet is titled **Branch** and splits into
+**Branches** and **Worktrees**:
+
+- A worktree row is its folder name in bold, its branch in mono (or `@<short sha>` when
+  detached), and its path, tilde-shortened and truncated from the left. The checkout the list
+  is about says `current`; `locked` and `prunable` show as amber tags; the others carry a
+  chevron.
+- Tapping a worktree closes the sheet and opens Files there:
+  `#/file/<paneKey>?dir=<path>&worktree=<path>`. The Workspace's own checkout (the deepest
+  worktree holding the Workspace cwd) opens plainly, without `worktree=`.
+- A branch checked out in another worktree carries `in <worktree name>`; tapping it opens that
+  worktree instead of switching.
+- The footer: `Tap a worktree to browse its files and see its diff. Agents create these with
+  git worktree. tautan never creates or removes one.`
+
+Files with `worktree=` set: the subtitle reads `Files · <Host> · worktree <name>`; the chip asks
+`branches?worktree=<path>` and shows that checkout's branch; the sheet's switch rows are
+disabled under `Switching applies to the Workspace's own checkout`, because the switch route
+only moves the Workspace's own checkout; and the Diff link carries `?worktree=` too. A pruned
+worktree's folder is usually gone, and Files says `That folder does not exist`.
+
+Creating, removing or pruning a worktree, and opening one as a new Workspace, are out of scope.
+
+### File (`#/file/<paneKey>?path=`)
+
+A clickable path in the Screen or a Chat tool row, or a file in Files, opens the viewer full
+screen. The header is Back (which follows `history.back()`), the file name over its folder
+(mono, tilde-shortened, truncated from the left) and its size, then **Edit**, **Folder** and
+**Download**. **Folder** opens Files at the file's folder. **Download** streams the file from
+`/api/files/raw` as an attachment. **Edit** shows only for a text file the Hub sent with an
+etag; a remote Host without `cksum` sends none, and then the file is read-only here.
 
 The viewer follows the file's extension (`viewerFor` in `web/folders-logic.ts`):
 
@@ -653,11 +723,52 @@ The viewer follows the file's extension (`viewerFor` in `web/folders-logic.ts`):
 | Video | `<video>` streaming from `/api/files/raw`, so seeking works |
 | Audio | `<audio>` streaming the same way |
 | Image | the whole file as a blob, centred |
+| Markdown (`.md`, `.markdown`) | **Preview \| Source**, Preview first: the Chat `Markdown` renderer in a card, headings at document scale |
+| HTML (`.html`, `.htm`) | **Preview \| Source**, Preview first: the page in a sandboxed frame (`FRAME` from `web/preview.tsx`: no allow tokens, no referrer) on `/api/files/raw`, under a strip `Sandboxed · scripts and outside requests off` with **Full screen** |
 | Text | mono lines with line numbers, 5 MB at most, no wrap — the view scrolls sideways |
 | Anything else | `Binary file` |
 
-Errors read `File not found`, `File is too large`, or `Could not read the file` with the
-Hub's code and a **Try again**.
+Text is decoded as strict UTF-8 with the byte order mark kept aside. The HTML frame is keyed
+and versioned by the etag, so a save reloads the page. Errors read `File not found`,
+`File is too large`, or `Could not read the file` with the Hub's code and a **Try again**.
+
+### Edit — `web/editor.tsx`
+
+The editor is CodeMirror 6, and `web/editor.tsx` is the only module that imports it. It loads
+on the first **Edit** tap, as `lazy-*` chunks the service worker never precaches, so the shell
+and an update stay their old size. Each language (JavaScript and TypeScript, JSON, Markdown,
+HTML, CSS, Python, YAML) is its own chunk, loaded into a Compartment after the editor is up.
+
+- On the phone it is a fixed layer the size of the visual viewport (`--vv-top`, `--vv-h`), so
+  the header and **Save** stay above the keyboard. On desktop it replaces the viewer as a
+  centred column.
+- The header is **Done**, the file name over a status line, and **Save**: `No changes`,
+  `● Edited` (warn), `Saving…`, `Saved` (ok), `● Not saved` (danger). **Save** is enabled only
+  with unsaved edits; `⌘S` / `Ctrl+S` saves too.
+- Text is 16 px, so iOS does not zoom; line numbers, history, bracket matching, line wrapping
+  and Tab to indent. Syntax colours come from the theme's `--ansi-*` palette. There is no
+  drawn selection, so iOS keeps its own caret and handles. Autocorrect and capitalisation are
+  off.
+- The bytes round-trip. The doc splits and joins on the file's own line break (CRLF, a lone
+  CR, or LF), a paste takes that line break too, and a byte order mark is put back on save.
+- A save is `PUT /api/panes/:key/file?path=` with `If-Match: <etag>` and the raw text. A refusal
+  reads `Not saved · <reason>` under the header, and **Save** retries.
+- **Done** with unsaved edits asks `Discard your edits?` (**Keep editing** / **Discard**). The
+  browser's own leave prompt guards a reload or a closed tab while edits are unsaved.
+
+**Changed on disk (412).** When the file changed since it was opened, nothing is written.
+An amber banner reads **Changed on disk after you opened it** and `Your edits are not saved,
+so nothing an Agent wrote is lost. Copy your text, then reload to see the new version.`, with
+**Copy my text** and **Reload**. **Save** is disabled and the status reads `● Not saved`. There
+is no overwrite. Copy uses the clipboard; over plain http, where there is none, it selects the
+whole text for the system Copy. **Reload** before a copy asks `Discard your edits?` first.
+
+### Mock
+
+`?mock&open=files`, `?mock&open=file` and `?mock&open=edit` open Files, `README.md`, and
+`README.md` in the editor. The fixture repository has three worktrees (the main checkout,
+`tautan-wt-files` on `feat/files`, and a detached, prunable `tautan-swift-otter`). A switch to
+`fix/ios-zoom` gives git's dirty-tree refusal, and a save of `CHANGELOG.md` always answers 412.
 
 ## Hosts (`#/hosts`) — `web/hosts.tsx`
 
@@ -836,7 +947,8 @@ title and the meta line.
 - **More**: the ⋯ menu — the theme picker (`ThemePicker` from `web/settings.tsx`,
   the same control the Settings screen shows), then Wrap, **Phone width** with
   `the pane draws at your columns` as its hint, **Fit to width** with the
-  grid size as its hint, **Theme colors**, **Mouse taps**, Diff, Rename, Close Pane, and a
+  grid size as its hint, **Theme colors**, **Mouse taps**, **Files** (`Browse, read, edit,
+  preview`), **Diff** (`Changes in this Workspace`), Rename, Close Pane, and a
   disabled `Resize to phone` marked `v2`. Desktop adds **Split view: on/off**, zoom in and
   out, and the **Layout** group.
 - **Close Pane** is a Dialog, not a drawer, so a destructive action cannot be
