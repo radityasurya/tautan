@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FocusEvent, ReactNode } from 'react';
 
+import type { BranchList, Worktree } from '../shared/types.ts';
 import { Toggle } from './hosts.tsx';
 import { FolderBrowser } from './folders.tsx';
+import { basename } from './folders-logic.ts';
+import { Check, ChevronRight } from './icons.tsx';
+import { tildePath } from './spaces.ts';
 import { AlertDialog, Button, Caption, Chip, Sheet as KitSheet, TextInput, usePal } from './halaska-kit';
 
 // One kit surface for every sheet: Halaska's side panel, with the title row it brings.
@@ -130,6 +134,11 @@ const WHY: Record<string, string> = {
   target: 'Enter a target like user@host',
   hosts: 'Check the SSH target',
   login: 'That login is not the one this request carries',
+  timeout: 'git took too long, so tautan stopped waiting',
+  branch: 'That branch is gone',
+  'not-a-repo': 'Not a git repository',
+  'unknown-workspace': 'Workspace is gone',
+  worktree: 'That worktree is gone',
 };
 export const why = (code: string) => WHY[code] ?? `That did not work · ${code}`;
 
@@ -289,6 +298,151 @@ export function MenuSheet({
             </ul>
           )}
         </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/** A small tinted label on a branch or worktree row. */
+function Tag({ tone, children }: { tone: 'accent' | 'warn'; children: ReactNode }) {
+  return (
+    <span className={`shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[11.5px] ${tone === 'accent' ? 'bg-accent/12 text-accent' : 'bg-warn/15 text-[color-mix(in_srgb,var(--warn)_65%,var(--fg))]'}`}>
+      {children}
+    </span>
+  );
+}
+
+/**
+ * The branch chip's sheet: the repository's local branches, the current one checked and
+ * disabled, and, when there is more than one checkout, its worktrees. Tapping a branch
+ * switches the Workspace's own checkout; one checked out in another worktree opens that
+ * worktree instead. While Files browses a worktree (`worktree` set) switching is off, as the
+ * switch route only ever moves the Workspace's own checkout. git's refusal shows verbatim.
+ */
+export function BranchSheet({
+  open,
+  onClose,
+  list,
+  meta,
+  worktree,
+  onSwitch,
+  onOpen,
+}: {
+  open: boolean;
+  onClose: () => void;
+  list: BranchList;
+  meta: string;
+  worktree?: string;
+  onSwitch: Submit<string>;
+  onOpen: (worktree: Worktree) => void;
+}) {
+  const { busy, error, submit } = useWrite(open, onSwitch, onClose);
+  const [pick, setPick] = useState('');
+  const many = list.worktrees.length > 1;
+  // A known code reads as a sentence; anything else the Hub sent is git's own stderr.
+  const refused = Boolean(error) && !(error in WHY) && !/^http \d+$/.test(error);
+  const ROW = 'flex min-h-12 w-full items-center gap-2.5 px-6 py-1.5 text-left outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)]';
+  return (
+    <Sheet open={open} title={many ? 'Branch' : 'Switch branch'} onClose={onClose} flush>
+      <div className="flex flex-col" style={FLUSH_BODY}>
+        <div className="shrink-0 border-b border-border px-6 pb-3">
+          <div className="-mt-3.5 truncate">
+            <Caption>{many ? meta : `${meta} · local branches`}</Caption>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-4">
+          {many && <h3 className={MENU_HEADING}>Branches</h3>}
+          {worktree && <p className="px-6 pt-1.5 pb-1 text-caption text-muted">Switching applies to the Workspace’s own checkout</p>}
+          <ul className={many ? '' : 'pt-1.5'}>
+            {list.branches.map((branch) => {
+              const current = branch === list.current;
+              const elsewhere = current ? undefined : list.worktrees.find((w) => w.branch === branch && !w.current);
+              const failed = Boolean(error) && pick === branch;
+              return (
+                <li key={branch}>
+                  <button
+                    type="button"
+                    disabled={current || (!elsewhere && (Boolean(worktree) || busy))}
+                    aria-current={current ? 'true' : undefined}
+                    onClick={() => {
+                      if (elsewhere) onOpen(elsewhere);
+                      else {
+                        setPick(branch);
+                        submit(branch);
+                      }
+                    }}
+                    className={`${ROW} font-mono text-[14px] text-fg disabled:cursor-default ${
+                      current ? 'bg-surface' : failed ? 'bg-danger/10' : 'hover:bg-bg active:bg-bg disabled:opacity-40'
+                    }`}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{branch}</span>
+                    {current ? (
+                      <>
+                        <span className="font-sans text-caption text-muted">current</span>
+                        <Check size={18} className="shrink-0 text-accent" />
+                      </>
+                    ) : elsewhere ? (
+                      <Tag tone="accent">in {basename(elsewhere.path)}</Tag>
+                    ) : busy && pick === branch ? (
+                      <span className="font-sans text-caption text-muted">Switching…</span>
+                    ) : failed ? (
+                      <span className="font-sans text-caption text-danger">not switched</span>
+                    ) : null}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          {error &&
+            (refused ? (
+              <div role="alert" className="mx-4 mt-2 flex flex-col gap-2 rounded-card border border-danger/35 bg-danger/8 p-3">
+                <p className="text-caption font-semibold text-danger">git refused the switch</p>
+                <pre className="font-mono text-[11.5px] leading-normal whitespace-pre-wrap text-danger [overflow-wrap:anywhere]">{error}</pre>
+              </div>
+            ) : (
+              <p role="alert" className="px-6 pt-2 text-caption text-danger">
+                {why(error)}
+              </p>
+            ))}
+          {many && (
+            <>
+              <h3 className={`${MENU_HEADING} mt-3 border-t border-border/60 pt-4`}>Worktrees</h3>
+              <ul>
+                {list.worktrees.map((w) => (
+                  <li key={w.path}>
+                    <button
+                      type="button"
+                      aria-current={w.current ? 'true' : undefined}
+                      onClick={() => onOpen(w)}
+                      className={`flex min-h-12 w-full flex-col gap-0.5 px-6 py-2.5 text-left outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)] ${
+                        w.current ? 'bg-surface' : 'hover:bg-bg active:bg-bg'
+                      }`}
+                    >
+                      <span className="flex w-full min-w-0 items-center gap-2">
+                        <span className="min-w-0 truncate text-body font-semibold text-fg">{basename(w.path)}</span>
+                        {/* A short SHA never truncates; a long branch name may. */}
+                        <span className={`font-mono text-caption text-fg/80 ${w.branch ? 'min-w-0 truncate' : 'shrink-0'}`}>{w.branch ?? `@${w.head.slice(0, 7)}`}</span>
+                        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+                          {w.locked && <Tag tone="warn">locked</Tag>}
+                          {w.prunable && <Tag tone="warn">prunable</Tag>}
+                          {w.current ? <span className="text-caption text-muted">current</span> : <ChevronRight className="text-muted" />}
+                        </span>
+                      </span>
+                      <span dir="rtl" className="block w-full truncate text-left font-mono text-caption text-muted">
+                        <bdi>{tildePath(w.path)}</bdi>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+        <p className="shrink-0 border-t border-border px-6 pt-3.5 pb-[max(env(safe-area-inset-bottom),24px)] text-caption leading-normal text-muted">
+          {many
+            ? 'Tap a worktree to browse its files and see its diff. Agents create these with git worktree. tautan never creates or removes one.'
+            : 'Switching changes the files every Pane in this Workspace sees. tautan never creates, commits or stashes.'}
+        </p>
       </div>
     </Sheet>
   );

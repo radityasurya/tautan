@@ -1,11 +1,15 @@
-// Diff review (#/diff/<workspaceKey>). The Hub parses `git diff` in the Workspace cwd and
-// sends `DiffResult`; this file is the whole renderer — a table of rows, no highlighting.
+// Diff review (#/diff/<workspaceKey>[?worktree=<path>]). The Hub parses `git diff` in the
+// Workspace cwd, or in that worktree, and sends `DiffResult`; this file is the whole renderer —
+// a table of rows, no highlighting. The branch chip lives here too: Files shows it as well.
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { DiffFile, DiffResult, DiffScope, State } from '../shared/types.ts';
-import { api } from './app.tsx';
-import { Back, ChevronDown, ChevronRight, Refresh } from './icons.tsx';
+import type { BranchList, DiffFile, DiffResult, DiffScope, State, SwitchBody, Worktree } from '../shared/types.ts';
+import { api, Link, navigate, useDesktop } from './app.tsx';
+import { Back, Branch, ChevronDown, ChevronRight, Refresh } from './icons.tsx';
 import { FADE } from './composer.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
+import { basename, filesHash } from './folders-logic.ts';
+import { BranchSheet } from './sheets.tsx';
+import { tildePath } from './spaces.ts';
 
 const SCOPES: [DiffScope, string][] = [
   ['working', 'Changes'],
@@ -170,8 +174,125 @@ function FileSection({
   );
 }
 
-export function Diff({ workspaceKey, state }: { workspaceKey: string; state: State | null }) {
+/** A box's width, rounded. The kit's SegmentedControl measures its indicator once (and on a
+ *  window resize), so a control whose box changes width is keyed on it to measure again. */
+function useWidth() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.round(entry!.contentRect.width)));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, width] as const;
+}
+
+/** The Workspace's first Pane: Files needs a Pane to read through, and any Pane of it will do. */
+const firstPane = (state: State | null, workspaceKey: string) => {
   const ws = state?.workspaces.find((w) => w.key === workspaceKey);
+  return state?.panes.find((p) => p.muxKey === ws?.muxKey && p.workspaceId === ws?.id);
+};
+
+/**
+ * The checkout's branch as a chip that opens the branch sheet. It renders nothing until the
+ * Hub answers and nothing on any error, so a folder outside a repository has no chip. With
+ * `worktree` it asks about that checkout. `paneKey` is the Pane Files reads through; the
+ * Workspace's first Pane when absent.
+ */
+export function BranchChip({
+  workspaceKey,
+  worktree,
+  paneKey,
+  state,
+  onSwitched,
+}: {
+  workspaceKey: string;
+  worktree?: string;
+  paneKey?: string;
+  state: State | null;
+  onSwitched?: (list: BranchList) => void;
+}) {
+  const ws = state?.workspaces.find((w) => w.key === workspaceKey);
+  const host = state?.hosts.find((h) => h.id === state.muxes.find((m) => m.key === ws?.muxKey)?.hostId);
+  const pane = firstPane(state, workspaceKey);
+  const via = paneKey ?? pane?.key;
+  const [list, setList] = useState<BranchList | null>(null);
+  const [open, setOpen] = useState(false);
+  const base = `/api/workspaces/${encodeURIComponent(workspaceKey)}`;
+  const url = `${base}/branches${worktree ? `?worktree=${encodeURIComponent(worktree)}` : ''}`;
+
+  useEffect(() => {
+    let live = true;
+    setList(null);
+    api<BranchList>(url, undefined, 'GET').then(
+      (value) => live && setList(value),
+      () => live && setList(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [url]);
+
+  if (!list) return null;
+  const here = list.worktrees.find((w) => w.current);
+  const label = list.current ?? (here ? `@${here.head.slice(0, 7)}` : 'detached');
+
+  /** The checkout the Workspace itself sits in: the deepest worktree holding its cwd. Files
+   *  opens that one plainly, without `worktree=`, so its branch can still be switched. */
+  const own = (w: Worktree) => {
+    const cwd = ws?.cwd ?? pane?.cwd;
+    if (!cwd) return false;
+    const at = tildePath(cwd);
+    const holds = (p: string) => at === tildePath(p) || at.startsWith(`${tildePath(p)}/`);
+    const deepest = list.worktrees.filter((x) => holds(x.path)).sort((a, b) => b.path.length - a.path.length)[0];
+    return deepest?.path === w.path;
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-haspopup="dialog"
+        onClick={() => {
+          setOpen(true);
+          // Agents move branches; the sheet opens on a fresh list, and keeps the old one on a miss.
+          api<BranchList>(url, undefined, 'GET').then(setList, () => {});
+        }}
+        // A 44 px target around a 36 px chip, so the header keeps its height.
+        className="group press flex min-h-11 max-w-[9.5rem] min-w-0 shrink items-center outline-none lg:max-w-[16rem]"
+      >
+        <span className="flex h-9 min-w-0 items-center gap-1.5 rounded-chip border border-border bg-bg px-2.5 font-mono text-caption text-fg group-hover:border-muted/50 group-focus-visible:ring-2 group-focus-visible:ring-accent">
+          <Branch className="shrink-0 text-muted" />
+          <span className="sr-only">Branch </span>
+          <span className="min-w-0 truncate">{label}</span>
+          <ChevronDown className="shrink-0 text-muted" />
+        </span>
+      </button>
+      <BranchSheet
+        open={open}
+        onClose={() => setOpen(false)}
+        list={list}
+        meta={[ws?.label, host?.label].filter(Boolean).join(' · ')}
+        worktree={worktree}
+        onSwitch={async (branch) => {
+          const next = await api<BranchList>(`${base}/switch`, { branch } satisfies SwitchBody);
+          setList(next);
+          onSwitched?.(next);
+        }}
+        onOpen={(w) => {
+          setOpen(false);
+          if (via) navigate(filesHash(via, own(w) ? {} : { dir: w.path, worktree: w.path }));
+        }}
+      />
+    </>
+  );
+}
+
+export function Diff({ workspaceKey, worktree, state }: { workspaceKey: string; worktree?: string; state: State | null }) {
+  const ws = state?.workspaces.find((w) => w.key === workspaceKey);
+  const pane = firstPane(state, workspaceKey);
   const [scope, setScope] = useState<DiffScope>('working');
   const [wrap, setWrap] = useState(false);
   const [nonce, setNonce] = useState(0);
@@ -179,7 +300,8 @@ export function Diff({ workspaceKey, state }: { workspaceKey: string; state: Sta
   const [error, setError] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
-  const url = (extra = '') => `/api/workspaces/${encodeURIComponent(workspaceKey)}/diff?scope=${scope}${extra}`;
+  const url = (extra = '') =>
+    `/api/workspaces/${encodeURIComponent(workspaceKey)}/diff?scope=${scope}${worktree ? `&worktree=${encodeURIComponent(worktree)}` : ''}${extra}`;
 
   useEffect(() => {
     let live = true;
@@ -197,7 +319,7 @@ export function Diff({ workspaceKey, state }: { workspaceKey: string; state: Sta
     return () => {
       live = false;
     };
-  }, [workspaceKey, scope, nonce]);
+  }, [workspaceKey, worktree, scope, nonce]);
 
   /** Replace one cut file with its whole diff. The list stays as it is. */
   const whole = async (path: string) => {
@@ -213,6 +335,9 @@ export function Diff({ workspaceKey, state }: { workspaceKey: string; state: Sta
       return next;
     });
 
+  const desktop = useDesktop();
+  const [scopeBox, scopeWidth] = useWidth();
+  const chip = <BranchChip workspaceKey={workspaceKey} worktree={worktree} state={state} onSwitched={() => setNonce((n) => n + 1)} />;
   const files = data?.files ?? [];
   const added = files.reduce((n, f) => n + f.additions, 0);
   const removed = files.reduce((n, f) => n + f.deletions, 0);
@@ -237,6 +362,7 @@ export function Diff({ workspaceKey, state }: { workspaceKey: string; state: Sta
         <div className="flex min-w-0 flex-1 flex-col">
           <h1 className="truncate text-title tracking-tight">{ws?.label ?? 'Diff'}</h1>
           <p className="truncate text-caption text-muted">
+            {worktree && `worktree ${basename(worktree)} · `}
             {data ? (
               files.length === 0 ? (
                 'no changes'
@@ -253,6 +379,15 @@ export function Diff({ workspaceKey, state }: { workspaceKey: string; state: Sta
             )}
           </p>
         </div>
+        {desktop && chip}
+        {pane && (
+          <Link
+            to={filesHash(pane.key, worktree ? { dir: worktree, worktree } : {})}
+            className="flex min-h-11 shrink-0 items-center px-2 text-body font-medium text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]"
+          >
+            Files
+          </Link>
+        )}
         <button
           type="button"
           aria-pressed={wrap}
@@ -273,12 +408,17 @@ export function Diff({ workspaceKey, state }: { workspaceKey: string; state: Sta
         </button>
       </header>
 
-      <div aria-label="Scope" className="shrink-0 px-4 pt-1 pb-2">
-        <SegmentedControl
-          options={SCOPES.map(([, label]) => label)}
-          value={SCOPES.find(([value]) => value === scope)![1]}
-          onChange={(label: string) => setScope(SCOPES.find(([, l]) => l === label)![0])}
-        />
+      {/* The phone header has no room for the chip beside Files, wrap and Refresh; it leads the scope row. */}
+      <div className="flex shrink-0 items-center gap-2 px-4 pt-1 pb-2">
+        {!desktop && chip}
+        <div ref={scopeBox} aria-label="Scope" className="min-w-0 flex-1">
+          <SegmentedControl
+            key={scopeWidth}
+            options={SCOPES.map(([, label]) => label)}
+            value={SCOPES.find(([value]) => value === scope)![1]}
+            onChange={(label: string) => setScope(SCOPES.find(([, l]) => l === label)![0])}
+          />
+        </div>
       </div>
 
       {scope === 'base' && data?.base && <p className="shrink-0 px-4 pb-2 text-caption text-muted">vs {data.base}</p>}
@@ -291,12 +431,14 @@ export function Diff({ workspaceKey, state }: { workspaceKey: string; state: Sta
                 ? 'Not a git repository'
                 : error === 'unknown-workspace'
                   ? 'Workspace is gone'
-                  : error === 'no-base'
-                    ? 'No base branch to compare with'
-                    : 'Could not read the diff'}
+                  : error === 'worktree'
+                    ? 'That worktree is gone'
+                    : error === 'no-base'
+                      ? 'No base branch to compare with'
+                      : 'Could not read the diff'}
             </p>
-            {error === 'not-a-repo' ? (
-              <p className="font-mono text-caption text-muted">{ws?.cwd}</p>
+            {error === 'not-a-repo' || error === 'worktree' ? (
+              <p className="font-mono text-caption text-muted">{error === 'worktree' ? worktree : ws?.cwd}</p>
             ) : error === 'unknown-workspace' ? (
               <a href="#/" className="text-body text-accent">
                 ‹ All panes
