@@ -238,6 +238,30 @@ export default function Editor({
   const done = () => (unsaved ? setLeaving('done') : onDone(last.current));
   const reload = () => (copiedOnce.current ? onReload() : setLeaving('reload'));
 
+  // A back swipe (iOS) or the Android Back button would drop unsaved edits without a word:
+  // Edit is screen state, and `beforeunload` does not fire on a hash change. So while the
+  // editor is open it holds one extra history entry at the same URL. Back lands on the entry
+  // under it, which the router reads as the same route; that asks the question Done asks and,
+  // on Keep editing, puts the entry back. When the editor closes any other way it pops its own.
+  const back = useRef(done);
+  back.current = done;
+  useEffect(() => {
+    // `window.history`: CodeMirror's `history` import shadows the global.
+    const mark = `editor-${Math.random()}`;
+    const href = location.href;
+    window.history.pushState({ mark }, '');
+    const onPop = () => {
+      if (location.href !== href) return; // another route: the router takes it, and this screen goes
+      window.history.pushState({ mark }, '');
+      back.current();
+    };
+    addEventListener('popstate', onPop);
+    return () => {
+      removeEventListener('popstate', onPop);
+      if (window.history.state?.mark === mark) window.history.back();
+    };
+  }, []);
+
   const selectAll = () => {
     const v = view.current;
     if (!v) return;

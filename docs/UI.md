@@ -761,6 +761,12 @@ HTML, CSS, Python, YAML) is its own chunk, loaded into a Compartment after the e
   reads `Not saved · <reason>` under the header, and **Save** retries.
 - **Done** with unsaved edits asks `Discard your edits?` (**Keep editing** / **Discard**). The
   browser's own leave prompt guards a reload or a closed tab while edits are unsaved.
+- A back swipe (iOS) or the Android Back button asks the same question. Edit is screen state, so
+  a hash change does not fire `beforeunload`. While the editor is open it holds one extra
+  history entry at the same URL; Back lands on the entry under it, which the router reads as the
+  same route, and the editor either closes (no unsaved edits) or asks and, on **Keep editing**,
+  pushes the entry back. **Done** and **Discard** pop the entry again. Leaving the editor by
+  another route (a desktop sidebar click) leaves the entry in the stack, one extra Back.
 
 **Changed on disk (412).** When the file changed since it was opened, nothing is written.
 A banner in the blocked card's shape (`border-warn/35 bg-warn/8`, a warn dot and a 12 px
