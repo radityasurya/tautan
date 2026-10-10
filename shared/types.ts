@@ -150,8 +150,10 @@ export interface DiffFile {
   hunks: DiffHunk[];
 }
 export interface DiffResult { scope: DiffScope; base?: string; files: DiffFile[]; truncated: boolean }
-/** GET /api/workspaces/:key/branches, and the answer to POST …/switch. null = detached HEAD. */
-export interface BranchList { current: string | null; branches: string[] }
+/** One checkout of the repository, from `git worktree list --porcelain`. */
+export interface Worktree { path: string; branch: string | null; head: string; current: boolean; locked?: boolean; prunable?: boolean }
+/** GET /api/workspaces/:key/branches[?worktree=<path>], and the answer to POST …/switch. null = detached HEAD. */
+export interface BranchList { current: string | null; branches: string[]; worktrees: Worktree[] }
 /** POST /api/workspaces/:key/switch — one of BranchList.branches. */
 export interface SwitchBody { branch: string }
 /** POST /api/push/subscribe */
