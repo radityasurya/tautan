@@ -1,8 +1,7 @@
-// Folder list over /api/files/list: the picker in New Tab / New Workspace, and the viewer's
-// folder view. One list, two modes: `files` shows files too and taps open them.
+// Folder list over /api/files/list: the picker in New Tab / New Workspace, and Files. One list, two modes: `files` shows files too and taps open them.
 import { useEffect, useState } from 'react';
 import { Button, Chip, SearchInput, Skeleton, usePal } from './halaska-kit';
-import { crumbs, filesUrl, readRecent, writeRecent } from './folders-logic.ts';
+import { crumbs, filesUrl, readRecent, size, writeRecent } from './folders-logic.ts';
 
 export type Entry = { name: string; path: string; kind: 'dir' | 'file'; size?: number; mtime?: number };
 type Listing = { path: string; home: string; parent: string | null; entries: Entry[]; truncated: boolean };
@@ -14,7 +13,6 @@ const WHY: Record<string, string> = {
   'not a directory': 'That path is a file, not a folder',
 };
 
-const size = (n?: number) => (n === undefined ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const ROW = 'flex min-h-11 w-full items-center gap-3 px-1 text-left outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)]';
 
 export function FolderBrowser({

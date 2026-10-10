@@ -1,4 +1,4 @@
-// Pure helpers for the folder picker and the file viewer's folder view.
+// Pure helpers for the folder picker, Files, the file viewer and the editor.
 import { store } from './store.tsx';
 
 /** Breadcrumb steps for an absolute `path`. A path under `home` starts at `~`. */
@@ -17,6 +17,30 @@ export const dirname = (path: string) => {
   const cut = path.replace(/\/+$/, '').lastIndexOf('/');
   return cut < 0 ? '' : cut === 0 ? '/' : path.slice(0, cut);
 };
+
+/** The last segment of a path: a file's name, a worktree's folder. */
+export const basename = (path: string) => path.replace(/\/+$/, '').split('/').at(-1) || path;
+
+/** `1.2 MB`, `14 KB`, `512 B`; empty when the size is unknown. */
+export const size = (n?: number) =>
+  n === undefined ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+
+/**
+ * `#/file/<paneKey>`: Files at `dir` without a `path`, the viewer with one. `worktree` rides
+ * along on both, so the branch chip and the Diff link stay on that checkout.
+ */
+export function filesHash(paneKey: string, o: { path?: string; dir?: string; worktree?: string } = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(o)) if (v) q.set(k, v);
+  return `#/file/${encodeURIComponent(paneKey)}${q.size ? `?${q}` : ''}`;
+}
+
+/** A decoded file with its byte order mark set aside; a save puts it back. */
+export const splitBom = (text: string) =>
+  text.startsWith('\uFEFF') ? { bom: true, text: text.slice(1) } : { bom: false, text };
+
+/** The line break a file already uses: CRLF, a lone CR, or LF. The editor joins lines with it. */
+export const lineBreakOf = (text: string) => (text.includes('\r\n') ? '\r\n' : text.includes('\r') ? '\r' : '\n');
 
 /** A viewer path to something the list and raw routes accept: absolute, `~`, or under the Pane cwd. */
 export const absolute = (path: string, cwd?: string) =>

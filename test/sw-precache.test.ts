@@ -47,6 +47,17 @@ describe('swPrecache plugin', () => {
     );
   });
 
+  test('never precaches a lazy-* chunk: the editor and CodeMirror load on the first Edit tap', () => {
+    const out = mkdtempSync(join(tmpdir(), 'swpre-'));
+    writeFileSync(join(out, 'sw.js'), '// worker\n');
+    mkdirSync(join(out, 'assets'));
+    for (const name of ['index-A.js', 'lazy-editor-B.js', 'lazy-index-C.js']) writeFileSync(join(out, 'assets', name), '');
+    stamp(out, '.');
+    const sw = readFileSync(join(out, 'sw.js'), 'utf8');
+    expect(sw).toContain('"/assets/index-A.js"');
+    expect(sw).not.toContain('lazy-');
+  });
+
   test('stamps the configured outDir only', () => {
     const root = mkdtempSync(join(tmpdir(), 'swpre-'));
     for (const dir of ['a', 'b']) {

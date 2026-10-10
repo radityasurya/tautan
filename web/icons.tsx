@@ -223,3 +223,42 @@ export const ZoomOut = (p: Props) => (
     <path d="M20 10h-6V4M4 14h6v6M14 10l6.5-6.5M10 14l-6.5 6.5" />
   </Icon>
 );
+
+/** Files, and the viewer's way back to the file's folder. */
+export const Folder = (p: Props) => (
+  <Icon {...p}>
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  </Icon>
+);
+
+export const Download = (p: Props) => (
+  <Icon {...p}>
+    <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+  </Icon>
+);
+
+/** The branch chip: two commits and a merge. */
+export const Branch = (p: Props) => (
+  <Icon size={14} strokeWidth={2} {...p}>
+    <circle cx="6" cy="5" r="2" />
+    <circle cx="6" cy="19" r="2" />
+    <circle cx="18" cy="8" r="2" />
+    <path d="M6 7v10M18 10c0 4-6 3-11 7" />
+  </Icon>
+);
+
+/** A sandboxed frame. */
+export const Lock = (p: Props) => (
+  <Icon size={14} strokeWidth={2} {...p}>
+    <rect x="5" y="11" width="14" height="9" rx="2" />
+    <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+  </Icon>
+);
+
+/** A warning that needs a decision, such as a file changed on disk. */
+export const Warn = (p: Props) => (
+  <Icon strokeWidth={2} {...p}>
+    <path d="M12 3l10 18H2z" />
+    <path d="M12 10v5M12 18h.01" />
+  </Icon>
+);
