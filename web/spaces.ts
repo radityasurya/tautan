@@ -47,6 +47,33 @@ export const getAgentSort = (): AgentSort => {
 };
 export const setAgentSort = (v: AgentSort) => set(SORT, v);
 
+/** The Spaces section's order: this device's drag order, or the Agents sorts by Space. */
+export type SpaceSort = 'manual' | AgentSort;
+const SPACE_SORT = 'tautan.spaceSort';
+const SPACE_AGENTS = 'tautan.spaceAgentsOnly';
+export const getSpaceSort = (): SpaceSort => {
+  const v = get(SPACE_SORT);
+  return v === 'urgency' || v === 'recent' || v === 'name' ? v : 'manual';
+};
+export const setSpaceSort = (v: SpaceSort) => set(SPACE_SORT, v);
+/** Hide Spaces where no Agent runs (only shells, or empty). */
+export const getSpaceAgentsOnly = () => get(SPACE_AGENTS) === 'on';
+export const setSpaceAgentsOnly = (on: boolean) => set(SPACE_AGENTS, on ? 'on' : 'off');
+
+/**
+ * Does a blur leave a view menu? Only when focus lands outside it. Safari, on the Mac and on
+ * iOS, never focuses a clicked button, so a click on a choice blurs to `null`: closing then
+ * unmounted the menu on mousedown and the click never landed. A tap outside closes it through
+ * `pointerdown`, and Tab out of it still lands somewhere.
+ */
+export const leavesMenu = (menu: { contains(node: Node | null): boolean }, next: EventTarget | null) =>
+  !!next && !menu.contains(next as Node);
+
+/** `/home/ada/x`, `/Users/ada/x` and `/root/x` → `~/x`: a Workspace path the way its owner says it. */
+// ponytail: State carries no Host home, so the usual homes are matched by shape and one
+// elsewhere stays absolute. Send each Host's home in State if that ever reads wrong.
+export const tildePath = (path: string) => path.replace(/^(?:\/home\/[^/]+|\/Users\/[^/]+|\/root)(?=\/|$)/, '~');
+
 // ---- order ----
 
 /** herdr's priority order: blocked, then done the user has not seen, working, the rest. */
@@ -92,4 +119,23 @@ export function bySpace<S extends { muxKey: string; id: string }>(rows: StatePan
 export function rollup(panes: StatePane[], unseen: (p: StatePane) => boolean): { status: Status; seen: boolean } | null {
   const top = agentRows(panes, { shells: false, unseen })[0];
   return top ? { status: top.status, seen: !unseen(top) } : null;
+}
+
+/**
+ * Spaces in the Spaces section's order. `manual` keeps the given (drag) order; `urgency` puts
+ * the Space whose most urgent Agent needs you first; `recent` the Space with the newest
+ * Status change first; `name` by label. Ties keep the given order (sort is stable).
+ */
+export function sortSpaces<T extends { w: { label: string }; all: StatePane[] }>(
+  spaces: T[],
+  o: { sort: SpaceSort; unseen: (p: StatePane) => boolean },
+): T[] {
+  if (o.sort === 'manual') return spaces;
+  const newest = (t: T) => Math.max(0, ...t.all.map((p) => p.statusChangedAt ?? 0));
+  const rank = (t: T) => Math.min(5, ...t.all.map((p) => urgency(p, o.unseen)));
+  const by =
+    o.sort === 'name' ? (a: T, b: T) => a.w.label.localeCompare(b.w.label, undefined, { numeric: true, sensitivity: 'base' })
+    : o.sort === 'recent' ? (a: T, b: T) => newest(b) - newest(a)
+    : (a: T, b: T) => rank(a) - rank(b) || newest(b) - newest(a);
+  return [...spaces].sort(by);
 }

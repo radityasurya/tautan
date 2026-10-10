@@ -10,6 +10,7 @@ import { HostDetail, Hosts } from './hosts.tsx';
 import { AgentsTab, HostsTab, SettingsTab } from './icons.tsx';
 import { PaneScreen } from './pane.tsx';
 import { CHAT_EVENT } from '../shared/chat-merge.ts';
+import { autoDeliver } from './pending.ts';
 import { setBadge } from './push.ts';
 import { Settings } from './settings.tsx';
 import { UsageStrip } from './usage.tsx';
@@ -114,6 +115,27 @@ export function useKitTheme(): KitTheme {
 }
 
 export const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---- the keyboard ----
+// iOS keeps the layout viewport when the keyboard opens and ignores `interactive-widget`, so
+// the visual viewport is the only ruler for the space above the keyboard. The phone's Pane
+// screen is sized from `--vv-h` and placed at `--vv-top`, so the composer sits on the
+// keyboard. `--safe-b` drops the home-indicator inset while the keyboard covers it.
+// ponytail: a 120 px gap is the keyboard test; a floating iPad keyboard leaves the inset on.
+const viewport = window.visualViewport;
+if (viewport) {
+  const follow = () => {
+    if (viewport.scale > 1.01) return; // a pinch zoom is not a keyboard
+    const root = document.documentElement.style;
+    root.setProperty('--vv-h', `${viewport.height}px`);
+    root.setProperty('--vv-top', `${viewport.offsetTop}px`);
+    if (innerHeight - viewport.height > 120) root.setProperty('--safe-b', '0px');
+    else root.removeProperty('--safe-b');
+  };
+  viewport.addEventListener('resize', follow);
+  viewport.addEventListener('scroll', follow);
+  follow();
+}
 
 /** A short tap, Android only, behind the Settings toggle. iOS has no web haptics. */
 export function haptic() {
@@ -255,6 +277,8 @@ export function useEvents(pick: (state: State | null) => string[]) {
 
 const path = () => location.hash.slice(1) || '/';
 let apply: ((route: string) => void) | null = null;
+/** The last screen outside Settings and Hosts: the Pane, in its lens, that closing them returns to. */
+let before = '#/';
 
 /** `pane` for `#/pane/<key>`, `` for `#/`: what kind of screen a hash route is. */
 const screenOf = (hash: string) => hash.replace(/^#?\/?/, '').split('/')[0];
@@ -266,6 +290,9 @@ const screenOf = (hash: string) => hash.replace(/^#?\/?/, '').split('/')[0];
  * the content in place, so the header, the Tab strip and the dock never move.
  */
 export function navigate(to: string, { transition = screenOf(to) !== screenOf(location.hash), replace = false } = {}) {
+  // Every way out of Settings and Hosts — "All panes", the Panes tab — says `#/`, and means
+  // the screen they were opened from. Browser back already lands there.
+  if (to === '#/' && screenRoute(path())) to = before;
   if (to === location.hash) return;
   const run = () => {
     if (replace) history.replaceState(null, '', to);
@@ -296,6 +323,9 @@ export function Link({ to, onClick, ...rest }: { to: string } & AnchorHTMLAttrib
 
 function useRoute() {
   const [route, setRoute] = useState(path);
+  useEffect(() => {
+    if (!screenRoute(route)) before = `#${route}`;
+  }, [route]);
   useEffect(() => {
     apply = setRoute;
     const on = () => setRoute(path());
@@ -618,6 +648,12 @@ export function App() {
     return () => { document.title = 'tautan'; };
   }, [paneKey, state]);
 
+  // A reply held while its Agent worked goes out once that Pane is back at a prompt, whichever
+  // screen is open: the Status of every Pane is known here, not in one Composer.
+  useEffect(() => {
+    if (state) autoDeliver(state.panes);
+  }, [state]);
+
   // The app icon counts what the Needs you section holds: unseen `blocked` and `done`.
   // The tab badge stays stricter, because only `blocked` is worth a push.
   useEffect(() => {
@@ -639,6 +675,10 @@ export function App() {
   ) : (
     <Home state={state} />
   );
+  // A Pane route is keyed by its Tab, so a focus move between a split's cells keeps the
+  // view mounted: no re-fetched Chat, no re-measured grid, no lost scroll.
+  const openPane = paneKey ? state?.panes.find((p) => p.key === paneKey) : undefined;
+  const screenKey = openPane ? `tab:${openPane.muxKey}/${openPane.tabId}` : route;
   const screens = paneKey ? (
         <PaneScreen paneKey={paneKey} state={state} screen={screen} screens={paneScreens} streamId={streamId} />
       ) : diffKey ? (
@@ -675,7 +715,9 @@ export function App() {
             <ScreenNav hosts={!!hostsAt} current={hostsAt ? (hostId ?? '') : (settingsAt ?? '')} state={state} />
           ) : (
             sidebar && (
-              <aside aria-label="All panes" className="sticky top-0 flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface">
+              // Not sticky: the frame never scrolls, and a sticky box is a stacking context that
+              // held Home's sheets and Close dialog (z 10000) under the Pane column beside it.
+              <aside aria-label="All panes" className="flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface">
                 {/* Home scrolls its own list, under a top that stays put. */}
                 <div className="min-h-0 flex-1">
                   <ScreenBoundary key="sidebar" where="Pane list"><Home state={state} compact /></ScreenBoundary>
@@ -692,11 +734,11 @@ export function App() {
               </aside>
             )
           )}
-          <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain"><ScreenBoundary key={route} where={route}>{screens}</ScreenBoundary></div>
+          <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain"><ScreenBoundary key={screenKey} where={route}>{screens}</ScreenBoundary></div>
         </div>
       ) : (
         <>
-          <ScreenBoundary key={route} where={route}>{screens}</ScreenBoundary>
+          <ScreenBoundary key={screenKey} where={route}>{screens}</ScreenBoundary>
           {!paneKey && !diffKey && !fileKey && <TabBar route={route} badge={needsYou} />}
         </>
       )}

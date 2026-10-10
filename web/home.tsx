@@ -9,14 +9,16 @@ import { moveWorkspace, orderWorkspaces, readOrder, writeOrder, type WorkspaceOr
 import { Check, ChevronDown, ChevronRight, CollapseAll, ExpandAll, ListHerdr, ListTautan, More, Plus, Sliders } from './icons.tsx';
 import { Chip, EmptyState, IconButton, SearchInput, Skeleton, usePal } from './halaska-kit';
 import {
-  agentRows, bySpace, getAgentGroup, getAgentSort, getPaneList, getShowShells, rollup, setAgentGroup, setAgentSort,
-  setPaneList, setShowShells, usePref, type AgentGroup, type AgentSort, type PaneList,
+  agentRows, bySpace, getAgentGroup, getAgentSort, getPaneList, getShowShells, getSpaceAgentsOnly, getSpaceSort, leavesMenu,
+  rollup, setAgentGroup, setAgentSort, setPaneList, setShowShells, setSpaceAgentsOnly, setSpaceSort, sortSpaces, tildePath,
+  usePref, type AgentGroup, type AgentSort, type PaneList, type SpaceSort,
 } from './spaces.ts';
 import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
 import { fetchExplain, ON_WARN, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
 import { store } from './store.tsx';
+import { PROVIDER_LABELS } from './usage.tsx';
 
 // ---- status ----
 
@@ -102,6 +104,18 @@ export function commonAgent(panes: StatePane[]): string {
 
 /** Blocked reason, else the last non-empty screen line, else the directory. */
 const preview = (p: StatePane) => p.lastLine ?? basename(p.cwd) ?? '';
+/** The Agent kind by name: the usage strip's provider names cover `Claude` and `Codex`; pi and
+ *  omp have no label there and keep their own ids, as the Chat view spells them. */
+const agentName = (agent?: string) => (agent ? (PROVIDER_LABELS[agent] ?? agent) : 'shell');
+
+/** `Workspace · Host`, the Host only when there are several: where a row runs, when no
+ *  heading says it. Shared with the Switch drawer. */
+export function placeOf(pane: StatePane, state: State | null): string | undefined {
+  const workspace = state?.workspaces.find((w) => w.muxKey === pane.muxKey && w.id === pane.workspaceId)?.label;
+  const hostId = state?.muxes.find((m) => m.key === pane.muxKey)?.hostId;
+  const host = (state?.hosts.length ?? 0) > 1 ? state?.hosts.find((h) => h.id === hostId)?.label : undefined;
+  return [workspace, host].filter(Boolean).join(' · ') || undefined;
+}
 
 /** Does a row's own text — agent, title, Workspace label — carry the needle? Shared with
  *  the Switch drawer, so one search means one match everywhere. */
@@ -140,6 +154,8 @@ function StatusPill({ status, n }: { status: Status; n: number }) {
 
 /** Focus ring for the list's own buttons: inside the edge, so a full-width row never clips it. */
 const RING = 'outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent';
+/** A row's and a header's side inset: 16 px here; the Switch drawer sets `--row-inset` to its sheet's 24. */
+const INSET = 'px-[var(--row-inset,1rem)]';
 
 // ---- rows ----
 
@@ -160,13 +176,15 @@ export interface RowActions {
  * scrolls the page's. A tap on an open row closes it instead of navigating. Long-press
  * opens the same actions as a menu, which is also the desktop path.
  */
-function Row({ pane, first, actions, context, compact }: {
+export function Row({ pane, first, actions, context, compact, current }: {
   pane: StatePane;
   first?: boolean;
   actions?: RowActions;
   context?: string;
-  /** The desktop sidebar: one 36 px line, no preview. */
+  /** The desktop sidebar: the title over the Agent and where it runs, no preview. */
   compact?: boolean;
+  /** The Pane on screen behind the Switch drawer. */
+  current?: boolean;
 }) {
   const fresh = unseen(pane);
   const word = pane.status[0]!.toUpperCase() + pane.status.slice(1); // UX §7: the dot never carries Status alone
@@ -189,15 +207,20 @@ function Row({ pane, first, actions, context, compact }: {
           setX(0);
         }
       }}
-      className={`press flex items-center [-webkit-touch-callout:none] ${RING} ${compact ? 'min-h-9 gap-2.5 px-4 py-1 hover:bg-bg active:bg-bg' : 'min-h-14 gap-3 px-4 py-2.5 hover:bg-surface active:bg-surface'}`}
+      aria-current={current ? 'page' : undefined}
+      className={`press flex items-center [-webkit-touch-callout:none] ${RING} ${INSET} ${compact ? 'min-h-11 gap-2.5 py-1.5' : 'min-h-14 gap-3 py-2.5'} ${
+        current ? 'bg-muted/20' : compact ? 'hover:bg-bg active:bg-bg' : 'hover:bg-surface active:bg-surface'
+      }`}
       {...(actions ? press : {})}
     >
       <Dot status={pane.status} seen={!fresh} />
       {compact ? (
-        <span aria-hidden className="flex min-w-0 flex-1 items-baseline gap-2">
+        <span aria-hidden className="flex min-w-0 flex-1 flex-col">
           <span className={`truncate text-[13px] ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
-          <span className="shrink-0 text-caption text-muted">{pane.agent ?? 'shell'}</span>
-          {context && <span className="min-w-0 truncate text-caption text-muted/70">{context}</span>}
+          <span className="truncate text-caption text-muted">
+            {agentName(pane.agent)}
+            {context && <span className="text-muted/70"> · {context}</span>}
+          </span>
         </span>
       ) : (
         <span aria-hidden className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -281,8 +304,8 @@ function Row({ pane, first, actions, context, compact }: {
  * A blocked Pane in Needs you: the Agent, its Workspace and Tab, the command from Explain,
  * and the plain Yes / No of the Pane's own blocked card — the same keys through the same
  * stale-prompt guard. A 409 never re-sends: the answers give way to Re-read. Explain loads
- * only here, so only blocked Panes cost a fetch. `compact` is the desktop sidebar: one
- * 36 px row with Yes only; No stays in the Pane, and the row itself opens it.
+ * only here, so only blocked Panes cost a fetch. `compact` is the desktop sidebar: the title
+ * over the Agent and where it waits, with Yes only; No stays in the Pane, and the row opens it.
  */
 function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: string; compact?: boolean }) {
   const [explain, setExplain] = useState<ExplainResponse | null>(null);
@@ -365,11 +388,16 @@ function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: strin
   if (compact) {
     return (
       <li className="px-2 py-0.5">
-        <div className={`flex min-h-9 items-center gap-2 pr-1 ${frame}`}>
-          <Link to={to} aria-label={label} title={command} className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch pl-2">
+        <div className={`flex min-h-11 items-center gap-2 pr-1 ${frame}`}>
+          <Link to={to} aria-label={label} title={command} className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch py-1 pl-2">
             <Dot status="blocked" />
-            <span aria-hidden className="truncate text-[13px] font-medium text-fg">{pane.title}</span>
-            <span aria-hidden className="shrink-0 text-caption text-warn">{changed ? 'prompt changed' : agent}</span>
+            <span aria-hidden className="flex min-w-0 flex-col">
+              <span className="truncate text-[13px] font-medium text-fg">{pane.title}</span>
+              <span className="truncate text-caption text-warn">
+                {changed ? 'prompt changed' : agentName(pane.agent)}
+                {where && <span className="text-muted"> · {where}</span>}
+              </span>
+            </span>
           </Link>
           {changed ? (
             <button type="button" onClick={reread} className="press h-7 shrink-0 rounded-chip px-2.5 text-[12px] font-medium text-accent">
@@ -482,11 +510,13 @@ const dropShadow = (d: DropMark) => (d === 'above' ? 'shadow-[inset_0_2px_0_var(
  * A list group header, one row: chevron, the label (the first thing to truncate), the Host as
  * a muted chip, the Status counts as pills on the right, then ⋯. Workspace groups also open
  * their menu on long-press. With a pointer, the row lights up on hover and ⋯ brightens; it
- * is always there, so nothing moves.
+ * is always there, so nothing moves. `path` runs under the label the way the Spaces list
+ * draws it; the Switch drawer passes it.
  */
-function GroupHeader({
+export function GroupHeader({
   label,
   host,
+  path,
   panes,
   open,
   compact,
@@ -497,6 +527,8 @@ function GroupHeader({
 }: {
   label: string;
   host?: string;
+  /** The Workspace cwd, home already shortened to `~`. */
+  path?: string;
   panes: StatePane[];
   open: boolean;
   /** The 300 px sidebar: one pill, the most urgent, so the label keeps its room. */
@@ -512,15 +544,15 @@ function GroupHeader({
   return (
     <h2
       {...drag}
-      className={`group/header flex items-center ${dropShadow(drop)} ${compact ? 'mt-2 hover:bg-bg' : 'mt-4 hover:bg-surface'} ${onMenu ? (compact ? 'pr-1.5' : 'pr-2') : 'pr-4'}`}
+      className={`group/header flex items-center ${dropShadow(drop)} ${compact ? 'mt-2 hover:bg-bg' : 'mt-4 hover:bg-surface'} ${onMenu ? (compact ? 'pr-1.5' : 'pr-2') : 'pr-[var(--row-inset,1rem)]'}`}
     >
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
         {...(onMenu ? press : {})}
-        className={`flex min-w-0 flex-1 items-center gap-2 self-stretch pl-4 text-left [-webkit-touch-callout:none] ${RING} ${
-          compact ? 'min-h-9 py-1.5' : 'min-h-11 py-2'
+        className={`flex min-w-0 flex-1 items-center gap-2 self-stretch pl-[var(--row-inset,1rem)] text-left [-webkit-touch-callout:none] ${RING} ${
+          compact ? 'min-h-9 py-1.5 pointer-coarse:min-h-11' : 'min-h-11 py-2'
         }`}
       >
         <Chevron className="shrink-0 text-muted" />
@@ -533,6 +565,12 @@ function GroupHeader({
               </span>
             )}
           </span>
+          {/* Right to left, so a long path gives up its start and keeps the project at its end. */}
+          {path && (
+            <span dir="rtl" className="block truncate text-left font-mono text-caption text-muted">
+              <bdi>{path}</bdi>
+            </span>
+          )}
         </span>
         <span className="flex shrink-0 items-center gap-1">
           {tally(panes, compact ? 1 : 2).map(([s, n]) => (
@@ -558,7 +596,7 @@ function GroupHeader({
 
 /** A pinned section header — Needs you, Running — collapsible like a Workspace group, and
  *  drawn the same way: chevron, label, and the count where a group has its pills. */
-function PinnedHeader({ label, count, open, compact, onToggle }: { label: string; count: number; open: boolean; compact?: boolean; onToggle: () => void }) {
+export function PinnedHeader({ label, count, open, compact, onToggle }: { label: string; count: number; open: boolean; compact?: boolean; onToggle: () => void }) {
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <h2 className={`flex ${compact ? 'mt-2 hover:bg-bg' : 'mt-3 hover:bg-surface'}`}>
@@ -566,7 +604,7 @@ function PinnedHeader({ label, count, open, compact, onToggle }: { label: string
         type="button"
         aria-expanded={open}
         onClick={onToggle}
-        className={`flex w-full items-center gap-2 px-4 text-left ${RING} ${compact ? 'min-h-9 py-1.5' : 'min-h-11 py-2'}`}
+        className={`flex w-full items-center gap-2 text-left ${INSET} ${RING} ${compact ? 'min-h-9 py-1.5 pointer-coarse:min-h-11' : 'min-h-11 py-2'}`}
       >
         <Chevron className="shrink-0 text-muted" />
         <span className={`font-semibold tracking-tight text-fg ${compact ? 'text-[13px]' : 'text-[15px]'}`}>{label}</span>
@@ -594,12 +632,14 @@ function SectionHead({ id, label, count, compact, children }: { id: string; labe
 
 /**
  * One Space in the herdr list, after herdr's own `[ui.sidebar.spaces]` row: the rolled-up
- * state icon and the label, then the Host when there are several, and the Agent count. A tap
- * selects it and filters Agents; ⋯ and long-press open the Workspace menu.
+ * state icon and the label, then the Host when there are several, and the Agent count; the
+ * Workspace path runs under the label. A tap selects it and filters Agents; ⋯ and long-press
+ * open the Workspace menu.
  */
 function SpaceRow({
   label,
   host,
+  path,
   panes,
   selected,
   offline,
@@ -611,6 +651,8 @@ function SpaceRow({
 }: {
   label: string;
   host?: string;
+  /** The Workspace cwd, home already shortened to `~`. */
+  path?: string;
   panes: StatePane[];
   selected: boolean;
   offline?: boolean;
@@ -637,16 +679,26 @@ function SpaceRow({
         type="button"
         aria-pressed={selected}
         aria-label={[label, host, state, offline ? 'offline' : `${agents} Agent${agents === 1 ? '' : 's'}`].filter(Boolean).join(', ')}
+        title={path}
         onClick={onSelect}
         {...(onMenu ? press : {})}
         className={`flex min-w-0 flex-1 items-center gap-2.5 self-stretch pl-4 text-left [-webkit-touch-callout:none] ${RING} ${
-          compact ? 'min-h-9 py-1' : 'min-h-11 py-2'
+          compact ? 'min-h-11 py-1.5' : 'min-h-11 py-2'
         }`}
       >
         <Dot status={top?.status ?? 'idle'} seen={top?.seen ?? true} />
-        <span aria-hidden className="flex min-w-0 flex-1 items-baseline gap-1.5">
-          <span className={`truncate text-fg ${compact ? 'text-[13px]' : 'text-[15px]'} ${selected ? 'font-semibold' : ''}`}>{label}</span>
-          {host && <span className="max-w-[45%] shrink-0 truncate text-caption text-muted">{host}</span>}
+        <span aria-hidden className="flex min-w-0 flex-1 flex-col">
+          <span className="flex min-w-0 items-baseline gap-1.5">
+            <span className={`truncate text-fg ${compact ? 'text-[13px]' : 'text-[15px]'} ${selected ? 'font-semibold' : ''}`}>{label}</span>
+            {host && <span className="max-w-[45%] shrink-0 truncate text-caption text-muted">{host}</span>}
+          </span>
+          {/* Right to left, so a long path gives up its start and keeps the project at its end;
+              <bdi> keeps the path itself left to right. */}
+          {path && (
+            <span dir="rtl" className="truncate text-left font-mono text-caption text-muted">
+              <bdi>{path}</bdi>
+            </span>
+          )}
         </span>
         <span aria-hidden className={`shrink-0 text-[12px] tabular-nums ${offline ? 'text-danger' : agents ? 'text-muted' : 'text-muted/70'}`}>
           {count}
@@ -708,16 +760,33 @@ const SORTS: [AgentSort, string, string][] = [
   ['name', 'Name', 'A to Z'],
 ];
 
+const SPACE_SORTS: [SpaceSort, string, string][] = [
+  ['manual', 'Manual', 'Your drag order'],
+  ['urgency', 'Urgency', 'Needs you first'],
+  ['recent', 'Recent', 'Last change first'],
+  ['name', 'Name', 'A to Z'],
+];
+
+const menuItem = (compact?: boolean) => `press flex w-full items-center gap-2 rounded-lg px-2.5 text-left hover:bg-fg/6 ${RING} ${compact ? 'h-8 text-[13px]' : 'min-h-11 text-body'}`;
+const menuLabel = 'mb-1 px-2.5 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase';
+
+/** One checkmark row in a view menu: a sort choice or a toggle. */
+function MenuCheck({ on, name, hint, onClick, compact }: { on: boolean; name: string; hint: ReactNode; onClick: () => void; compact?: boolean }) {
+  return (
+    <button type="button" aria-pressed={on} onClick={onClick} className={menuItem(compact)}>
+      <span className="w-4 shrink-0 text-accent">{on && <Check size={16} />}</span>
+      <span className="text-fg">{name}</span>
+      <span className="ml-auto text-caption tabular-nums text-muted">{hint}</span>
+    </button>
+  );
+}
+
 /**
- * The Agents section's view options, behind one icon in its heading: Group (Priority is
- * herdr's flat attention queue, Spaces one group per Space), Sort within a group, and the
- * shells. The icon turns accent while anything differs from herdr's default. A small
- * popover, not a sheet: three short choices, read beside the list they change.
+ * A section's view options behind one icon in its heading. The icon turns accent while
+ * anything differs from the default. A small popover, not a sheet: a few short choices,
+ * read beside the list they change.
  */
-function AgentsView({ shellCount, compact }: { shellCount: number; compact?: boolean }) {
-  const group = usePref(getAgentGroup);
-  const sort = usePref(getAgentSort);
-  const shells = usePref(getShowShells);
+function ViewMenu({ name, said, custom, compact, children }: { name: string; said: string; custom: boolean; compact?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -739,24 +808,19 @@ function AgentsView({ shellCount, compact }: { shellCount: number; compact?: boo
       document.removeEventListener('keydown', esc);
     };
   }, [open]);
-
-  const custom = group !== 'priority' || sort !== 'urgency' || shells;
-  const said = `${GROUPS.find(([v]) => v === group)![1]}, sorted by ${SORTS.find(([v]) => v === sort)![1]}${shells ? ', shells shown' : ''}`;
-  const item = `press flex w-full items-center gap-2 rounded-lg px-2.5 text-left hover:bg-fg/6 ${RING} ${compact ? 'h-8 text-[13px]' : 'min-h-11 text-body'}`;
-  const label = 'mb-1 px-2.5 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase';
   return (
     <div
       ref={box}
       className="relative shrink-0"
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
+        if (leavesMenu(e.currentTarget, e.relatedTarget)) setOpen(false);
       }}
     >
       <button
         ref={trigger}
         type="button"
-        aria-label={`Agents view: ${said}`}
-        title="Group and sort"
+        aria-label={`${name}: ${said}`}
+        title={name}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
@@ -769,44 +833,79 @@ function AgentsView({ shellCount, compact }: { shellCount: number; compact?: boo
       {open && (
         <div
           role="dialog"
-          aria-label="Agents view"
+          aria-label={name}
           className="absolute top-full right-0 z-40 mt-1 w-60 rounded-xl border border-border bg-elevated p-1.5 normal-case shadow-elevated backdrop-blur-md"
         >
-          <p className={`${label} pt-1`}>Group</p>
-          <div role="group" aria-label="Group" className="grid grid-cols-2 gap-0.5 rounded-[10px] bg-fg/6 p-0.5">
-            {GROUPS.map(([v, name]) => (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={group === v}
-                onClick={() => setAgentGroup(v)}
-                className={`press rounded-lg font-medium transition-colors ${RING} ${compact ? 'h-7 text-[12px]' : 'h-10 text-[14px]'} ${
-                  group === v ? 'bg-bg text-fg shadow-elevated' : 'text-muted hover:text-fg'
-                }`}
-              >
-                {name}
-              </button>
-            ))}
-          </div>
-          <p className={`${label} pt-3`}>Sort</p>
-          <div role="group" aria-label="Sort">
-            {SORTS.map(([v, name, hint]) => (
-              <button key={v} type="button" aria-pressed={sort === v} onClick={() => setAgentSort(v)} className={item}>
-                <span className="w-4 shrink-0 text-accent">{sort === v && <Check size={16} />}</span>
-                <span className="text-fg">{name}</span>
-                <span className="ml-auto text-caption text-muted">{hint}</span>
-              </button>
-            ))}
-          </div>
-          <div className="mx-1 my-1.5 border-t border-border" />
-          <button type="button" aria-pressed={shells} onClick={() => setShowShells(!shells)} className={item}>
-            <span className="w-4 shrink-0 text-accent">{shells && <Check size={16} />}</span>
-            <span className="text-fg">Show shells</span>
-            <span className="ml-auto text-caption tabular-nums text-muted">{shellCount || 'none'}</span>
-          </button>
+          {children}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The Agents section's view options: Group (Priority is herdr's flat attention queue, Spaces
+ * one group per Space), Sort within a group, and the shells.
+ */
+function AgentsView({ shellCount, compact }: { shellCount: number; compact?: boolean }) {
+  const group = usePref(getAgentGroup);
+  const sort = usePref(getAgentSort);
+  const shells = usePref(getShowShells);
+  const custom = group !== 'priority' || sort !== 'urgency' || shells;
+  const said = `${GROUPS.find(([v]) => v === group)![1]}, sorted by ${SORTS.find(([v]) => v === sort)![1]}${shells ? ', shells shown' : ''}`;
+  return (
+    <ViewMenu name="Agents view" said={said} custom={custom} compact={compact}>
+      <p className={`${menuLabel} pt-1`}>Group</p>
+      <div role="group" aria-label="Group" className="grid grid-cols-2 gap-0.5 rounded-[10px] bg-fg/6 p-0.5">
+        {GROUPS.map(([v, name]) => (
+          <button
+            key={v}
+            type="button"
+            aria-pressed={group === v}
+            onClick={() => setAgentGroup(v)}
+            className={`press rounded-lg font-medium transition-colors ${RING} ${compact ? 'h-7 text-[12px]' : 'h-10 text-[14px]'} ${
+              group === v ? 'bg-bg text-fg shadow-elevated' : 'text-muted hover:text-fg'
+            }`}
+          >
+            {name}
+          </button>
+        ))}
+      </div>
+      <p className={`${menuLabel} pt-3`}>Sort</p>
+      <div role="group" aria-label="Sort">
+        {SORTS.map(([v, name, hint]) => (
+          <MenuCheck key={v} on={sort === v} name={name} hint={hint} onClick={() => setAgentSort(v)} compact={compact} />
+        ))}
+      </div>
+      <div className="mx-1 my-1.5 border-t border-border" />
+      <MenuCheck on={shells} name="Show shells" hint={shellCount || 'none'} onClick={() => setShowShells(!shells)} compact={compact} />
+    </ViewMenu>
+  );
+}
+
+/** The Spaces section's view options: Sort, and hiding Spaces where no Agent runs. */
+function SpacesView({ hiddenCount, compact }: { hiddenCount: number; compact?: boolean }) {
+  const sort = usePref(getSpaceSort);
+  const agentsOnly = usePref(getSpaceAgentsOnly);
+  const custom = sort !== 'manual' || agentsOnly;
+  const said = `sorted by ${SPACE_SORTS.find(([v]) => v === sort)![1]}${agentsOnly ? ', only with Agents' : ''}`;
+  return (
+    <ViewMenu name="Spaces view" said={said} custom={custom} compact={compact}>
+      <p className={`${menuLabel} pt-1`}>Sort</p>
+      <div role="group" aria-label="Sort">
+        {SPACE_SORTS.map(([v, name, hint]) => (
+          <MenuCheck key={v} on={sort === v} name={name} hint={hint} onClick={() => setSpaceSort(v)} compact={compact} />
+        ))}
+      </div>
+      <div className="mx-1 my-1.5 border-t border-border" />
+      <MenuCheck
+        on={agentsOnly}
+        name="Only with Agents"
+        hint={agentsOnly ? (hiddenCount ? `${hiddenCount} hidden` : 'none hidden') : ''}
+        onClick={() => setSpaceAgentsOnly(!agentsOnly)}
+        compact={compact}
+      />
+    </ViewMenu>
   );
 }
 
@@ -833,6 +932,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const group = usePref(getAgentGroup);
   const sort = usePref(getAgentSort);
   const shells = usePref(getShowShells);
+  const spaceSort = usePref(getSpaceSort);
+  const spaceAgentsOnly = usePref(getSpaceAgentsOnly);
   const [space, setSpaceState] = useState<string | null>(spaceFilter);
   const setSpace = (k: string | null) => { spaceFilter = k; setSpaceState(k); };
   const [newWorkspace, setNewWorkspace] = useState(() => opensWith('newworkspace'));
@@ -916,13 +1017,14 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const needle = q.trim().toLowerCase();
   const hit = (p: StatePane) => matchPane(p, needle, state);
   const wsLabel = (p: StatePane) => state?.workspaces.find((w) => w.muxKey === p.muxKey && w.id === p.workspaceId)?.label;
+  const many = (state?.hosts.length ?? 0) > 1;
   const needsYou = (state?.panes ?? [])
     .filter((p) => visible(p.muxKey) && unseen(p) && (p.status === 'blocked' || p.status === 'done') && hit(p))
     .sort(comparePanes); // blocked cards first, then the done rows
-  /** `Workspace › Tab`, for a Needs you card. */
+  /** `Workspace › Tab · Host`, for a Needs you card; the Host only when there are several. */
   const whereOf = (p: StatePane) => {
     const tab = state?.tabs.find((t) => t.muxKey === p.muxKey && t.workspaceId === p.workspaceId && t.id === p.tabId)?.label;
-    return [wsLabel(p), tab].filter(Boolean).join(' › ') || undefined;
+    return [[wsLabel(p), tab].filter(Boolean).join(' › '), many ? hostLabel(p.muxKey) : undefined].filter(Boolean).join(' · ') || undefined;
   };
   /** Working Panes pinned beside Needs you, most recently changed first. */
   const running = (state?.panes ?? [])
@@ -1100,7 +1202,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                         pane={p}
                         first={i === 0 || needsYou[i - 1]!.status === 'blocked'}
                         actions={rowActions(p)}
-                        context={compact ? undefined : wsLabel(p)}
+                        context={placeOf(p, state)}
                         compact={compact}
                       />
                     ),
@@ -1116,7 +1218,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
               {openSection(RUNNING) && (
                 <ul>
                   {running.map((p, i) => (
-                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={compact ? undefined : wsLabel(p)} compact={compact} />
+                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={placeOf(p, state)} compact={compact} />
                   ))}
                 </ul>
               )}
@@ -1178,11 +1280,15 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
 
   // ---- the herdr list: Spaces over Agents ----
   const herdr = layout === 'herdr' && !!state && state.workspaces.some((w) => visible(w.muxKey));
-  const many = (state?.hosts.length ?? 0) > 1;
-  const spaces = ordered
+  const spacesFound = ordered
     .filter((w) => visible(w.muxKey))
     .map((w) => ({ w, all: panesOf(w) }))
     .filter(({ w, all }) => !needle || w.key === space || w.label.toLowerCase().includes(needle) || all.some(hit));
+  // The picked Space stays listed even when the filter would hide it, so the Agents below keep a heading.
+  const spaces = sortSpaces(
+    spaceAgentsOnly ? spacesFound.filter(({ w, all }) => w.key === space || all.some((p) => p.agent)) : spacesFound,
+    { sort: spaceSort, unseen },
+  );
   const picked = spaces.find((s) => s.w.key === space)?.w;
   const scope = (state?.panes ?? []).filter(
     (p) => visible(p.muxKey) && (!picked || (p.muxKey === picked.muxKey && p.workspaceId === picked.id)),
@@ -1202,7 +1308,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
           pane={p}
           first={i === 0 || rows[i - 1]!.status === 'blocked'}
           actions={rowActions(p)}
-          context={where ? wsLabel(p) : undefined}
+          context={where ? placeOf(p, state) : undefined}
           compact={compact}
         />
       ),
@@ -1214,7 +1320,9 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const herdrBody = herdr && (
     <div className="flex min-h-0 flex-1 flex-col">
       <section aria-labelledby="spaces-title" className="flex max-h-[40%] shrink-0 flex-col border-b border-border pt-1">
-        <SectionHead id="spaces-title" label="Spaces" count={spaces.length} compact={compact} />
+        <SectionHead id="spaces-title" label="Spaces" count={spaces.length} compact={compact}>
+          <SpacesView hiddenCount={spacesFound.length - spaces.length} compact={compact} />
+        </SectionHead>
         <ul className="min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain pb-1.5">
           <SpaceRow
             label="All Spaces"
@@ -1230,14 +1338,16 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                 key={w.key}
                 label={w.label}
                 host={many ? h?.label : undefined}
+                path={w.cwd && tildePath(w.cwd)}
                 panes={all}
                 offline={h?.online === false}
                 selected={picked?.key === w.key}
                 compact={compact}
                 onSelect={() => setSpace(picked?.key === w.key ? null : w.key)}
                 onMenu={() => setMenu(w)}
-                drag={dragProps(w)}
-                drop={dropAt(w)}
+                // A sorted list has no drag order to change: Manual brings the handles back.
+                drag={spaceSort === 'manual' ? dragProps(w) : undefined}
+                drop={spaceSort === 'manual' ? dropAt(w) : undefined}
               />
             );
           })}

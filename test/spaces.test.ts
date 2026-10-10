@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test';
-import { agentRows, bySpace, getAgentSort, getPaneList, rollup, setAgentSort, setPaneList, subscribePrefs } from '../web/spaces.ts';
+import {
+  agentRows, bySpace, sortSpaces, getAgentSort, getPaneList, leavesMenu, rollup, setAgentSort, setPaneList, subscribePrefs, tildePath,
+} from '../web/spaces.ts';
 import type { StatePane, Status } from '../shared/types.ts';
 
 const pane = (key: string, status: Status, o: Partial<StatePane> = {}): StatePane => ({
@@ -85,4 +87,37 @@ test('a blocked localStorage keeps choices in memory and flags it once', async (
   expect(isStorageBlocked()).toBe(false);
   if (original) Object.defineProperty(globalThis, 'localStorage', original);
   else delete (globalThis as { localStorage?: unknown }).localStorage;
+});
+
+test('Spaces sort: manual keeps the drag order; urgency, recent and name reorder', () => {
+  const space = (label: string, all: StatePane[]) => ({ w: { label }, all });
+  const list = [
+    space('b-idle', [pane('i', 'idle', { statusChangedAt: 5 })]),
+    space('a-blocked', [pane('x', 'blocked', { statusChangedAt: 1 })]),
+    space('c-new', [pane('n', 'working', { statusChangedAt: 9 })]),
+  ];
+  const order = (sort: Parameters<typeof sortSpaces>[1]['sort']) => sortSpaces(list, { sort, unseen }).map((s) => s.w.label);
+  expect(order('manual')).toEqual(['b-idle', 'a-blocked', 'c-new']);
+  expect(order('urgency')).toEqual(['a-blocked', 'c-new', 'b-idle']);
+  expect(order('recent')).toEqual(['c-new', 'b-idle', 'a-blocked']);
+  expect(order('name')).toEqual(['a-blocked', 'b-idle', 'c-new']);
+});
+
+test('a view menu stays open when a click on a choice blurs to nothing, as Safari does', () => {
+  const choice = {} as Node;
+  const menu = { contains: (node: Node | null) => node === choice };
+  // Safari never focuses a clicked button: the old `!contains(relatedTarget)` closed the menu
+  // here, on mousedown, so the sort the click was for never ran.
+  expect(leavesMenu(menu, null)).toBe(false);
+  expect(leavesMenu(menu, choice)).toBe(false);
+  expect(leavesMenu(menu, {} as Node)).toBe(true); // Tab moved focus past the menu
+});
+
+test('a Workspace path shortens its home to ~', () => {
+  expect(tildePath('/home/ada/projects/tautan')).toBe('~/projects/tautan');
+  expect(tildePath('/Users/ada')).toBe('~');
+  expect(tildePath('/root/.config')).toBe('~/.config');
+  expect(tildePath('/rootfs/x')).toBe('/rootfs/x');
+  expect(tildePath('/mnt/user')).toBe('/mnt/user');
+  expect(tildePath('~/srv/blog')).toBe('~/srv/blog');
 });
