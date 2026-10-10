@@ -580,11 +580,17 @@ export function App() {
   const route = useRoute();
   const kitTheme = useKitTheme();
   const paneKey = route.startsWith('/pane/') ? safeDecode(route.slice('/pane/'.length)) : undefined;
-  const diffKey = route.startsWith('/diff/') ? safeDecode(route.slice('/diff/'.length)) : undefined;
+  // `#/diff/<key>[?worktree=]` and `#/file/<key>[?path= | ?dir=][&worktree=]`: a key is
+  // encoded whole, so the first raw `?` starts the query.
+  const diffRoute = route.startsWith('/diff/') ? route.slice('/diff/'.length) : '';
+  const [encodedDiffKey, diffQuery = ''] = diffRoute.split('?', 2);
+  const diffKey = encodedDiffKey ? safeDecode(encodedDiffKey) : undefined;
+  const diffWorktree = new URLSearchParams(diffQuery).get('worktree') || undefined;
   const fileRoute = route.startsWith('/file/') ? route.slice('/file/'.length) : '';
   const [encodedFileKey, fileQuery = ''] = fileRoute.split('?', 2);
   const fileKey = encodedFileKey ? safeDecode(encodedFileKey) : undefined;
-  const filePath = fileKey ? (new URLSearchParams(fileQuery).get('path') ?? '') : '';
+  const fileParams = new URLSearchParams(fileQuery);
+  const filePath = fileKey ? (fileParams.get('path') ?? '') : '';
   const desktop = useDesktop();
   const splitPref = useSplitPref();
   // The watched set must not depend on the layout: a lease belongs to its stream, so taking
@@ -682,9 +688,15 @@ export function App() {
   const screens = paneKey ? (
         <PaneScreen paneKey={paneKey} state={state} screen={screen} screens={paneScreens} streamId={streamId} />
       ) : diffKey ? (
-        <Diff workspaceKey={diffKey} state={state} />
+        <Diff workspaceKey={diffKey} worktree={diffWorktree} state={state} />
       ) : fileKey ? (
-        <FileScreen paneKey={fileKey} path={filePath} state={state} />
+        <FileScreen
+          paneKey={fileKey}
+          path={filePath}
+          dir={fileParams.get('dir') || undefined}
+          worktree={fileParams.get('worktree') || undefined}
+          state={state}
+        />
       ) : hostId !== undefined ? (
         <HostDetail hostId={hostId} state={state} />
       ) : hostsAt ? (

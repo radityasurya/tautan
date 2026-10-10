@@ -18,6 +18,7 @@ import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
 import { fetchExplain, ON_WARN, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
 import { store } from './store.tsx';
+import { filesHash } from './folders-logic.ts';
 import { PROVIDER_LABELS } from './usage.tsx';
 
 // ---- status ----
@@ -1450,6 +1451,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                 { label: 'Rename', onClick: () => setRename(menu) },
               ]
             : []),
+          // Files reads through a Pane; the Workspace's first one will do.
+          ...(menu && panesOf(menu)[0] ? [{ label: 'Files', onClick: () => navigate(filesHash(panesOf(menu)[0]!.key)) }] : []),
           { label: 'Diff', onClick: () => menu && navigate(`#/diff/${encodeURIComponent(menu.key)}`) },
           { label: collapsed.includes(menu?.key ?? '') ? 'Expand' : 'Collapse', onClick: () => menu && toggle(menu.key) },
           // The order is tautan's own, so tmux Workspaces move too. This is the phone's way to

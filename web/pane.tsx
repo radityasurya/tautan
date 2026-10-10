@@ -23,6 +23,7 @@ import { ThemePicker } from './settings.tsx';
 import { SWITCH_HEADING, SWITCH_ROW, SwitchDrawer } from './switch.tsx';
 import { splitFloor } from './split-floor.ts';
 import { store } from './store.tsx';
+import { filesHash } from './folders-logic.ts';
 
 // ---- themed terminal colours ----
 // A 256-colour or truecolour span carries the palette the agent picked, which is nobody's
@@ -1953,7 +1954,10 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
               setOverride((n) => n + 1);
             },
           },
-          ...(ws ? [{ label: 'Diff', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }] : []),
+          { label: 'Files', hint: 'Browse, read, edit, preview', onClick: () => navigate(filesHash(paneKey), { transition: false }) },
+          ...(ws
+            ? [{ label: 'Diff', hint: 'Changes in this Workspace', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }]
+            : []),
           ...(writable
             ? [
                 { label: 'Rename', onClick: () => setRename(true) },

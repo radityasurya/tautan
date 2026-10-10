@@ -35,7 +35,9 @@ export function safeLink(url: string): string | undefined {
   try { return new URL(url).protocol === 'https:' ? url : undefined; } catch { return undefined; }
 }
 
-const FRAME = { sandbox: '', referrerPolicy: 'no-referrer', loading: 'lazy' } as const;
+/** Every frame that shows Agent-written HTML: no allow tokens, no referrer. Files uses it too. */
+export const FRAME = { sandbox: '', referrerPolicy: 'no-referrer', loading: 'lazy' } as const;
+const NOTE = 'Preview of the source · images and scripts off';
 
 /**
  * A live thumbnail of the page at 1280×800, scaled down to the row's width. It takes no
@@ -80,7 +82,7 @@ export function Preview({ src, title }: { src: string; title: string }) {
         />
       </div>
       <figcaption className="flex items-center gap-2">
-        <span className="min-w-0 truncate text-[11px] text-muted">Preview of the source · images and scripts off</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">{NOTE}</span>
         <button
           type="button"
           aria-haspopup="dialog"
@@ -96,7 +98,7 @@ export function Preview({ src, title }: { src: string; title: string }) {
 }
 
 /** The same page at the viewport's size, in a native <dialog>: Esc or Close ends it. */
-function FullPreview({ src, title, onClose }: { src: string; title: string; onClose: () => void }) {
+export function FullPreview({ src, title, note = NOTE, onClose }: { src: string; title: string; note?: string; onClose: () => void }) {
   return createPortal(
     <dialog
       ref={(el) => { if (el && !el.open) el.showModal(); }}
@@ -108,7 +110,7 @@ function FullPreview({ src, title, onClose }: { src: string; title: string; onCl
         <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 pt-[max(env(safe-area-inset-top),8px)] pb-2">
           <span className="min-w-0 flex-1">
             <span className="block truncate text-body font-medium">{title}</span>
-            <span className="block truncate text-[11px] text-muted">Preview of the source · images and scripts off</span>
+            <span className="block truncate text-[11px] text-muted">{note}</span>
           </span>
           {/* First in the dialog, so showModal() puts focus here. */}
           <button
