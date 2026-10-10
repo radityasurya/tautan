@@ -90,6 +90,23 @@ describe('parseTranscript', () => {
     expect(parseTranscript(jsonl).map(turn => turn.text)).toEqual(['/lead extend the chat view', 'Leading.', '/clear', 'Cleared.', '!npm login\n\n```\nnot logged in\n```']);
   });
 
+  test("a slash command is its own Turn, its report quoted under it", () => {
+    const jsonl = [
+      { type: 'user', message: { content: 'Use the faster one.' } },
+      { type: 'user', message: { content: '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>' } },
+      { type: 'user', message: { content: '<local-command-stdout>Set model to \x1b[1mFable 5\x1b[22m and saved\nas your default</local-command-stdout>' } },
+      { type: 'user', message: { content: 'Now continue.' } },
+      { type: 'user', message: { content: '<command-name>/status</command-name>' } },
+      { type: 'user', message: { content: '<local-command-stdout></local-command-stdout>' } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    expect(parseTranscript(jsonl).map(turn => turn.text)).toEqual([
+      'Use the faster one.',
+      '/model\n\n> Set model to Fable 5 and saved\n> as your default',
+      'Now continue.',
+      '/status',
+    ]);
+  });
+
   test("a shell line's long output keeps its last 40 lines, fenced past any backticks inside", () => {
     const out = [...Array.from({ length: 50 }, (_, n) => `line ${n + 1}`), '```done```'].join('\n');
     const jsonl = [

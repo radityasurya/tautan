@@ -83,6 +83,16 @@ describe('parsePiTranscript', () => {
     expect(JSON.stringify(turns)).not.toContain('iVBORw0KGgo');
   });
 
+  test('a /skill:name command reads as typed, not as the SKILL.md it loaded', () => {
+    const skill = '<skill name="lead" location="/home/dev/.pi/agent/skills/lead/SKILL.md">\nReferences are relative to /home/dev/.pi/agent/skills/lead.\n\n# Lead\n\nDelegate.\n</skill>';
+    const source = jsonl([
+      entry('u1', null, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: `${skill}\n\nShip phase 3.` }] } }),
+      entry('a1', 'u1', { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'Leading.' }] } }),
+      entry('u2', 'a1', { type: 'message', message: { role: 'user', content: skill } }),
+    ]);
+    expect(parsePiTranscript(source).map(turn => turn.text)).toEqual(['/skill:lead Ship phase 3.', 'Leading.', '/skill:lead']);
+  });
+
   test('renders only the active branch of a forked session', () => {
     const source = jsonl([
       entry('u1', null, { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'First attempt.' }] } }),

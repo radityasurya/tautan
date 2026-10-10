@@ -588,6 +588,16 @@ const FILE_TSX = [
 ].join('\n');
 
 /** Every file the fake Hub can list, read and write, by absolute path. */
+const MOCK_COMMANDS = [
+  { value: '/clear', label: '/clear', detail: 'Start a new session with empty context' },
+  { value: '/compact', label: '/compact', detail: 'Free up context by summarizing the conversation so far' },
+  { value: '/model', label: '/model', detail: 'Set the AI model for Claude Code' },
+  { value: '/login', label: '/login', detail: 'Sign in with your Anthropic account' },
+  { value: '/codex:rescue', label: '/codex:rescue', detail: 'Delegate investigation, an explicit fix request, or follow-up rescue work to the Codex rescue subagent' },
+  { value: '/frontend-design:frontend-design', label: '/frontend-design:frontend-design', detail: 'Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, or applications.' },
+  { value: '/grill-me', label: '/grill-me', detail: 'Interview the user relentlessly about a plan or design until reaching shared understanding' },
+];
+
 const MOCK_FILES: Record<string, string> = {
   [`${REPO}/README.md`]: README,
   // Always answers a save with 412: the "changed on disk" banner.
@@ -917,6 +927,7 @@ const mockChat = (agent?: string): ChatResponse => agent ? {
         },
       ],
     },
+    { role: 'user', text: '/model\n\n> Set model to `Fable 5.1` and saved as your default for new sessions', tools: [], at: ago(2.2) },
     { role: 'user', text: 'Nice. Run the full suite and then:\n- commit\n- open a PR', tools: [], at: ago(2) },
     { role: 'assistant', text: 'Running `pnpm test` now.', tools: [{
       name: 'Bash',
@@ -1299,6 +1310,14 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
 
   if (method === 'GET' && url.pathname === '/api/files/list') {
     return listing(s, expand(url.searchParams.get('path') || '~'), url.searchParams.get('hidden') === '1');
+  }
+
+  // Slash commands only: a few built-ins, a plugin command and a long skill description.
+  if (method === 'GET' && /^\/api\/panes\/[^/]+\/complete$/.test(url.pathname)) {
+    if (url.searchParams.get('kind') !== 'slash') return json({ items: [] });
+    const q = (url.searchParams.get('q') ?? '').toLowerCase();
+    const items = MOCK_COMMANDS.filter((i) => i.label.toLowerCase().includes(q));
+    return json({ items });
   }
 
   // The file route reads and writes through a Pane: a relative path is under its cwd. A save

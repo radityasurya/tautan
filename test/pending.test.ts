@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { autoDeliver, dropPending, flushHeld, heldOf, pendingSnapshot, settled, trackPending, type Pending } from '../web/pending.ts';
+import { autoDeliver, dropPending, flushHeld, heldOf, pendingSnapshot, runsOutside, settled, trackPending, type Pending } from '../web/pending.ts';
 import type { Turn } from '../shared/chat.ts';
 import type { Status } from '../shared/types.ts';
 
@@ -90,4 +90,14 @@ describe('held replies', () => {
     expect(await flushHeld('h')).toBe(true); // Send now
     expect(posted).toEqual(['a', 'a', 'b']);
   });
+});
+
+test("a command pi runs itself never waits for a turn; Claude's and pi's /skill do", () => {
+  expect(runsOutside('pi', '/hotkeys')).toBe(true);
+  expect(runsOutside('pi', '/compact keep the plan')).toBe(true);
+  expect(runsOutside('codex', '/status')).toBe(true);
+  expect(runsOutside('pi', '/skill:lead ship it')).toBe(false);
+  expect(runsOutside('claude', '/compact')).toBe(false);
+  expect(runsOutside('pi', '/home/dev/notes.md is wrong')).toBe(false);
+  expect(runsOutside('pi', 'run /hotkeys')).toBe(false);
 });

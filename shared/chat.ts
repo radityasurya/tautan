@@ -187,6 +187,16 @@ function shellOutput(output: string): string | undefined {
   const fence = '`'.repeat(Math.max(3, ...[...body.matchAll(/`+/g)].map(run => run[0].length + 1)));
   return `${fence}\n${body}\n${fence}`;
 }
+/** A slash command's own report (`Set model to …`, `Login successful`): ANSI stripped, quoted
+ *  under the command as Claude prints it under a `⎿`, the last SHELL_LINES lines. */
+function commandOutput(output: string): string | undefined {
+  const lines = output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').trim().split(/\r?\n/);
+  if (!lines.join('').trim()) return;
+  const shown = lines.length > SHELL_LINES ? ['…', ...lines.slice(-SHELL_LINES)] : lines;
+  return cap(shown.map(line => `> ${line}`).join('\n'));
+}
+const COMMAND_OUTPUT = /<local-command-(?:stdout|stderr)>([\s\S]*?)<\/local-command-(?:stdout|stderr)>/g;
+
 function commandText(text: string): string | undefined {
   const name = text.match(COMMAND_NAME)?.[1]?.trim();
   const args = text.match(COMMAND_ARGS)?.[1]?.trim();
@@ -450,9 +460,12 @@ function imageSource(source: unknown): { mediaType: string; data: string } | und
  *  `opts.images` and `opts.previews`, when given, collect what tool_results returned and the Agent
  *  wrote, numbered as their `imageId`s and `previewId`s. */
 /** Whether an entry folds into the Turn before it: same role, except that an Agent's words
- *  after its tool rows open a new Turn, so text and tools read in the order they happened. */
+ *  after its tool rows open a new Turn, so text and tools read in the order they happened, and
+ *  a slash command or a `!` line is a Turn of its own, never folded into the words around it. */
+const isCommand = (text: string) => /^[/!]/.test(text);
 const joins = (previous: Turn | undefined, role: Turn['role'], words: string): previous is Turn =>
-  previous?.role === role && !previous.from && !(role === 'assistant' && previous.tools.length > 0 && !!words);
+  previous?.role === role && !previous.from && !(role === 'assistant' && previous.tools.length > 0 && !!words)
+  && !(role === 'user' && (isCommand(words) || isCommand(previous.text)));
 
 export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   const turns: Turn[] = [];
@@ -577,11 +590,15 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     if (role === 'user' && wrapper(text)) {
       const command = commandText(text);
       if (command === undefined) {
-        // A `!` line's output is the next entry; it shows under the line, as Claude prints it.
+        // A `!` line's output and a slash command's report are the next entry; each shows
+        // under its line, as Claude prints it.
         const previous = turns.at(-1);
-        const output = shellOutput([...text.matchAll(BASH_OUTPUT)].map(match => match[2]!).filter(part => part.trim()).join('\n'));
-        if (output && previous?.role === 'user' && previous.text.split('\n\n').at(-1)?.startsWith('!')) previous.text += `\n\n${output}`;
-        continue; // stdout, caveats, task notifications: control records
+        const last = previous?.role === 'user' ? previous.text.split('\n\n').at(-1) : undefined;
+        const output = last?.startsWith('!')
+          ? shellOutput([...text.matchAll(BASH_OUTPUT)].map(match => match[2]!).filter(part => part.trim()).join('\n'))
+          : last?.startsWith('/') ? commandOutput([...text.matchAll(COMMAND_OUTPUT)].map(match => match[1]!).join('\n')) : undefined;
+        if (output) previous!.text += `\n\n${output}`;
+        continue; // caveats, task notifications, output with no line above it: control records
       }
       text = command;
     }
@@ -599,6 +616,16 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     } else turns.push({ role, text, tools, ...(thinking ? { thinking } : {}), ...(uuid ? { id: uuid } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
   }
   return turns;
+}
+
+/** pi logs `/skill:name args` as the whole SKILL.md in a `<skill>` block with the args after
+ *  it; the reader sees the command as typed. */
+const SKILL_BLOCK = /^<skill name="([^"]+)"[^>]*>[\s\S]*?<\/skill>\s*([\s\S]*)$/;
+function skillCommand(text: string): string | undefined {
+  const match = SKILL_BLOCK.exec(text);
+  if (!match) return;
+  const args = match[2]!.trim();
+  return `/skill:${match[1]}${args ? ` ${args}` : ''}`;
 }
 
 /** Parse pi's session JSONL into the same turns. Each line is an entry in a parentId tree;
@@ -665,11 +692,12 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     else {
       role = record.role === 'user' ? 'user' : 'assistant';
       const content = record.content;
-      text = capTurn(turnText(content));
+      const plain = turnText(content);
+      text = capTurn(role === 'user' ? skillCommand(plain) ?? plain : plain);
       if (Array.isArray(content)) for (const item of content) {
         if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
         const block = item as Block;
-        if (block.type === 'text' && typeof block.text === 'string') text += capTurn(block.text);
+        if (block.type === 'text' && typeof block.text === 'string') text += capTurn(role === 'user' ? skillCommand(block.text) ?? block.text : block.text);
         if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim())
           thinking += (thinking ? '\n\n' : '') + capTurn(block.thinking);
         if (block.type === 'image' && role === 'user') {

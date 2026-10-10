@@ -46,6 +46,12 @@ export function dropPending(ids: number[]) {
   notify();
 }
 
+/** Every Agent but Claude runs its slash commands outside its transcript (pi's `/skill:name`
+ *  is the one that becomes a turn), so no turn would ever settle such a reply.
+ *  ponytail: a pi prompt template becomes a turn too, under its expanded text; it is sent
+ *  like a command, and its turn arrives without a pending one. */
+export const runsOutside = (agent: string, sent: string) => !agent.startsWith('claude') && /^\/(?!skill:)[\w:.-]+(\s|$)/.test(sent);
+
 /** Start tracking a reply. A held one waits for its Pane to come back to a prompt. */
 export function trackPending(paneKey: string, text: string, held = false): number {
   const id = (nextId += 1);

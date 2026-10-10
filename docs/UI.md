@@ -486,9 +486,10 @@ with Esc — and stays closed until the text changes again. On the phone it sits
 flow above the input; on desktop it pops above the field. Picking a command or a file
 inserts its text and nothing sends; picking a directory inserts `/` and keeps the list
 open; picking a model sends `/model <name>` at once, and a bare `/model` sent by hand
-opens the list instead of sending. Sources: the Agent's built-ins plus `.claude/commands`
-and skills for Claude Code, the command list for pi, the Pane's files for `@` (git-ignored
-paths excluded; type a path to reach one anyway). Completion is an Agent Pane's — a shell
+opens the list instead of sending. Sources: for Claude Code its built-ins, `.claude/commands`
+and skills (a symlinked skill folder counts), and each enabled plugin's commands and skills
+as `/<plugin>:<name>`; for pi its built-ins, prompt templates and skills as `/skill:<name>`;
+the Pane's files for `@` (git-ignored paths excluded; type a path to reach one anyway). Completion is an Agent Pane's — a shell
 has no picker. Models come from the Agent itself (`pi --list-models`; the models Claude
 Code offers).
 
@@ -569,9 +570,13 @@ could answer a permission box. Then **Send now**, in the composer or on the pend
 sends them at once, and **Remove** (× in the composer) drops one. A send that fails stays
 held and is tried again when the Pane next changes. A held reply lives as long as the tab.
 A slash command (`/name args`) and a shell line (`!cmd`) are user turns in the transcript,
-so their pending turns settle against it like any other reply. A shell line shows its output
-under it as a code block, the last 40 lines (Claude's `<bash-stdout>`/`<bash-stderr>`, pi's
-`bashExecution` output).
+so their pending turns settle against it like any other reply. Each is a turn of its own,
+never folded into the words around it. A shell line shows its output under it as a code
+block, the last 40 lines (Claude's `<bash-stdout>`/`<bash-stderr>`, pi's `bashExecution`
+output); a Claude slash command shows its report (`Set model to …`) quoted under it. pi logs
+`/skill:name args` as the whole SKILL.md, and the turn reads `/skill:name args` again. Any
+other pi command runs outside pi's transcript: it goes out with no pending turn, and Chat
+moves to the Screen, where the command shows what it did.
 
 **Tool rows.** Each tool call is one collapsed row: a chip with the tool's name and a line
 of its input, a link card when the tool published one, or the subagent's name for a Task.
