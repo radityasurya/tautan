@@ -127,11 +127,20 @@ describe('write routes', () => {
     expect(save.headers.get('etag')).toMatch(/^"[A-Za-z0-9-]{1,64}"$/);
     expect(readFileSync(file, 'utf8')).toBe('two\n');
     expect(statSync(file).mode & 0o777).toBe(0o640);
-    expect(readdirSync(cwd).some(name => name.includes('.tautan-'))).toBe(false);
+    expect(readdirSync(cwd).some(name => name.startsWith('.tautan-'))).toBe(false);
     // the save's etag is the file's new version: saving again with it works
     const again = await handle(new Request(`http://tautan.test${path}`, { method: 'PUT', headers: { host: 'tautan.test', origin: 'http://tautan.test', 'if-match': save.headers.get('etag')! }, body: 'three\n' }));
     expect(again.status).toBe(204);
     expect(readFileSync(file, 'utf8')).toBe('three\n');
+  });
+
+  test('a PUT to a target larger than the cap answers 413 and leaves it unchanged', async () => {
+    const file = join(cwd, 'huge.txt');
+    writeFileSync(file, Buffer.alloc(5 * 1024 * 1024 + 1, 0x78));
+    const response = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=${encodeURIComponent('huge.txt')}`, { method: 'PUT', headers: { host: 'tautan.test', origin: 'http://tautan.test', 'if-match': '"anything"' }, body: 'new' }));
+    expect(response.status).toBe(413); expect(await response.json()).toEqual({ error: 'too large' });
+    expect(statSync(file).size).toBe(5 * 1024 * 1024 + 1);
+    expect(readdirSync(cwd).some(name => name.startsWith('.tautan-'))).toBe(false);
   });
 
   test('a same-size change on disk answers 412 and keeps the other edit', async () => {
@@ -143,7 +152,7 @@ describe('write routes', () => {
     const save = await handle(new Request(`http://tautan.test${path}`, { method: 'PUT', headers: { host: 'tautan.test', origin: 'http://tautan.test', 'if-match': etag }, body: 'cccc\n' }));
     expect(save.status).toBe(412); expect(await save.json()).toEqual({ error: 'changed' });
     expect(readFileSync(file, 'utf8')).toBe('bbbb\n');
-    expect(readdirSync(cwd).some(name => name.includes('.tautan-'))).toBe(false);
+    expect(readdirSync(cwd).some(name => name.startsWith('.tautan-'))).toBe(false);
   });
 
   test('refuses every save the contract lists', async () => {
@@ -169,7 +178,7 @@ describe('write routes', () => {
     await check(await put('strict.txt', 'y', { 'if-match': ro }), 403, 'read-only'); // 0444
     await check(await put('missing.txt', 'y', { 'if-match': '"anything"' }), 404, 'not found');
     expect(readdirSync(cwd)).not.toContain('missing.txt');              // never creates
-    expect(readdirSync(cwd).some(name => name.includes('.tautan-'))).toBe(false);
+    expect(readdirSync(cwd).some(name => name.startsWith('.tautan-'))).toBe(false);
     await check(await put('strict.txt', 'y', { 'if-match': '"anything"' }, false), 403, 'origin'); // no Origin
     chmodSync(join(cwd, 'strict.txt'), 0o644); // let afterEach clean up
     const previous = process.env.TAUTAN_MAX_FILE_MB;

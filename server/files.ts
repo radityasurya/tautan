@@ -1,4 +1,5 @@
-import { chmod, open, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, chmod, open, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative } from 'node:path';
 import type { Hub } from './mux.ts';
@@ -111,23 +112,29 @@ export function remoteListCommand(rawPath: string, paneCwd?: string): string {
 
 async function listRemote(hostId: string, target: string, rawPath: string, paneCwd: string | undefined, q: string, hidden: boolean): Promise<FileListResult> {
   const child = Bun.spawn(['ssh', '-o', 'BatchMode=yes', target, '--', remoteListCommand(rawPath, paneCwd)], { stdout: 'pipe', stderr: 'pipe' });
-  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  if (code === 11) throw new FilesError(404, 'not found');
-  if (code === 12) throw new FilesError(403, 'escape');
-  if (code === 13) throw new FilesError(415, 'not a directory');
-  if (code === 15) throw new FilesError(502, 'remote');
-  if (code) throw new FilesError(502, stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? 'ssh failed');
-  const lines = stdout.split('\n'); if (lines.at(-1) === '') lines.pop();
-  const head = (lines.shift() ?? '').split('\t');
-  const rp = head[0] ?? ''; const home = head[1] ?? ''; const proot = head[2] || undefined;
-  const raw: FileEntry[] = [];
-  for (const line of lines) {
-    const parts = line.split('\t'); if (parts.length < 4) continue;
-    const name = parts.slice(3).join('\t');
-    if (parts[0] === 'd') raw.push({ name, path: join(rp, name), kind: 'dir' });
-    else if (parts[0] === 'f' && /^\d+$/.test(parts[1]!) && /^\d+$/.test(parts[2]!)) raw.push({ name, path: join(rp, name), kind: 'file', size: Number(parts[1]), mtime: Number(parts[2]) });
-  }
-  return finish(hostId, rp, [home, ...(proot ? [proot] : [])], raw, q, hidden);
+  // A listing that never ends must not hang the caller (the saveRemote kill pattern).
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 30_000);
+  try {
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    if (timedOut) throw new FilesError(504, 'timeout');
+    if (code === 11) throw new FilesError(404, 'not found');
+    if (code === 12) throw new FilesError(403, 'escape');
+    if (code === 13) throw new FilesError(415, 'not a directory');
+    if (code === 15) throw new FilesError(502, 'remote');
+    if (code) throw new FilesError(502, stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? 'ssh failed');
+    const lines = stdout.split('\n'); if (lines.at(-1) === '') lines.pop();
+    const head = (lines.shift() ?? '').split('\t');
+    const rp = head[0] ?? ''; const home = head[1] ?? ''; const proot = head[2] || undefined;
+    const raw: FileEntry[] = [];
+    for (const line of lines) {
+      const parts = line.split('\t'); if (parts.length < 4) continue;
+      const name = parts.slice(3).join('\t');
+      if (parts[0] === 'd') raw.push({ name, path: join(rp, name), kind: 'dir' });
+      else if (parts[0] === 'f' && /^\d+$/.test(parts[1]!) && /^\d+$/.test(parts[2]!)) raw.push({ name, path: join(rp, name), kind: 'file', size: Number(parts[1]), mtime: Number(parts[2]) });
+    }
+    return finish(hostId, rp, [home, ...(proot ? [proot] : [])], raw, q, hidden);
+  } finally { clearTimeout(timer); }
 }
 
 // The extensions the viewer plays or shows; everything else is a download.
@@ -263,7 +270,7 @@ export async function fileRead(rawPath: string, paneCwd: string, cap: number, ta
 /** PUT /api/panes/:key/file — overwrite one existing file through a same-folder temp file
  *  and a rename that keeps its mode; never creates. Answers the file's new version token. */
 export async function fileSave(rawPath: string, paneCwd: string, body: Uint8Array, version: string, cap: number, target?: string): Promise<string> {
-  return target ? saveRemote(target, rawPath, paneCwd, body, version, cap) : saveLocal(rawPath, paneCwd, body, version);
+  return target ? saveRemote(target, rawPath, paneCwd, body, version, cap) : saveLocal(rawPath, paneCwd, body, version, cap);
 }
 
 /** A relative path names the Pane cwd; `~`/`~/x` and absolute paths pass through (the
@@ -287,24 +294,35 @@ export function remoteReadCommand(rawPath: string, paneCwd: string | undefined, 
 
 async function readRemote(target: string, rawPath: string, paneCwd: string, cap: number): Promise<{ body: ArrayBuffer; version: string }> {
   const child = Bun.spawn(['ssh', '-o', 'BatchMode=yes', target, '--', remoteReadCommand(rawPath, paneCwd, cap)], { stdout: 'pipe', stderr: 'pipe' });
-  const [body, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited]);
-  if (code) {
-    const mapped = REFUSED[code];
-    if (mapped) throw new FilesError(mapped.status, mapped.message);
-    throw new FilesError(502, stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? 'ssh failed');
-  }
-  return { body, version: /^V(.*)$/.exec(stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? '')?.[1] ?? '' };
+  // A read that never ends must not hang the caller (the saveRemote kill pattern).
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 30_000);
+  try {
+    const [body, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited]);
+    if (timedOut) throw new FilesError(504, 'timeout');
+    if (code) {
+      const mapped = REFUSED[code];
+      if (mapped) throw new FilesError(mapped.status, mapped.message);
+      throw new FilesError(502, stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? 'ssh failed');
+    }
+    return { body, version: /^V(.*)$/.exec(stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? '')?.[1] ?? '' };
+  } finally { clearTimeout(timer); }
 }
 
-async function saveLocal(rawPath: string, paneCwd: string, body: Uint8Array, version: string): Promise<string> {
+async function saveLocal(rawPath: string, paneCwd: string, body: Uint8Array, version: string, cap: number): Promise<string> {
   const { target: file } = await resolveLocal(anchorFile(rawPath, paneCwd), paneCwd);
   const info = await stat(file);
   if (!info.isFile()) throw new FilesError(415, 'not a file');
-  if (!(info.mode & 0o200)) throw new FilesError(403, 'read-only');
-  const temp = join(dirname(file), `.${basename(file)}.tautan-${Array.from(crypto.getRandomValues(new Uint8Array(4)), byte => byte.toString(16).padStart(2, '0')).join('')}`);
+  // The guard also bounds the whole-file read below — a multi-GB target would OOM the Hub.
+  if (info.size > cap) throw new FilesError(413, 'too large');
+  await access(file, constants.W_OK).catch(() => { throw new FilesError(403, 'read-only'); });
+  const temp = join(dirname(file), `.tautan-${Array.from(crypto.getRandomValues(new Uint8Array(4)), byte => byte.toString(16).padStart(2, '0')).join('')}`);
   try {
     const handle = await open(temp, 'wx', 0o600);
     try { await handle.write(body); } finally { await handle.close(); }
+    // ponytail: hash-compare-then-rename is no compare-and-swap — two concurrent saves with
+    // the same version can both pass and both land, the last rename winning; an OS-level
+    // atomic CAS (renameat2 RENAME_EXCHANGE on a lock file) is the upgrade path.
     const current = new Uint8Array(await Bun.file(file).arrayBuffer());
     if (Bun.hash(current).toString(36) !== version) throw new FilesError(412, 'changed');
     await chmod(temp, info.mode & 0o7777);

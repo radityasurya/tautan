@@ -131,6 +131,11 @@ describe('workspace diff route', () => {
     expect(response.status).toBe(409); expect(await response.json()).toEqual({ error: 'not-a-repo' });
   });
 
+  test('switch refuses a worktree= query instead of ignoring it', async () => {
+    const response = await handle(new Request(`http://tautan.test/api/workspaces/${encodeURIComponent('local/fake/w1')}/switch?worktree=${encodeURIComponent('/nope')}`, { method: 'POST', headers: { host: 'tautan.test', origin: 'http://tautan.test', 'content-type': 'application/json' }, body: JSON.stringify({ branch: 'main' }) }));
+    expect(response.status).toBe(400); expect(await response.json()).toEqual({ error: 'worktree' });
+  });
+
   test('switch passes git refusals through verbatim', async () => {
     git(['checkout', '-b', 'feature-at']); writeFileSync(join(dir, 'a.txt'), 'feature\n'); git(['add', '.']); git(['commit', '-m', 'feature']); git(['checkout', 'main']);
     writeFileSync(join(dir, 'a.txt'), 'dirty\n'); // would be overwritten by the switch

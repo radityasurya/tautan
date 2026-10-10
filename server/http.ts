@@ -139,13 +139,14 @@ export function parseWorktrees(porcelain: string, about: string): Worktree[] {
  *  in marks `current` — with a `worktree=` the commands run there, so its toplevel is itself. */
 async function branchList(cwd: string, target?: string): Promise<BranchList> {
   const [head, refs, worktrees, toplevel] = await Promise.all([
-    runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], target),
-    runGit(cwd, ['for-each-ref', '--sort=-committerdate', '--format=%(refname:short)', 'refs/heads/'], target),
-    runGit(cwd, ['worktree', 'list', '--porcelain'], target),
-    runGit(cwd, ['rev-parse', '--show-toplevel'], target),
+    runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], target, 30_000),
+    runGit(cwd, ['for-each-ref', '--sort=-committerdate', '--format=%(refname:short)', 'refs/heads/'], target, 30_000),
+    runGit(cwd, ['worktree', 'list', '--porcelain'], target, 30_000),
+    runGit(cwd, ['rev-parse', '--show-toplevel'], target, 30_000),
   ]);
   // `symbolic-ref` is EXPECTED to fail on a detached HEAD; only the other two must succeed.
   for (const result of [refs, worktrees, toplevel]) {
+    if (result.timedOut) throw new Error('timeout');
     if (/not a git repository/i.test(result.stderr)) throw new Error('not-a-repo');
     if (result.code) throw new Error(result.stderr.split(/\r?\n/).find(Boolean) ?? `git exited ${result.code}`);
   }
@@ -163,7 +164,8 @@ async function checkoutParam(hub: Hub, key: string, asked: string | null): Promi
   const repo = await workspaceRepo(hub, key);
   if ('missing' in repo) return json({ error: repo.missing }, repo.missing === 'unknown-workspace' ? 404 : 409);
   if (asked === null) return repo;
-  const list = await runGit(repo.cwd, ['worktree', 'list', '--porcelain'], repo.target);
+  const list = await runGit(repo.cwd, ['worktree', 'list', '--porcelain'], repo.target, 30_000);
+  if (list.timedOut) return json({ error: 'timeout' }, 504);
   if (/not a git repository/i.test(list.stderr)) return json({ error: 'not-a-repo' }, 409);
   if (list.code) return json({ error: list.stderr.split(/\r?\n/).find(Boolean) ?? `git exited ${list.code}` }, 502);
   const checkout = parseWorktrees(list.stdout, '').find(worktree => worktree.path === asked)?.path;
@@ -257,6 +259,7 @@ export function startHttp(hub: Hub, opts: {
           try { return json(await branchList(repo.cwd, repo.target)); }
           catch (error) {
             const message = errorMessage(error);
+            if (message === 'timeout') return json({ error: 'timeout' }, 504);
             if (message === 'not-a-repo') return json({ error: 'not-a-repo' }, 409);
             return json({ error: message.slice(0, 1000) }, 502);
           }
@@ -265,6 +268,8 @@ export function startHttp(hub: Hub, opts: {
         if (req.method === 'POST' && workspaceSwitch) {
           let key: string;
           try { key = decodeURIComponent(workspaceSwitch[1]!); } catch { return json({ error: 'unknown-workspace' }, 404); }
+          // The switch always runs in the Workspace's own checkout; a worktree= query is refused, never ignored.
+          if (url.searchParams.has('worktree')) return json({ error: 'worktree' }, 400);
           let body: SwitchBody | undefined;
           try { body = await req.json() as SwitchBody; } catch { return json({ error: 'body' }, 400); }
           // The name reaches git: 1–255 characters, no leading dash, no control characters.
@@ -275,17 +280,23 @@ export function startHttp(hub: Hub, opts: {
           try { list = await branchList(repo.cwd, repo.target); }
           catch (error) {
             const message = errorMessage(error);
+            if (message === 'timeout') return json({ error: 'timeout' }, 504);
             if (message === 'not-a-repo') return json({ error: 'not-a-repo' }, 409);
             return json({ error: message.slice(0, 1000) }, 502);
           }
           if (!list.branches.includes(body.branch)) return json({ error: 'branch' }, 404);
           if (list.current !== body.branch) {
             // The one git write: a local branch from the re-listed set, never guessed, killed at 60 s.
+            // ponytail: the kill ends the local ssh only — on a remote Workspace the git switch
+            // itself keeps running on the Host; wrap the remote command in `timeout` there.
             const result = await runGit(repo.cwd, ['switch', '--no-guess', body.branch], repo.target, 60_000);
             if (result.timedOut) return json({ error: 'timeout' }, 504);
             if (result.code) return json({ error: (result.stderr.trim() || `git exited ${result.code}`).slice(0, 1000) }, 409);
             try { list = await branchList(repo.cwd, repo.target); }
-            catch (error) { return json({ error: errorMessage(error).slice(0, 1000) }, 502); }
+            catch (error) {
+              if (errorMessage(error) === 'timeout') return json({ error: 'timeout' }, 504);
+              return json({ error: errorMessage(error).slice(0, 1000) }, 502);
+            }
           }
           return json(list);
         }
@@ -582,6 +593,9 @@ export function startHttp(hub: Hub, opts: {
             // A save is a write: the Origin check above already gates it like every other write.
             const match = /^"([A-Za-z0-9-]{1,64})"$/.exec(req.headers.get('if-match') ?? '');
             if (!match) return json({ error: 'version' }, 428);
+            // The header check first, as the attach route; the post-read check below still covers a lying header.
+            const length = Number(req.headers.get('content-length'));
+            if (length > cap) return json({ error: 'too large' }, 413);
             const body = new Uint8Array(await req.arrayBuffer());
             if (body.byteLength > cap) return json({ error: 'too large' }, 413);
             try { new TextDecoder('utf-8', { fatal: true }).decode(body); } catch { return json({ error: 'not text' }, 415); }
