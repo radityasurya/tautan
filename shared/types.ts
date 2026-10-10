@@ -150,6 +150,10 @@ export interface DiffFile {
   hunks: DiffHunk[];
 }
 export interface DiffResult { scope: DiffScope; base?: string; files: DiffFile[]; truncated: boolean }
+/** GET /api/workspaces/:key/branches, and the answer to POST …/switch. null = detached HEAD. */
+export interface BranchList { current: string | null; branches: string[] }
+/** POST /api/workspaces/:key/switch — one of BranchList.branches. */
+export interface SwitchBody { branch: string }
 /** POST /api/push/subscribe */
 export interface PushSubscriptionBody {
   endpoint: string; expirationTime?: number | null;
