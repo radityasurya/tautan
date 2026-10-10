@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import { basename, join } from 'node:path';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
+import { PREVIEW_CSP, remoteListCommand, remoteRawCommand, remoteReadCommand, remoteSaveCommand } from '../server/files.ts';
 import type { FileListResult } from '../server/files.ts';
 import type { Explain, Mux, Pane, Screen, Tree, Workspace } from '../shared/types.ts';
 
@@ -200,7 +201,8 @@ describe('files routes', () => {
   test('content types, sandbox CSP, nosniff and disposition', async () => {
     let response = await raw({ host: 'local', pane: KEY, path: join(dir, 'report.html') });
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
-    expect(response.headers.get('content-security-policy')).toBe('sandbox');
+    expect(response.headers.get('content-security-policy')).toBe(PREVIEW_CSP);
+    expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(response.headers.get('cache-control')).toBe('private, no-cache');
     response = await raw({ host: 'local', pane: KEY, path: join(dir, 'CHARLIE.md') });
@@ -218,5 +220,66 @@ describe('files routes', () => {
       response = await raw({ host: 'local', pane: KEY, path: join(dir, `clip.${ext}`) });
       expect(response.headers.get('content-type')).toBe(type);
     }
+  });
+});
+
+describe('remote file scripts under sh', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(os.tmpdir(), 'tautan-rscript-'));
+    mkdirSync(join(home, 'sub')); writeFileSync(join(home, 'sub', 'nested.txt'), 'nest');
+    writeFileSync(join(home, 'file.txt'), 'remote body\n');
+    chmodSync(join(home, 'file.txt'), 0o640);
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+  const run = (script: string, stdin?: Uint8Array) => {
+    const child = Bun.spawnSync(['sh', '-c', script], { cwd: home, env: { ...process.env, HOME: home }, stdin: stdin ?? 'ignore' });
+    return { out: child.stdout.toString(), err: child.stderr.toString(), code: child.exitCode };
+  };
+  const cksumOf = (path: string) => run(`cksum < ${JSON.stringify(path)} | tr ' ' -`).out.trim();
+
+  test('list and raw expand ~ against $HOME', () => {
+    const list = run(remoteListCommand('~/sub'));
+    expect(list.code).toBe(0);
+    const head = list.out.split('\n')[0]!.split('\t');
+    expect(head[0]).toBe(realpathSync(join(home, 'sub')));
+    expect(list.out).toMatch(/^f\t4\t\d+\tnested.txt$/m);
+    const raw = run(remoteRawCommand('~/sub/nested.txt', undefined, null));
+    expect(raw.code).toBe(0);
+    expect(raw.err.split('\n')[0]).toBe(`SIZE 4 0 4`);
+    expect(raw.out).toBe('nest');
+  });
+
+  test('read serves the body and the cksum version', () => {
+    const read = run(remoteReadCommand(join(home, 'file.txt'), undefined, 1024));
+    expect(read.code).toBe(0);
+    expect(read.out).toBe('remote body\n');
+    expect(read.err.trim()).toBe(`V${cksumOf(join(home, 'file.txt'))}`);
+  });
+
+  test('save writes through the temp file, keeps the mode, prints the new version', () => {
+    const body = 'new body\n';
+    const save = run(remoteSaveCommand(join(home, 'file.txt'), undefined, 1024, body.length, cksumOf(join(home, 'file.txt'))), new TextEncoder().encode(body));
+    expect(save.code).toBe(0);
+    expect(readFileSync(join(home, 'file.txt'), 'utf8')).toBe(body);
+    expect(statSync(join(home, 'file.txt')).mode & 0o777).toBe(0o640);
+    expect(readdirSync(home).some(name => name.startsWith('.tautan.'))).toBe(false);
+    expect(save.out.trim()).toBe(cksumOf(join(home, 'file.txt')));
+  });
+
+  test('save refuses a stale version (19), a short stream (18), and an escape (12)', () => {
+    const body = new TextEncoder().encode('abcd');
+    // a stale version token: the file on disk does not match what the Hub last read
+    let r = run(remoteSaveCommand(join(home, 'file.txt'), undefined, 1024, 4, '0-0'), body);
+    expect(r.code).toBe(19);
+    expect(readFileSync(join(home, 'file.txt'), 'utf8')).toBe('remote body\n');
+    // a short stream: the script was told 10 bytes, ssh delivered 3
+    r = run(remoteSaveCommand(join(home, 'file.txt'), undefined, 1024, 10, cksumOf(join(home, 'file.txt'))), new TextEncoder().encode('abc'));
+    expect(r.code).toBe(18);
+    expect(readFileSync(join(home, 'file.txt'), 'utf8')).toBe('remote body\n');
+    expect(readdirSync(home).some(name => name.startsWith('.tautan.'))).toBe(false); // the trap cleaned up
+    // outside both roots: /etc is not $HOME and no pane cwd is named
+    r = run(remoteSaveCommand('/etc/passwd', undefined, 1024, 3, '0-0'), new TextEncoder().encode('abc'));
+    expect(r.code).toBe(12);
   });
 });

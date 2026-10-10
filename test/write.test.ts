@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHttp } from '../server/http.ts';
@@ -105,6 +105,81 @@ describe('write routes', () => {
     tree.panes[0]!.cwd = '/'; await hub.refreshHost('local');
     const response = await handle(new Request(`http://tautan.test/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=etc%2Fhostname`, { headers: { host: 'tautan.test' } }));
     expect(response.status).toBe(200);
+  });
+
+  test('a read carries an etag; ~ is contained now, so it answers 415 as a non-file', async () => {
+    writeFileSync(join(cwd, 'text.txt'), 'hello');
+    const path = `/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=`;
+    const read = await handle(new Request(`http://tautan.test${path}${encodeURIComponent('text.txt')}`, { headers: { host: 'tautan.test' } }));
+    expect(read.status).toBe(200);
+    expect(read.headers.get('etag')).toMatch(/^"[A-Za-z0-9-]{1,64}"$/);
+    const home = await handle(new Request(`http://tautan.test${path}${encodeURIComponent('~')}`, { headers: { host: 'tautan.test' } }));
+    expect(home.status).toBe(415); expect(await home.json()).toEqual({ error: 'not a file' });
+  });
+
+  test('saves a file, keeping its mode and leaving no temp file behind', async () => {
+    const file = join(cwd, 'editable.txt');
+    writeFileSync(file, 'one\n'); chmodSync(file, 0o640);
+    const path = `/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=${encodeURIComponent('editable.txt')}`;
+    const read = await handle(new Request(`http://tautan.test${path}`, { headers: { host: 'tautan.test' } }));
+    const save = await handle(new Request(`http://tautan.test${path}`, { method: 'PUT', headers: { host: 'tautan.test', origin: 'http://tautan.test', 'if-match': read.headers.get('etag')! }, body: 'two\n' }));
+    expect(save.status).toBe(204);
+    expect(save.headers.get('etag')).toMatch(/^"[A-Za-z0-9-]{1,64}"$/);
+    expect(readFileSync(file, 'utf8')).toBe('two\n');
+    expect(statSync(file).mode & 0o777).toBe(0o640);
+    expect(readdirSync(cwd).some(name => name.includes('.tautan-'))).toBe(false);
+    // the save's etag is the file's new version: saving again with it works
+    const again = await handle(new Request(`http://tautan.test${path}`, { method: 'PUT', headers: { host: 'tautan.test', origin: 'http://tautan.test', 'if-match': save.headers.get('etag')! }, body: 'three\n' }));
+    expect(again.status).toBe(204);
+    expect(readFileSync(file, 'utf8')).toBe('three\n');
+  });
+
+  test('a same-size change on disk answers 412 and keeps the other edit', async () => {
+    const file = join(cwd, 'clash.txt');
+    writeFileSync(file, 'aaaa\n');
+    const path = `/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=${encodeURIComponent('clash.txt')}`;
+    const etag = (await handle(new Request(`http://tautan.test${path}`, { headers: { host: 'tautan.test' } }))).headers.get('etag')!;
+    writeFileSync(file, 'bbbb\n'); // same size, different bytes
+    const save = await handle(new Request(`http://tautan.test${path}`, { method: 'PUT', headers: { host: 'tautan.test', origin: 'http://tautan.test', 'if-match': etag }, body: 'cccc\n' }));
+    expect(save.status).toBe(412); expect(await save.json()).toEqual({ error: 'changed' });
+    expect(readFileSync(file, 'utf8')).toBe('bbbb\n');
+    expect(readdirSync(cwd).some(name => name.includes('.tautan-'))).toBe(false);
+  });
+
+  test('refuses every save the contract lists', async () => {
+    const outside = join(dir, 'outside.txt');
+    writeFileSync(outside, 'outside');
+    mkdirSync(join(cwd, 'folder'));
+    writeFileSync(join(cwd, 'strict.txt'), 'x');
+    symlinkSync(outside, join(cwd, 'outside-link'));
+    chmodSync(join(cwd, 'strict.txt'), 0o444);
+    const url = (p: string) => `http://tautan.test/api/panes/${encodeURIComponent('local/fake/p1')}/file?path=${encodeURIComponent(p)}`;
+    const put = (p: string, body: BodyInit, headers: Record<string, string> = {}, origin = true) =>
+      handle(new Request(url(p), { method: 'PUT', headers: { host: 'tautan.test', ...(origin ? { origin: 'http://tautan.test' } : {}), ...headers }, body }));
+    const check = async (response: Response, status: number, error: string) => {
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ error });
+    };
+    await check(await put('strict.txt', 'y'), 428, 'version');          // no If-Match
+    await check(await put('folder', 'y', { 'if-match': '"anything"' }), 415, 'not a file');
+    await check(await put('../outside.txt', 'y', { 'if-match': '"anything"' }), 403, 'escape');
+    await check(await put('outside-link', 'y', { 'if-match': '"anything"' }), 403, 'escape');
+    await check(await put('strict.txt', new Uint8Array([0xff]), { 'if-match': '"anything"' }), 415, 'not text');
+    const ro = (await handle(new Request(url('strict.txt'), { headers: { host: 'tautan.test' } }))).headers.get('etag')!;
+    await check(await put('strict.txt', 'y', { 'if-match': ro }), 403, 'read-only'); // 0444
+    await check(await put('missing.txt', 'y', { 'if-match': '"anything"' }), 404, 'not found');
+    expect(readdirSync(cwd)).not.toContain('missing.txt');              // never creates
+    expect(readdirSync(cwd).some(name => name.includes('.tautan-'))).toBe(false);
+    await check(await put('strict.txt', 'y', { 'if-match': '"anything"' }, false), 403, 'origin'); // no Origin
+    chmodSync(join(cwd, 'strict.txt'), 0o644); // let afterEach clean up
+    const previous = process.env.TAUTAN_MAX_FILE_MB;
+    try {
+      process.env.TAUTAN_MAX_FILE_MB = '0.000001';
+      await check(await put('strict.txt', 'yy', { 'if-match': '"anything"' }), 413, 'too large');
+    } finally {
+      if (previous === undefined) delete process.env.TAUTAN_MAX_FILE_MB;
+      else process.env.TAUTAN_MAX_FILE_MB = previous;
+    }
   });
 
   test('reports tautan and herdr versions in Settings', async () => {

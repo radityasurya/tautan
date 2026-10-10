@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
-import type { DiffResult, DiffScope, HostConfig, InputBody, MouseBody, MoveBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SplitBody, SuggestSettingBody } from '../shared/types.ts';
+import type { BranchList, DiffResult, DiffScope, HostConfig, InputBody, MouseBody, MoveBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SplitBody, SuggestSettingBody, SwitchBody, Worktree } from '../shared/types.ts';
 import { CHAT_PAGE_TURNS, type ChatEvent } from '../shared/chat.ts';
 import { parseUnifiedDiff } from '../shared/diff.ts';
 import { promptId } from '../shared/blocked.ts';
@@ -12,7 +12,7 @@ import { LeaseError, LeaseHolder } from './lease.ts';
 import { ChatLens } from './chat.ts';
 import { EmptyBody, sanitizeName, TooLarge, writeAttachment } from './attach.ts';
 import { CompleteError, paneCompletion } from './complete.ts';
-import { fileList, fileRaw, FilesError, inside, quoteShell } from './files.ts';
+import { fileList, fileRaw, fileRead, fileSave, FilesError, PREVIEW_CSP, quoteShell } from './files.ts';
 
 /** The Agents whose transcripts the ChatLens parses. */
 const CHAT_AGENTS = new Set(['claude', 'pi', 'omp', 'codex']);
@@ -33,11 +33,7 @@ const plainObject = (value: unknown): value is Record<string, unknown> => typeof
 const validLabel = (value: unknown, required = false) => value === undefined ? !required : typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 80;
 const validCwd = (value: unknown) => value === undefined || typeof value === 'string' && isAbsolute(value);
 const nonEmpty = (value: unknown) => typeof value === 'string' && value.trim().length > 0;
-type GitResult = { stdout: string; stderr: string; code: number };
-
-class FileRouteError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
-}
+type GitResult = { stdout: string; stderr: string; code: number; timedOut?: boolean };
 
 const maxFileBytes = () => {
   const value = Number(process.env.TAUTAN_MAX_FILE_MB);
@@ -51,45 +47,14 @@ const agentId = /^[A-Za-z0-9_-]{1,64}$/;
 /** A native id on a chat route (a tool id, or the amendment's `after`/`before` Turn id): a
  *  strict allow-list; it is only a map key and never names a path. */
 const nativeId = /^[A-Za-z0-9_|.:-]{1,256}$/;
-// A preview of HTML the Agent wrote: `sandbox` without allow-scripts or allow-same-origin, so
-// scripts never run and the page cannot reach the Hub's origin even when opened directly.
+// A preview of HTML the Agent wrote: PREVIEW_CSP, the same sandbox the raw file viewer uses.
 const previewHeaders = {
   'content-type': 'text/html; charset=utf-8',
-  'content-security-policy': "sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; media-src data: https:",
+  'content-security-policy': PREVIEW_CSP,
   'x-content-type-options': 'nosniff',
   'cache-control': 'private, max-age=86400',
   'referrer-policy': 'no-referrer',
 };
-async function localFile(cwd: string, path: string, cap: number): Promise<Response> {
-  let root: string; let target: string;
-  try { root = await realpath(cwd); } catch { throw new FileRouteError(404, 'not found'); }
-  try { target = await realpath(path); } catch { throw new FileRouteError(404, 'not found'); }
-  if (!inside(root, target)) throw new FileRouteError(403, 'escape');
-  let info: Awaited<ReturnType<typeof stat>>;
-  try { info = await stat(target); } catch { throw new FileRouteError(404, 'not found'); }
-  // A directory has no file payload for the viewer.
-  if (!info.isFile()) throw new FileRouteError(415, 'not a file');
-  if (info.size > cap) throw new FileRouteError(413, 'too large');
-  const body = await Bun.file(target).slice(0, cap + 1).arrayBuffer();
-  if (body.byteLength > cap) throw new FileRouteError(413, 'too large');
-  return new Response(body, { headers: fileHeaders(path) });
-}
-
-function remoteFileCommand(cwd: string, path: string, cap: number): string {
-  return `command -v realpath >/dev/null 2>&1 && command -v stat >/dev/null 2>&1 && command -v head >/dev/null 2>&1 || exit 15; [ -d ${quoteShell(cwd)} ] || exit 10; [ -e ${quoteShell(path)} ] || exit 11; cwd=$(realpath -- ${quoteShell(cwd)}) || exit 10; file=$(realpath -- ${quoteShell(path)}) || exit 10; if [ "$cwd" != / ]; then case "$file" in "$cwd"|"$cwd"/*) ;; *) exit 12;; esac; fi; if [ -d "$file" ]; then exit 13; fi; [ -f "$file" ] || exit 13; size=$(stat -c %s -- "$file" 2>/dev/null || stat -f %z -- "$file") || exit 15; case "$size" in ''|*[!0-9]*) exit 15;; esac; [ "$size" -le ${cap} ] || exit 14; head -c ${cap} -- "$file" || exit 15`;
-}
-
-async function remoteFile(cwd: string, path: string, cap: number, target: string): Promise<Response> {
-  const child = Bun.spawn(['ssh', '-o', 'BatchMode=yes', target, '--', remoteFileCommand(cwd, path, cap)], { stdout: 'pipe', stderr: 'pipe' });
-  const [body, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited]);
-  if (code === 10 || code === 12) throw new FileRouteError(403, 'escape');
-  if (code === 11) throw new FileRouteError(404, 'not found');
-  if (code === 13) throw new FileRouteError(415, 'not a file');
-  if (code === 14) throw new FileRouteError(413, 'too large');
-  if (code === 15) throw new FileRouteError(502, 'remote');
-  if (code) throw new Error(stderr.trim().split(/\r?\n/).filter(Boolean).at(-1) || 'ssh failed');
-  return new Response(body, { headers: fileHeaders(path) });
-}
 
 async function quotaReport(): Promise<unknown> {
   if (quotaCache && Date.now() - quotaCache.at < QUOTA_TTL) return quotaCache.value;
@@ -104,13 +69,19 @@ async function quotaReport(): Promise<unknown> {
   return quotaRequest;
 }
 
-async function runGit(cwd: string, args: string[], target?: string): Promise<GitResult> {
+async function runGit(cwd: string, args: string[], target?: string, timeoutMs?: number): Promise<GitResult> {
   const command = target
     ? ['ssh', '-o', 'BatchMode=yes', target, '--', `cd ${quoteShell(cwd)} && git ${args.map(quoteShell).join(' ')}`]
     : ['git', ...args];
   const child = Bun.spawn(command, { ...(target ? {} : { cwd }), stdout: 'pipe', stderr: 'pipe' });
-  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  return { stdout, stderr, code };
+  // A git call that never ends (an editor waiting on a tty) must not hang the caller —
+  // the chat.ts kill pattern; the flag tells a kill from a git exit.
+  let timedOut = false;
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
+  try {
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { stdout, stderr, code, ...(timedOut ? { timedOut: true } : {}) };
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 async function resolveDiffBase(cwd: string, target?: string): Promise<string | undefined> {
@@ -127,6 +98,77 @@ async function resolveDiffBase(cwd: string, target?: string): Promise<string | u
     if (!result.code) return name;
     if (/not a git repository/i.test(result.stderr)) throw new Error('not-a-repo');
   }
+}
+
+/** The Workspace's repo cwd and its Host's ssh target, shared by the diff and branch routes.
+ *  The cwd comes from the Mux, never from the request. */
+async function workspaceRepo(hub: Hub, key: string): Promise<{ cwd: string; target?: string } | { missing: 'unknown-workspace' | 'not-a-repo' }> {
+  const state = await hub.state();
+  const workspace = state.workspaces.find(item => item.key === key);
+  if (!workspace) return { missing: 'unknown-workspace' };
+  if (!workspace.cwd) return { missing: 'not-a-repo' };
+  return { cwd: workspace.cwd, target: state.hosts.find(item => item.id === workspace.muxKey.split('/')[0])?.target };
+}
+
+/** `git worktree list --porcelain`: blank-line-separated records of `worktree <path>`,
+ *  `HEAD <sha>`, `branch refs/heads/<name>`, `detached`, `bare` (skipped — no checkout),
+ *  `locked [reason]` and `prunable [reason]`. `about` names the checkout the request is
+ *  about, so `current` marks it. */
+export function parseWorktrees(porcelain: string, about: string): Worktree[] {
+  const worktrees: Worktree[] = [];
+  for (const block of porcelain.split('\n\n')) {
+    let path = ''; let head = ''; let branch: string | null = null;
+    let bare = false; let locked = false; let prunable = false;
+    for (const line of block.split('\n')) {
+      if (line.startsWith('worktree ')) path = line.slice(9);
+      else if (line.startsWith('HEAD ')) head = line.slice(5);
+      else if (line.startsWith('branch ')) branch = line.slice('branch refs/heads/'.length);
+      else if (line === 'detached') branch = null;
+      else if (line === 'bare') bare = true;
+      else if (line === 'locked' || line.startsWith('locked ')) locked = true;
+      else if (line === 'prunable' || line.startsWith('prunable ')) prunable = true;
+    }
+    if (bare || !path || !head) continue;
+    worktrees.push({ path, branch, head, current: path === about, ...(locked ? { locked: true } : {}), ...(prunable ? { prunable: true } : {}) });
+  }
+  return worktrees;
+}
+
+/** The branch list: the checked-out branch (null when detached), every local branch newest
+ *  first, and every worktree. `git rev-parse --show-toplevel` from the cwd the git calls run
+ *  in marks `current` — with a `worktree=` the commands run there, so its toplevel is itself. */
+async function branchList(cwd: string, target?: string): Promise<BranchList> {
+  const [head, refs, worktrees, toplevel] = await Promise.all([
+    runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], target),
+    runGit(cwd, ['for-each-ref', '--sort=-committerdate', '--format=%(refname:short)', 'refs/heads/'], target),
+    runGit(cwd, ['worktree', 'list', '--porcelain'], target),
+    runGit(cwd, ['rev-parse', '--show-toplevel'], target),
+  ]);
+  // `symbolic-ref` is EXPECTED to fail on a detached HEAD; only the other two must succeed.
+  for (const result of [refs, worktrees, toplevel]) {
+    if (/not a git repository/i.test(result.stderr)) throw new Error('not-a-repo');
+    if (result.code) throw new Error(result.stderr.split(/\r?\n/).find(Boolean) ?? `git exited ${result.code}`);
+  }
+  return {
+    current: head.code ? null : head.stdout.trim() || null,
+    branches: refs.stdout.split('\n').filter(Boolean),
+    worktrees: parseWorktrees(worktrees.stdout, toplevel.code ? cwd : toplevel.stdout.trim()),
+  };
+}
+
+/** Resolve `worktree=` for the diff and branches routes: it must exactly equal a `path` from
+ *  this repository's own `git worktree list` (run in the Workspace cwd); anything else is a
+ *  404. Returns the repo scope the git calls then run in. */
+async function checkoutParam(hub: Hub, key: string, asked: string | null): Promise<{ cwd: string; target?: string } | Response> {
+  const repo = await workspaceRepo(hub, key);
+  if ('missing' in repo) return json({ error: repo.missing }, repo.missing === 'unknown-workspace' ? 404 : 409);
+  if (asked === null) return repo;
+  const list = await runGit(repo.cwd, ['worktree', 'list', '--porcelain'], repo.target);
+  if (/not a git repository/i.test(list.stderr)) return json({ error: 'not-a-repo' }, 409);
+  if (list.code) return json({ error: list.stderr.split(/\r?\n/).find(Boolean) ?? `git exited ${list.code}` }, 502);
+  const checkout = parseWorktrees(list.stdout, '').find(worktree => worktree.path === asked)?.path;
+  if (!checkout) return json({ error: 'worktree' }, 404);
+  return { cwd: checkout, target: repo.target };
 }
 
 export function startHttp(hub: Hub, opts: {
@@ -178,13 +220,11 @@ export function startHttp(hub: Hub, opts: {
           try { key = decodeURIComponent(workspaceDiff[1]!); } catch { return json({ error: 'unknown-workspace' }, 404); }
           const scope = url.searchParams.get('scope');
           if (!['working', 'staged', 'base'].includes(scope ?? '')) return json({ error: 'scope' }, 400);
-          const state = await hub.state(); const workspace = state.workspaces.find(item => item.key === key);
-          if (!workspace) return json({ error: 'unknown-workspace' }, 404);
-          if (!workspace.cwd) return json({ error: 'not-a-repo' }, 409);
-          const host = state.hosts.find(item => item.id === workspace.muxKey.split('/')[0]);
+          const repo = await checkoutParam(hub, key, url.searchParams.get('worktree'));
+          if (repo instanceof Response) return repo;
           const diffScope = scope as DiffScope; let base: string | undefined;
           if (diffScope === 'base') {
-            try { base = await resolveDiffBase(workspace.cwd, host?.target); }
+            try { base = await resolveDiffBase(repo.cwd, repo.target); }
             catch (error) { if (errorMessage(error) === 'not-a-repo') return json({ error: 'not-a-repo' }, 409); throw error; }
             if (!base) return json({ error: 'no-base' }, 502);
           }
@@ -192,7 +232,7 @@ export function startHttp(hub: Hub, opts: {
           if (diffScope === 'staged') args.push('--staged');
           if (base) args.push(`${base}...HEAD`);
           const requestedFile = url.searchParams.get('file'); if (requestedFile !== null) args.push('--', requestedFile);
-          const result = await runGit(workspace.cwd, args, host?.target);
+          const result = await runGit(repo.cwd, args, repo.target);
           if (result.code) {
             if (/not a git repository/i.test(result.stderr)) return json({ error: 'not-a-repo' }, 409);
             return json({ error: result.stderr.split(/\r?\n/).find(Boolean) ?? `git exited ${result.code}` }, 502);
@@ -207,6 +247,47 @@ export function startHttp(hub: Hub, opts: {
           }
           const payload: DiffResult = { scope: diffScope, ...(base ? { base } : {}), files: parseUnifiedDiff(raw), truncated };
           return json(payload);
+        }
+        const workspaceBranches = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/branches$/);
+        if (req.method === 'GET' && workspaceBranches) {
+          let key: string;
+          try { key = decodeURIComponent(workspaceBranches[1]!); } catch { return json({ error: 'unknown-workspace' }, 404); }
+          const repo = await checkoutParam(hub, key, url.searchParams.get('worktree'));
+          if (repo instanceof Response) return repo;
+          try { return json(await branchList(repo.cwd, repo.target)); }
+          catch (error) {
+            const message = errorMessage(error);
+            if (message === 'not-a-repo') return json({ error: 'not-a-repo' }, 409);
+            return json({ error: message.slice(0, 1000) }, 502);
+          }
+        }
+        const workspaceSwitch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/switch$/);
+        if (req.method === 'POST' && workspaceSwitch) {
+          let key: string;
+          try { key = decodeURIComponent(workspaceSwitch[1]!); } catch { return json({ error: 'unknown-workspace' }, 404); }
+          let body: SwitchBody | undefined;
+          try { body = await req.json() as SwitchBody; } catch { return json({ error: 'body' }, 400); }
+          // The name reaches git: 1–255 characters, no leading dash, no control characters.
+          if (typeof body?.branch !== 'string' || !body.branch || body.branch.length > 255 || body.branch.startsWith('-') || /[\x00-\x1f\x7f]/.test(body.branch)) return json({ error: 'body' }, 400);
+          const repo = await workspaceRepo(hub, key);
+          if ('missing' in repo) return json({ error: repo.missing }, repo.missing === 'unknown-workspace' ? 404 : 409);
+          let list: BranchList;
+          try { list = await branchList(repo.cwd, repo.target); }
+          catch (error) {
+            const message = errorMessage(error);
+            if (message === 'not-a-repo') return json({ error: 'not-a-repo' }, 409);
+            return json({ error: message.slice(0, 1000) }, 502);
+          }
+          if (!list.branches.includes(body.branch)) return json({ error: 'branch' }, 404);
+          if (list.current !== body.branch) {
+            // The one git write: a local branch from the re-listed set, never guessed, killed at 60 s.
+            const result = await runGit(repo.cwd, ['switch', '--no-guess', body.branch], repo.target, 60_000);
+            if (result.timedOut) return json({ error: 'timeout' }, 504);
+            if (result.code) return json({ error: (result.stderr.trim() || `git exited ${result.code}`).slice(0, 1000) }, 409);
+            try { list = await branchList(repo.cwd, repo.target); }
+            catch (error) { return json({ error: errorMessage(error).slice(0, 1000) }, 502); }
+          }
+          return json(list);
         }
         const muxWrite = url.pathname.match(/^\/api\/muxes\/([^/]+)\/(tabs|workspaces)$/);
         if (req.method === 'POST' && muxWrite) {
@@ -483,7 +564,7 @@ export function startHttp(hub: Hub, opts: {
           }
         }
         const fileMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/file$/);
-        if (req.method === 'GET' && fileMatch) {
+        if (fileMatch && (req.method === 'GET' || req.method === 'PUT')) {
           let key: string;
           try { key = decodeURIComponent(fileMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           const path = url.searchParams.get('path');
@@ -491,10 +572,25 @@ export function startHttp(hub: Hub, opts: {
           const pane = (await hub.state()).panes.find(item => item.key === key);
           if (!pane) return json({ error: 'pane not found' }, 404);
           if (!pane.cwd) return json({ error: 'cwd' }, 409);
-          const candidate = resolve(pane.cwd, path); const host = hub.host(await hub.paneHost(key));
-          return host?.target
-            ? await remoteFile(pane.cwd, candidate, maxFileBytes(), host.target)
-            : await localFile(pane.cwd, candidate, maxFileBytes());
+          const host = hub.host(await hub.paneHost(key)); const cap = maxFileBytes();
+          try {
+            if (req.method === 'GET') {
+              // Chat's fileImage thumbnails read through this same route.
+              const { body, version } = await fileRead(path, pane.cwd, cap, host?.target);
+              return new Response(body, { headers: { ...fileHeaders(path), ...(version ? { etag: `"${version}"` } : {}) } });
+            }
+            // A save is a write: the Origin check above already gates it like every other write.
+            const match = /^"([A-Za-z0-9-]{1,64})"$/.exec(req.headers.get('if-match') ?? '');
+            if (!match) return json({ error: 'version' }, 428);
+            const body = new Uint8Array(await req.arrayBuffer());
+            if (body.byteLength > cap) return json({ error: 'too large' }, 413);
+            try { new TextDecoder('utf-8', { fatal: true }).decode(body); } catch { return json({ error: 'not text' }, 415); }
+            const version = await fileSave(path, pane.cwd, body, match[1]!, cap, host?.target);
+            return new Response(null, { status: 204, headers: { etag: `"${version}"` } });
+          } catch (error) {
+            if (error instanceof FilesError) return Response.json({ error: error.message }, { status: error.status, headers: error.headers });
+            throw error;
+          }
         }
         const completeMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/complete$/);
         if (req.method === 'GET' && completeMatch) {
@@ -677,7 +773,6 @@ export function startHttp(hub: Hub, opts: {
         if (file.type) headers.set('content-type', file.type);
         return new Response(req.method === 'HEAD' ? null : file, { headers });
       } catch (error) {
-        if (error instanceof FileRouteError) return json({ error: error.message }, error.status);
         const message = errorMessage(error);
         if (message === 'pane not found' || message === 'mux not found' || message === 'workspace not found' || message === 'tab not found') return json({ error: message }, 404);
         if (message === 'unsupported') return json({ error: message }, 501);

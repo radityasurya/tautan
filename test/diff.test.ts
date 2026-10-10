@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseUnifiedDiff } from '../shared/diff.ts';
-import { startHttp } from '../server/http.ts';
+import { parseWorktrees, startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
-import type { DiffResult, Explain, Mux, Pane, Screen, Tree, Workspace } from '../shared/types.ts';
+import type { BranchList, DiffResult, Explain, Mux, Pane, Screen, Tree, Workspace } from '../shared/types.ts';
 
 describe('parseUnifiedDiff', () => {
   test('parses rename, binary, and mode-only files', () => {
@@ -39,8 +39,11 @@ describe('parseUnifiedDiff', () => {
 describe('workspace diff route', () => {
   let dir: string, plain: string, hub: Hub;
   let handle: (request: Request) => Response | Promise<Response>;
+  let wtdir: string | undefined;
   const git = (args: string[]) => Bun.spawnSync(['git', ...args], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
   const get = (key = 'local/fake/w1', query = 'scope=working') => handle(new Request(`http://tautan.test/api/workspaces/${encodeURIComponent(key)}/diff?${query}`));
+  const branches = (key = 'local/fake/w1', query = '') => handle(new Request(`http://tautan.test/api/workspaces/${encodeURIComponent(key)}/branches${query}`));
+  const post = (key: string, body: unknown) => handle(new Request(`http://tautan.test/api/workspaces/${encodeURIComponent(key)}/switch`, { method: 'POST', headers: { host: 'tautan.test', origin: 'http://tautan.test', 'content-type': 'application/json' }, body: JSON.stringify(body) }));
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'tautan-diff-repo-')); plain = mkdtempSync(join(tmpdir(), 'tautan-diff-plain-'));
@@ -53,7 +56,7 @@ describe('workspace diff route', () => {
     try { Bun.serve = ((options: { fetch: typeof handle }) => { handle = options.fetch; return { stop() {} } as ReturnType<typeof Bun.serve>; }) as typeof Bun.serve; startHttp(hub, { port: 0, hostname: '127.0.0.1', staticDir: dir }); }
     finally { Bun.serve = serve; }
   });
-  afterEach(() => { hub.close(); rmSync(dir, { recursive: true, force: true }); rmSync(plain, { recursive: true, force: true }); });
+  afterEach(() => { hub.close(); rmSync(dir, { recursive: true, force: true }); rmSync(plain, { recursive: true, force: true }); if (wtdir) { rmSync(wtdir, { recursive: true, force: true }); wtdir = undefined; } });
 
   test('returns working and staged changes', async () => {
     writeFileSync(join(dir, 'a.txt'), 'one\nchanged\n');
@@ -85,5 +88,101 @@ describe('workspace diff route', () => {
     let response = await get('local/fake/plain'); expect(response.status).toBe(409); expect(await response.json()).toEqual({ error: 'not-a-repo' });
     response = await get('local/fake/missing'); expect(response.status).toBe(404); expect(await response.json()).toEqual({ error: 'unknown-workspace' });
     response = await get('local/fake/w1', 'scope=nope'); expect(response.status).toBe(400); expect(await response.json()).toEqual({ error: 'scope' });
+  });
+
+  test('branches lists local branches and marks the current checkout', async () => {
+    git(['branch', 'other']);
+    const body = await (await branches()).json() as BranchList;
+    expect(body.current).toBe('main');
+    expect([...body.branches].sort()).toEqual(['main', 'other']);
+    expect(body.worktrees).toHaveLength(1);
+    expect(body.worktrees[0]).toMatchObject({ path: realpathSync(dir), branch: 'main', current: true });
+    expect(body.worktrees[0]!.head).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  test('branches: current is null when HEAD is detached', async () => {
+    git(['checkout', '--detach']);
+    const body = await (await branches()).json() as BranchList;
+    expect(body.current).toBeNull();
+    expect(body.branches).toContain('main');
+  });
+
+  test('switch changes the checkout and answers the re-listed branches', async () => {
+    git(['checkout', '-b', 'feature-at']); writeFileSync(join(dir, 'a.txt'), 'feature\n'); git(['add', '.']); git(['commit', '-m', 'feature']); git(['checkout', 'main']);
+    const response = await post('local/fake/w1', { branch: 'feature-at' });
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as BranchList).current).toBe('feature-at');
+    expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('feature\n');
+    // switching to the branch already current returns the list unchanged
+    expect(((await (await post('local/fake/w1', { branch: 'feature-at' })).json()) as BranchList).current).toBe('feature-at');
+  });
+
+  test('switch refuses bad input and unknown branches', async () => {
+    git(['branch', 'other']);
+    for (const bad of [{}, { branch: '' }, { branch: '-dash' }, { branch: 'a'.repeat(256) }, { branch: 'a\nb' }]) {
+      const response = await post('local/fake/w1', bad);
+      expect(response.status).toBe(400); expect(await response.json()).toEqual({ error: 'body' });
+    }
+    let response = await post('local/fake/w1', { branch: 'nope' });
+    expect(response.status).toBe(404); expect(await response.json()).toEqual({ error: 'branch' });
+    response = await post('local/fake/missing', { branch: 'main' });
+    expect(response.status).toBe(404); expect(await response.json()).toEqual({ error: 'unknown-workspace' });
+    response = await post('local/fake/plain', { branch: 'main' });
+    expect(response.status).toBe(409); expect(await response.json()).toEqual({ error: 'not-a-repo' });
+  });
+
+  test('switch passes git refusals through verbatim', async () => {
+    git(['checkout', '-b', 'feature-at']); writeFileSync(join(dir, 'a.txt'), 'feature\n'); git(['add', '.']); git(['commit', '-m', 'feature']); git(['checkout', 'main']);
+    writeFileSync(join(dir, 'a.txt'), 'dirty\n'); // would be overwritten by the switch
+    let response = await post('local/fake/w1', { branch: 'feature-at' });
+    expect(response.status).toBe(409);
+    expect((((await response.json()) as { error: string }).error).length).toBeGreaterThan(0);
+    expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('dirty\n'); // nothing switched
+    git(['checkout', '--', 'a.txt']); // clean the tree
+    wtdir = mkdtempSync(join(tmpdir(), 'tautan-diff-wt-'));
+    git(['worktree', 'add', wtdir, '-b', 'held']);
+    response = await post('local/fake/w1', { branch: 'held' });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: `fatal: 'held' is already used by worktree at '${realpathSync(wtdir)}'` });
+  });
+
+  test('worktree= picks one of the repository\'s own checkouts', async () => {
+    wtdir = mkdtempSync(join(tmpdir(), 'tautan-diff-wt-'));
+    git(['worktree', 'add', wtdir, '-b', 'wt']);
+    const main = realpathSync(dir); const wt = realpathSync(wtdir);
+    let body = await (await branches()).json() as BranchList;
+    expect(body.worktrees.map(item => item.path)).toEqual([main, wt]);
+    expect(body.worktrees.find(item => item.path === main)?.current).toBe(true);
+    expect(body.worktrees.find(item => item.path === wt)).toMatchObject({ branch: 'wt', current: false });
+    const scoped = await (await branches('local/fake/w1', `?worktree=${encodeURIComponent(wt)}`)).json() as BranchList;
+    expect(scoped.current).toBe('wt');
+    expect(scoped.worktrees.find(item => item.path === wt)?.current).toBe(true);
+    writeFileSync(join(wtdir, 'a.txt'), 'from the worktree\n');
+    const scopedDiff = await (await get('local/fake/w1', `scope=working&worktree=${encodeURIComponent(wt)}`)).json() as DiffResult;
+    expect(scopedDiff.files.map(file => file.path)).toContain('a.txt');
+    const mainDiff = await (await get()).json() as DiffResult;
+    expect(mainDiff.files).toHaveLength(0); // the main checkout's a.txt is untouched
+    // an unknown path, and a real directory that is not one of this repository's checkouts
+    let response = await branches('local/fake/w1', `?worktree=${encodeURIComponent('/nope')}`);
+    expect(response.status).toBe(404); expect(await response.json()).toEqual({ error: 'worktree' });
+    response = await branches('local/fake/w1', `?worktree=${encodeURIComponent(realpathSync(plain))}`);
+    expect(response.status).toBe(404); expect(await response.json()).toEqual({ error: 'worktree' });
+  });
+});
+
+describe('parseWorktrees', () => {
+  test('parses porcelain records, skips bare ones, and marks current', () => {
+    const a = 'a'.repeat(40); const b = 'b'.repeat(40); const c = 'c'.repeat(40);
+    const porcelain = [
+      'worktree /repo', `HEAD ${a}`, 'branch refs/heads/main', '',
+      'worktree /repo/wt', `HEAD ${b}`, 'branch refs/heads/feature', 'locked reason here', '',
+      'worktree /repo/det', `HEAD ${c}`, 'detached', 'prunable', '',
+      'worktree /repo/bare.git', 'bare', '',
+    ].join('\n');
+    expect(parseWorktrees(porcelain, '/repo/wt')).toEqual([
+      { path: '/repo', branch: 'main', head: a, current: false },
+      { path: '/repo/wt', branch: 'feature', head: b, current: true, locked: true },
+      { path: '/repo/det', branch: null, head: c, current: false, prunable: true },
+    ]);
   });
 });

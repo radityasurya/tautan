@@ -129,29 +129,26 @@ sequence — and it is also why only the Hub builds those bytes.
   one is set. Nothing new is exposed: a phone that can type into a Pane can already do
   everything the keys do.
 
-## File viewer
+## Files
 
-The Hub serves files below a Pane's cwd only, after resolving symlinks, capped by `TAUTAN_MAX_FILE_MB` (5 MiB by default). SVG is served as text and every response is no-store. A tailnet neighbour without a trusted login can read these files, under the same trust model as Screens.
+The Folder view and the file viewer read below the Host's home plus the Pane's cwd, after resolving symlinks, capped by `TAUTAN_MAX_FILE_MB` (5 MiB by default). Reads carry a version token the edit flow checks before it writes. SVG is served as text and every read is no-store.
 
-## Diff review
+- **A save never creates.** `PUT /api/panes/:key/file` overwrites one existing file, and only when the request still carries the version the last read returned. A file that changed on the Host in between is a 412, and nothing is written.
+- **The write is atomic per file.** The new bytes land in a hidden temp file beside the target, keep the old file's mode, and replace it by rename. A crash or a refusal leaves the old file standing.
+- **A rename has side effects on the Host.** The new file carries the Hub user as owner. A hard link to the old file keeps seeing the old bytes, and any watcher on the path (an editor, a dev server) sees an inode change.
+- **A tailnet neighbour without a trusted login can now write under the home**, not only read: the same reach a shell Pane already gives. Set the trusted login on a shared tailnet.
+- **Raw HTML is never an active document.** HTML, SVG and XML from `GET /api/files/raw` carry `PREVIEW_CSP` (`sandbox` without allow-scripts or allow-same-origin) plus `referrer-policy: no-referrer`.
 
-`GET /api/workspaces/:key/diff` runs `git diff` in that Workspace's cwd. The
-command runs with the Hub user's permissions: directly on the Hub's machine, or
-over the Host's non-interactive SSH connection for a remote Workspace. The agent
-in that Workspace already runs as the same user, so the diff shows nothing the
-agent could not print into its own Pane.
+## Git
 
-- **The Hub never writes.** Only `diff`, `config`, `rev-parse` and
-  `symbolic-ref` run. tautan never stages, commits, checks out or resets.
-- **The scope is a fixed list.** `working`, `staged` and `base` are the only
-  accepted values; anything else is a 400. A `file=` value is passed after
-  `--`, so a path cannot become a git option.
-- **The cwd comes from the Mux, never from the request.** The key selects a
-  Workspace the Hub already knows; the request cannot name a directory.
-- **Diff content is served only to the Hub's clients**, over the same boundary
-  as a Screen: loopback bind, Tailscale in front, the Origin check on writes,
-  and the trusted login when it is set. A diff is source code, so treat it like
-  the terminal output beside it.
+The Workspace views run git in that Workspace's cwd: the reads behind the Diff review and the branch list, and one write, the branch switch. The commands run with the Hub user's permissions: directly on the Hub's machine, or over the Host's non-interactive SSH connection for a remote Workspace. The agent in that Workspace already runs as the same user, so the views show nothing the agent could not print into its own Pane.
+
+- **The reads are read-only.** Only `diff`, `config`, `rev-parse`, `symbolic-ref`, `for-each-ref` and `worktree list` run.
+- **The scope is a fixed list.** `working`, `staged` and `base` are the only accepted values; anything else is a 400. A `file=` value is passed after `--`, so a path cannot become a git option.
+- **The cwd comes from the Mux, never from the request.** The key selects a Workspace the Hub already knows. A `worktree=` value may only pick one of that repository's own checkouts, exactly as `git worktree list` prints it; anything else is a 404.
+- **The one write is the branch switch.** `POST /api/workspaces/:key/switch` runs `git switch --no-guess` on a branch the route just re-listed from that checkout — never a guessed name, never with `worktree=`, never a commit, stage or reset. Git's own refusals (a dirty tree, a branch held by another worktree) reach the phone verbatim.
+- **A hung git call dies in 60 s.** The switch runs with a kill timer, so a command that waits on a tty cannot hold the route.
+- **Diff content is served only to the Hub's clients**, over the same boundary as a Screen: loopback bind, Tailscale in front, the Origin check on writes, and the trusted login when it is set. A diff is source code, so treat it like the terminal output beside it.
 
 ## Remote Hosts and trusted login
 

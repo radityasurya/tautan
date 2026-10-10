@@ -1,4 +1,4 @@
-import { readdir, realpath, stat } from 'node:fs/promises';
+import { chmod, open, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative } from 'node:path';
 import type { Hub } from './mux.ts';
@@ -15,6 +15,11 @@ export const inside = (root: string, path: string) => {
   const pathFromRoot = relative(root, path);
   return pathFromRoot === '' || !isAbsolute(pathFromRoot) && !pathFromRoot.startsWith('..');
 };
+
+/** The CSP for every sandboxed HTML tautan serves — the Agent preview in http.ts and the
+ *  raw file viewer alike: `sandbox` without allow-scripts or allow-same-origin, so scripts
+ *  never run and the page cannot reach the Hub's origin even when opened directly. */
+export const PREVIEW_CSP = "sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; media-src data: https:";
 
 /** GET /api/files/list */
 export interface FileEntry { name: string; path: string; kind: 'dir' | 'file'; size?: number; mtime?: number }
@@ -85,15 +90,23 @@ async function listLocal(hostId: string, rawPath: string, paneCwd: string | unde
   return finish(hostId, target, roots, raw, q, hidden);
 }
 
+/** The containment preamble every remote file script shares: `~`/`~/x` name the remote
+ *  $HOME (`\~` in the strip — a bare `~` never strips in sh), then the realpath must sit
+ *  under $HOME or the Pane cwd. Exit codes, each with an `E<code>` line on stderr for the
+ *  streaming raw route: 11 not found, 12 escape, 15 tools missing. */
+function remoteContainment(rawPath: string, paneCwd?: string): string {
+  return `command -v realpath >/dev/null 2>&1 || { echo E15 >&2; exit 15; }; home=$(realpath -- "$HOME") || { echo E15 >&2; exit 15; }; p=${quoteShell(rawPath)}; case "$p" in '~') p=$HOME;; '~'/*) p=$HOME\${p#\\~};; esac; [ -e "$p" ] || { echo E11 >&2; exit 11; }; rp=$(realpath -- "$p") 2>/dev/null || { echo E11 >&2; exit 11; }; ok=0; case "$rp" in "$home"|"$home"/*) ok=1;; esac; ${
+    paneCwd ? `proot=$(realpath -- ${quoteShell(paneCwd)} 2>/dev/null) || proot=; if [ -n "$proot" ]; then case "$rp" in "$proot"|"$proot"/*) ok=1;; esac; fi;` : ''
+  } [ "$ok" -eq 1 ] || { echo E12 >&2; exit 12; };`;
+}
+
 /** One ssh round trip: first stdout line is `realpath\thome[\tpane-root]`, every later line
- *  `d\t\t\tname` or `f\tsize\tmtime\tname`. Exit codes map like remoteFileCommand:
+ *  `d\t\t\tname` or `f\tsize\tmtime\tname`. Exit codes map like the read and save scripts:
  *  11 not found, 12 escape, 13 not a directory, 15 tools missing.
  *  ponytail: tab/newline inside a remote name misparses; emit NUL-delimited records if a
  *  real Host turns one up. */
-function remoteListCommand(rawPath: string, paneCwd?: string): string {
-  return `command -v realpath >/dev/null 2>&1 || exit 15; home=$(realpath -- "$HOME") || exit 15; p=${quoteShell(rawPath)}; case "$p" in '~') p=$HOME;; '~'/*) p=$HOME/\${p#~};; esac; [ -e "$p" ] || exit 11; rp=$(realpath -- "$p") || exit 11; [ -d "$rp" ] || exit 13; ok=0; case "$rp" in "$home"|"$home"/*) ok=1;; esac; ${
-    paneCwd ? `proot=$(realpath -- ${quoteShell(paneCwd)} 2>/dev/null) || proot=; if [ -n "$proot" ]; then case "$rp" in "$proot"|"$proot"/*) ok=1;; esac; fi;` : ''
-  } [ "$ok" -eq 1 ] || exit 12; printf '%s\\t%s\\t%s\\n' "$rp" "$home" "\${proot:-}"; for f in "$rp"/* "$rp"/.[!.]* "$rp"/..?*; do [ -e "$f" ] || continue; if [ -d "$f" ]; then printf 'd\\t\\t\\t%s\\n' "\${f##*/}"; elif [ -f "$f" ]; then size=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f") || continue; mtime=$(stat -c %Y -- "$f" 2>/dev/null || stat -f %m -- "$f") || continue; printf 'f\\t%s\\t%s\\t%s\\n' "$size" "$mtime" "\${f##*/}"; fi; done`;
+export function remoteListCommand(rawPath: string, paneCwd?: string): string {
+  return `${remoteContainment(rawPath, paneCwd)} [ -d "$rp" ] || exit 13; printf '%s\\t%s\\t%s\\n' "$rp" "$home" "\${proot:-}"; for f in "$rp"/* "$rp"/.[!.]* "$rp"/..?*; do [ -e "$f" ] || continue; if [ -d "$f" ]; then printf 'd\\t\\t\\t%s\\n' "\${f##*/}"; elif [ -f "$f" ]; then size=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f") || continue; mtime=$(stat -c %Y -- "$f" 2>/dev/null || stat -f %m -- "$f") || continue; printf 'f\\t%s\\t%s\\t%s\\n' "$size" "$mtime" "\${f##*/}"; fi; done`;
 }
 
 async function listRemote(hostId: string, target: string, rawPath: string, paneCwd: string | undefined, q: string, hidden: boolean): Promise<FileListResult> {
@@ -132,7 +145,7 @@ const RAW_TYPES: Record<string, string> = {
   c: 'text/plain; charset=utf-8', h: 'text/plain; charset=utf-8', cpp: 'text/plain; charset=utf-8', rb: 'text/plain; charset=utf-8',
   log: 'text/plain; charset=utf-8', csv: 'text/plain; charset=utf-8', env: 'text/plain; charset=utf-8',
 };
-// Never an active same-origin document: `sandbox` without allow-scripts (previewHeaders' rule).
+// Never an active same-origin document: PREVIEW_CSP, the same sandbox the Agent preview uses.
 const SANDBOXED = new Set(['html', 'htm', 'svg', 'xml', 'xhtml']);
 
 function rawHeaders(path: string, download: boolean): Record<string, string> {
@@ -143,7 +156,7 @@ function rawHeaders(path: string, download: boolean): Record<string, string> {
     'cache-control': 'private, no-cache',
     'content-disposition': `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(basename(path)).replace(/'/g, '%27')}`,
   };
-  if (SANDBOXED.has(ext)) headers['content-security-policy'] = 'sandbox';
+  if (SANDBOXED.has(ext)) { headers['content-security-policy'] = PREVIEW_CSP; headers['referrer-policy'] = 'no-referrer'; }
   return headers;
 }
 
@@ -194,20 +207,22 @@ async function rawLocal(rawPath: string, paneCwd: string | undefined, range: Ran
  *  when the script refused (11/12/13/15, and 16 with the size for a 416). Reading it as a
  *  stream keeps stdout undrained — buffering stdout instead deadlocks once the pipe fills.
  *  ponytail: a connection that dies mid-stream truncates the body; no end-to-end checksum. */
-function remoteRawCommand(rawPath: string, paneCwd: string | undefined, range: RangeSpec): string {
+export function remoteRawCommand(rawPath: string, paneCwd: string | undefined, range: RangeSpec): string {
   const r = range ? `START=${'suffix' in range ? '' : range.start}; END=${'suffix' in range || range.end === undefined ? '' : range.end}; SUFFIX=${'suffix' in range ? range.suffix : ''};` : '';
-  return `command -v realpath >/dev/null 2>&1 || exit 15; ${r} home=$(realpath -- "$HOME") || exit 15; p=${quoteShell(rawPath)}; case "$p" in '~') p=$HOME;; '~'/*) p=$HOME/\${p#~};; esac; [ -e "$p" ] || { echo E11 >&2; exit 11; }; rp=$(realpath -- "$p") 2>/dev/null || { echo E11 >&2; exit 11; }; ok=0; case "$rp" in "$home"|"$home"/*) ok=1;; esac; ${
-    paneCwd ? `proot=$(realpath -- ${quoteShell(paneCwd)} 2>/dev/null) || proot=; if [ -n "$proot" ]; then case "$rp" in "$proot"|"$proot"/*) ok=1;; esac; fi;` : ''
-  } [ "$ok" -eq 1 ] || { echo E12 >&2; exit 12; }; [ -f "$rp" ] || { echo E13 >&2; exit 13; }; size=$(stat -c %s -- "$rp" 2>/dev/null || stat -f %z -- "$rp") || { echo E15 >&2; exit 15; }; if [ -n "$START$END$SUFFIX" ]; then if [ -n "$SUFFIX" ]; then if [ "$SUFFIX" -le 0 ] || [ "$size" -eq 0 ]; then echo "E16 $size" >&2; exit 16; fi; st=$(( size - SUFFIX )); [ "$st" -lt 0 ] && st=0; ln=$(( size - st )); else if [ "$START" -ge "$size" ]; then echo "E16 $size" >&2; exit 16; fi; en=\${END:-$(( size - 1 ))}; [ "$en" -ge "$size" ] && en=$(( size - 1 )); st=$START; ln=$(( en - st + 1 )); fi; echo "SIZE $size $st $ln" >&2; tail -c +$(( st + 1 )) -- "$rp" | head -c "$ln"; else echo "SIZE $size 0 $size" >&2; cat -- "$rp"; fi`;
+  return `${r ? `${r} ` : ''}${remoteContainment(rawPath, paneCwd)} [ -f "$rp" ] || { echo E13 >&2; exit 13; }; size=$(stat -c %s -- "$rp" 2>/dev/null || stat -f %z -- "$rp") || { echo E15 >&2; exit 15; }; if [ -n "$START$END$SUFFIX" ]; then if [ -n "$SUFFIX" ]; then if [ "$SUFFIX" -le 0 ] || [ "$size" -eq 0 ]; then echo "E16 $size" >&2; exit 16; fi; st=$(( size - SUFFIX )); [ "$st" -lt 0 ] && st=0; ln=$(( size - st )); else if [ "$START" -ge "$size" ]; then echo "E16 $size" >&2; exit 16; fi; en=\${END:-$(( size - 1 ))}; [ "$en" -ge "$size" ] && en=$(( size - 1 )); st=$START; ln=$(( en - st + 1 )); fi; echo "SIZE $size $st $ln" >&2; tail -c +$(( st + 1 )) -- "$rp" | head -c "$ln"; else echo "SIZE $size 0 $size" >&2; cat -- "$rp"; fi`;
 }
 
-// Exit codes the remote script reports as `E<code>` on stderr before any body.
+// Exit codes the remote scripts report as `E<code>` on stderr before any body.
 const REFUSED: Record<number, { status: number; message: string }> = {
   11: { status: 404, message: 'not found' },
   12: { status: 403, message: 'escape' },
   13: { status: 415, message: 'not a file' },
+  14: { status: 413, message: 'too large' },
   15: { status: 502, message: 'remote' },
   16: { status: 416, message: 'range' },
+  17: { status: 403, message: 'read-only' },
+  18: { status: 502, message: 'cut' },
+  19: { status: 412, message: 'changed' },
 };
 
 async function rawRemote(target: string, rawPath: string, paneCwd: string | undefined, range: RangeSpec | 'multi', headers: Record<string, string>): Promise<Response> {
@@ -236,4 +251,93 @@ async function rawRemote(target: string, rawPath: string, paneCwd: string | unde
   const mapped = refused ? REFUSED[Number(refused[1])] : undefined;
   if (mapped) return fail(mapped.status, mapped.message, mapped.status === 416 && refused![2] ? { 'content-range': `bytes */${refused![2]}`, 'accept-ranges': 'bytes' } : {});
   return fail(502, 'remote');
+}
+
+/** GET /api/panes/:key/file — one file's bytes and its version token (empty when a remote
+ *  Host has no `cksum`, so the UI hides Edit). Roots: the Host's home plus the Pane cwd —
+ *  the Folder view browses the whole home, so the read must too. */
+export async function fileRead(rawPath: string, paneCwd: string, cap: number, target?: string): Promise<{ body: ArrayBuffer; version: string }> {
+  return target ? readRemote(target, rawPath, paneCwd, cap) : readLocal(rawPath, paneCwd, cap);
+}
+
+/** PUT /api/panes/:key/file — overwrite one existing file through a same-folder temp file
+ *  and a rename that keeps its mode; never creates. Answers the file's new version token. */
+export async function fileSave(rawPath: string, paneCwd: string, body: Uint8Array, version: string, cap: number, target?: string): Promise<string> {
+  return target ? saveRemote(target, rawPath, paneCwd, body, version, cap) : saveLocal(rawPath, paneCwd, body, version);
+}
+
+/** A relative path names the Pane cwd; `~`/`~/x` and absolute paths pass through (the
+ *  remote script expands `~` against its own $HOME, which is not the Hub's). */
+const anchorFile = (rawPath: string, paneCwd: string) =>
+  rawPath === '~' || rawPath.startsWith('~/') || isAbsolute(rawPath) ? rawPath : join(paneCwd, rawPath);
+
+async function readLocal(rawPath: string, paneCwd: string, cap: number): Promise<{ body: ArrayBuffer; version: string }> {
+  const { target } = await resolveLocal(anchorFile(rawPath, paneCwd), paneCwd);
+  if (!(await stat(target)).isFile()) throw new FilesError(415, 'not a file');
+  const body = await Bun.file(target).slice(0, cap + 1).arrayBuffer();
+  if (body.byteLength > cap) throw new FilesError(413, 'too large');
+  return { body, version: Bun.hash(new Uint8Array(body)).toString(36) };
+}
+
+/** The body is stdout, the version the last stderr line: `V<cksum|tr ' ' ->` (an empty V
+ *  when the Host has no cksum). Both are buffered — the read is capped, so no deadlock. */
+export function remoteReadCommand(rawPath: string, paneCwd: string | undefined, cap: number): string {
+  return `${remoteContainment(rawPath, paneCwd)} [ -f "$rp" ] || exit 13; size=$(stat -c %s -- "$rp" 2>/dev/null || stat -f %z -- "$rp") || exit 15; case "$size" in ''|*[!0-9]*) exit 15;; esac; [ "$size" -le ${cap} ] || exit 14; if command -v cksum >/dev/null 2>&1; then v=$(cksum < "$rp" | tr ' ' -) || exit 15; else v=; fi; echo "V$v" >&2; head -c ${cap} -- "$rp" || exit 15;`;
+}
+
+async function readRemote(target: string, rawPath: string, paneCwd: string, cap: number): Promise<{ body: ArrayBuffer; version: string }> {
+  const child = Bun.spawn(['ssh', '-o', 'BatchMode=yes', target, '--', remoteReadCommand(rawPath, paneCwd, cap)], { stdout: 'pipe', stderr: 'pipe' });
+  const [body, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited]);
+  if (code) {
+    const mapped = REFUSED[code];
+    if (mapped) throw new FilesError(mapped.status, mapped.message);
+    throw new FilesError(502, stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? 'ssh failed');
+  }
+  return { body, version: /^V(.*)$/.exec(stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? '')?.[1] ?? '' };
+}
+
+async function saveLocal(rawPath: string, paneCwd: string, body: Uint8Array, version: string): Promise<string> {
+  const { target: file } = await resolveLocal(anchorFile(rawPath, paneCwd), paneCwd);
+  const info = await stat(file);
+  if (!info.isFile()) throw new FilesError(415, 'not a file');
+  if (!(info.mode & 0o200)) throw new FilesError(403, 'read-only');
+  const temp = join(dirname(file), `.${basename(file)}.tautan-${Array.from(crypto.getRandomValues(new Uint8Array(4)), byte => byte.toString(16).padStart(2, '0')).join('')}`);
+  try {
+    const handle = await open(temp, 'wx', 0o600);
+    try { await handle.write(body); } finally { await handle.close(); }
+    const current = new Uint8Array(await Bun.file(file).arrayBuffer());
+    if (Bun.hash(current).toString(36) !== version) throw new FilesError(412, 'changed');
+    await chmod(temp, info.mode & 0o7777);
+    await rename(temp, file);
+    return Bun.hash(body).toString(36);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/** Containment, writability (17), the mode, a `mktemp` sibling removed by a trap, the
+ *  length check against the bytes the Hub sent (18), the cap (14), the cksum compare
+ *  against the version token (19), then chmod and `mv -f`; the new version is stdout. */
+export function remoteSaveCommand(rawPath: string, paneCwd: string | undefined, cap: number, length: number, version: string): string {
+  return `${remoteContainment(rawPath, paneCwd)} [ -f "$rp" ] || exit 13; [ -w "$rp" ] || exit 17; mode=$(stat -c %a -- "$rp" 2>/dev/null || stat -f %Lp -- "$rp") || exit 15; tmp=$(mktemp "\${rp%/*}/.tautan.XXXXXX") || exit 15; trap 'rm -f -- "$tmp"' EXIT; cat > "$tmp" || exit 18; len=$(wc -c < "$tmp" | tr -d ' '); [ "$len" -eq ${length} ] || exit 18; [ "$len" -le ${cap} ] || exit 14; command -v cksum >/dev/null 2>&1 || exit 15; cur=$(cksum < "$rp" | tr ' ' -) || exit 15; [ "$cur" = ${quoteShell(version)} ] || exit 19; chmod "$mode" "$tmp" || exit 15; mv -f -- "$tmp" "$rp" || exit 15; cksum < "$rp" | tr ' ' -`;
+}
+
+async function saveRemote(target: string, rawPath: string, paneCwd: string, body: Uint8Array, version: string, cap: number): Promise<string> {
+  const child = Bun.spawn(['ssh', '-o', 'BatchMode=yes', target, '--', remoteSaveCommand(rawPath, paneCwd, cap, body.byteLength, version)], { stdout: 'pipe', stderr: 'pipe', stdin: 'pipe' });
+  // A remote save that never ends must not hang the caller (the chat.ts kill pattern).
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 60_000);
+  try {
+    const done = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    try { await child.stdin.write(body); await child.stdin.end(); } catch { /* the script may refuse before it drains stdin */ }
+    const [stdout, stderr, code] = await done;
+    if (timedOut) throw new FilesError(502, 'remote');
+    if (code) {
+      const mapped = REFUSED[code];
+      if (mapped) throw new FilesError(mapped.status, mapped.message);
+      throw new FilesError(502, stderr.split(/\r?\n/).filter(Boolean).at(-1) ?? 'ssh failed');
+    }
+    return stdout.trim();
+  } finally { clearTimeout(timer); }
 }
