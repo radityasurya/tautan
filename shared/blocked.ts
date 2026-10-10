@@ -1,3 +1,4 @@
+import { BOX } from './layout.ts';
 import type { Explain, Screen } from './types.ts';
 
 /** A yes/no prompt always answers to enter/esc, even when the Mux names no hint keys. */
@@ -72,4 +73,70 @@ export async function promptId(explain: Explain, screen: Screen): Promise<string
   bytes.set(s, 0); bytes.set(payload, s.length);
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   return [...digest.slice(0, 6)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ---- the box, read for the card ----
+
+const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, '');
+const RULE = /^\s*─{20,}\s*$/;
+/** A numbered menu row: `❯ 1. Yes` on the cursor, `  2. No` off it. */
+const OPTION = /^(\s*)(❯\s*)?(\d+)\.\s+(.*\S)\s*$/;
+/** The question tabs over a form of several questions: `←  ☐ One  ☐ Two  ✔ Submit  →`. */
+const TABS = /^←.*→$/;
+
+/** One row of an Agent's numbered menu, and the keys that pick it: arrows from the cursor
+ *  row, then enter. Arrows rather than the digit, because every menu reads them alike. */
+export interface MenuOption { number: string; label: string; detail?: string; keys: string[] }
+
+/**
+ * The blocked box as the card shows it: the question, the lines around it (ANSI kept), and the
+ * numbered menu when there is one (two rows or more). Some rules (herdr's
+ * `bash_permission_prompt`, `live_blocked_form` on a question) hand over much of the Screen,
+ * so the box starts after the last full-width rule — except a rule a numbered row follows,
+ * which divides the menu itself (Claude's `Type something.` from `Chat about this`).
+ */
+export function readBox(detection: string): { head: string; rest: string[]; menu: MenuOption[] } {
+  const frame = new RegExp(BOX.source, 'g');
+  const raw = detection.split(/\r?\n/);
+  const firstText = (from: number) => raw.slice(from).find((line) => plain(line).trim());
+  let start = 0;
+  for (let i = raw.length - 1; i >= 0; i--) {
+    if (!RULE.test(plain(raw[i]!))) continue;
+    const next = firstText(i + 1);
+    if (next !== undefined && OPTION.test(plain(next))) continue;
+    if (raw.slice(i + 1).filter((line) => plain(line).trim()).length >= 2) start = i + 1;
+    break;
+  }
+  const lines = raw.slice(start).filter((line) => !RULE.test(plain(line)));
+  // The menu: each numbered row, and the deeper-indented lines under it as its description.
+  const menu: (MenuOption & { at: number })[] = [];
+  const used = new Set<number>();
+  let cursor = 0;
+  let column = -1;
+  lines.forEach((line, i) => {
+    const text = plain(line).replace(frame, '');
+    const row = text.match(OPTION);
+    if (row) {
+      if (row[2]) cursor = menu.length;
+      column = row[1]!.length + (row[2]?.length ?? 0);
+      menu.push({ number: row[3]!, label: row[4]!, keys: [], at: i });
+      used.add(i);
+    } else if (menu.length && text.trim() && text.length - text.trimStart().length > column) {
+      const last = menu.at(-1)!;
+      last.detail = last.detail ? `${last.detail} ${text.trim()}` : text.trim();
+      used.add(i);
+    } else if (text.trim()) column = Infinity; // a shallower line ends the last row's description
+  });
+  const options = menu.length >= 2 ? menu.map(({ at: _at, ...option }, i) => ({
+    ...option,
+    keys: [...Array<string>(Math.abs(i - cursor)).fill(i > cursor ? 'down' : 'up'), 'enter'],
+  })) : [];
+  const shown = lines
+    .filter((_, i) => !options.length || !used.has(i))
+    .map((line) => line.replace(frame, '').trim())
+    .filter((line) => plain(line).trim() && !/^Tip:/.test(plain(line)));
+  // The question heads the card; the tabs over a form of several questions follow it.
+  if (shown.length > 1 && TABS.test(plain(shown[0]!).trim())) shown.splice(1, 0, shown.shift()!);
+  const [head = 'Blocked', ...rest] = shown;
+  return { head, rest, menu: options };
 }

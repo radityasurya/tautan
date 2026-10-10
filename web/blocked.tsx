@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { offeredKeys } from '../shared/blocked.ts';
-import { BOX } from '../shared/layout.ts';
+import { offeredKeys, readBox } from '../shared/blocked.ts';
 import type { Explain, InputBody } from '../shared/types.ts';
 import { haptic } from './app.tsx';
 import { keyGlyph } from './keys.ts';
@@ -37,23 +36,15 @@ export async function sendBlocked(paneKey: string, keys: string[], promptId?: st
 
 const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, '');
 
-/** The box-frame class lives in shared/layout.ts, one definition for card and grid. */
-const boxFrame = new RegExp(BOX.source, 'g');
+/** One answer on the card: a numbered menu row, or a key the Mux offered. */
+interface Choice { id: string; label: string; detail?: string; keys: string[]; glyph: string }
 
-/**
- * The detection as prose: strip the agent's own box frame, drop the empty rows, keep the
- * ANSI so the excerpt reads in the agent's own colours.
- */
-const content = (detection: string) => {
-  const lines = detection.split(/\r?\n/);
-  // Some rules (herdr's `bash_permission_prompt`) hand over the whole Screen: Claude's banner
-  // first, the box after its last full-width rule. Start there when a box follows it.
-  const rule = lines.map((l) => /^\s*─{20,}\s*$/.test(plain(l))).lastIndexOf(true);
-  const box = rule >= 0 && lines.slice(rule + 1).filter((l) => plain(l).trim()).length >= 2 ? lines.slice(rule + 1) : lines;
-  return box
-    .map((l) => l.replace(boxFrame, '').trim())
-    .filter((l) => plain(l).trim() && !/^Tip:/.test(plain(l)));
-};
+/** The Agent's own numbered menu when the box has one (`1. Yes`, `2. Always`, a question's
+ *  options), else the keys the Mux offered. */
+const choicesOf = (explain: Explain, menu: ReturnType<typeof readBox>['menu']): Choice[] =>
+  menu.length
+    ? menu.map((option) => ({ id: option.number, label: option.label, detail: option.detail, keys: option.keys, glyph: option.number }))
+    : offeredKeys(explain).slice(0, 4).map((option) => ({ id: option.key, label: option.label, keys: [option.key], glyph: keyGlyph(option.key) }));
 
 /**
  * The prompt as one line, for a surface with no room for the card (the Pane list).
@@ -63,8 +54,9 @@ const content = (detection: string) => {
 // ponytail: only the `… command` head is special-cased; add a head per App profile when a
 // second agent's box reads wrong here.
 export function promptLine(explain: Explain): string {
-  const [head = 'Blocked', next] = content(explain.detection).map((l) => plain(l).trim());
-  return /command$/i.test(head) && next ? next : head;
+  const { head, rest } = readBox(explain.detection);
+  const next = rest[0] && plain(rest[0]).trim();
+  return /command$/i.test(plain(head)) && next ? next : plain(head).trim();
 }
 
 /** The dark ink on a warning fill, as the header's Yes uses it. */
@@ -91,15 +83,16 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
   const [picked, setPicked] = useState<string | null>(null);
   const [changed, setChanged] = useState(false);
   const [sending, setSending] = useState(false);
-  const [head = 'Blocked', ...rest] = content(explain.detection);
-  const options = offeredKeys(explain).slice(0, 4);
+  const { head, rest, menu } = readBox(explain.detection);
+  const options = choicesOf(explain, menu);
   const moved = changed || stale;
 
-  const send = async (key = picked) => {
-    if (!key) return;
+  const send = async (id = picked) => {
+    const choice = options.find((option) => option.id === id);
+    if (!choice) return;
     setSending(true);
     try {
-      if (await onSend([key], explain.promptId) === 'changed') setChanged(true);
+      if (await onSend(choice.keys, explain.promptId) === 'changed') setChanged(true);
     } finally {
       setSending(false);
     }
@@ -125,20 +118,20 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
     const choices = moved ? (
       <div className="flex items-center gap-3">{refusal}</div>
     ) : (
-      // ponytail: each choice is labelled with the key it sends, not `1 2 3`. Numbered
-      // labels (and digit shortcuts) wait for a mapping that matches the Agent's own
-      // numbering — Claude Code's 1 Yes, 2 Always, 3 No — which offeredKeys() does not give.
+      // A numbered menu keeps the Agent's own numbers; a menu row goes out as arrows to it,
+      // then enter. Without a menu, each choice is labelled with the key it sends.
       <div role="group" aria-label="Options" className="flex flex-wrap items-center gap-2">
         {options.map((option, i) => {
-          const yes = i === 0 && option.key === 'enter';
-          const no = option.key === 'esc';
+          const yes = i === 0 && (menu.length ? /^(yes|allow|accept|approve)\b/i.test(option.label) : option.id === 'enter');
+          const no = option.id === 'esc' || /^no\b/i.test(option.label);
           return (
             <button
-              key={option.key}
+              key={option.id}
               type="button"
-              aria-label={`${option.label}, key ${option.key}`}
+              title={option.detail}
+              aria-label={menu.length ? `${option.glyph}. ${option.label}` : `${option.label}, key ${option.id}`}
               disabled={sending}
-              onClick={() => void send(option.key)}
+              onClick={() => void send(option.id)}
               className={`press flex h-9 shrink-0 items-center gap-2 rounded-composer px-3.5 text-[13px] disabled:opacity-50 ${
                 yes ? 'bg-warn font-semibold' : no ? 'border border-border text-danger' : 'bg-surface text-fg'
               }`}
@@ -150,7 +143,7 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
                   yes ? 'border-current/25' : 'border-border text-muted'
                 }`}
               >
-                {keyGlyph(option.key)}
+                {option.glyph}
               </kbd>
             </button>
           );
@@ -174,29 +167,33 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
   }
 
   const group = (
-    <div role="group" aria-label="Options" className="flex shrink-0 flex-col gap-1.5">
+    <div role="group" aria-label="Options" className="flex min-h-[5.5rem] shrink flex-col gap-1.5 overflow-y-auto overscroll-contain">
       {options.map((option) => {
-        const on = picked === option.key;
+        const on = picked === option.id;
         return (
           <button
-            key={option.key}
+            key={option.id}
             type="button"
             role="radio"
             aria-checked={on}
-            aria-label={`${option.label}, key ${option.key}`}
-            onClick={() => setPicked(on ? null : option.key)}
-            className={`press flex h-11 w-full items-center gap-2.5 rounded-composer border px-3.5 text-left ${
+            aria-label={menu.length ? `${option.glyph}. ${option.label}` : `${option.label}, key ${option.id}`}
+            aria-description={option.detail}
+            onClick={() => setPicked(on ? null : option.id)}
+            className={`press flex min-h-11 w-full items-center gap-2.5 rounded-composer border px-3.5 py-1.5 text-left ${
               on ? 'border-accent bg-accent/10' : 'border-border bg-bg'
             }`}
           >
-            <span className="min-w-0 flex-1 truncate text-[14px] text-fg">{option.label}</span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[14px] text-fg">{option.label}</span>
+              {option.detail && <span className="line-clamp-2 text-caption text-muted">{option.detail}</span>}
+            </span>
             <kbd
               aria-hidden
               className={`flex h-6 min-w-6 shrink-0 items-center justify-center rounded-chip border px-1 font-mono text-[11px] ${
                 on ? 'border-accent bg-accent text-bg' : 'border-border text-muted'
               }`}
             >
-              {keyGlyph(option.key)}
+              {option.glyph}
             </kbd>
           </button>
         );
