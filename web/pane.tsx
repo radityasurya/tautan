@@ -1928,6 +1928,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         onClose={() => setShowMore(false)}
         head={<ThemePicker />}
         items={[
+          // The Workspace's files and changes first: on a phone the end of this list is below the fold.
+          { label: 'Files', sub: 'Browse, read and edit this Workspace', onClick: () => navigate(filesHash(paneKey), { transition: false }) },
+          ...(ws ? [{ label: 'Diff', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }] : []),
           ...(agent ? [{ label: 'Read aloud', onClick: speak }] : []),
           kind === 'shell'
             ? {
@@ -1983,8 +1986,6 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
               setOverride((n) => n + 1);
             },
           },
-          { label: 'Files', sub: 'Browse, read and edit this Workspace', onClick: () => navigate(filesHash(paneKey), { transition: false }) },
-          ...(ws ? [{ label: 'Diff', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }] : []),
           ...(writable
             ? [
                 { label: 'Rename', onClick: () => setRename(true) },

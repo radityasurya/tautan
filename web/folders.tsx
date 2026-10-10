@@ -1,12 +1,12 @@
-// Folder list over /api/files/list: the picker in New Tab / New Workspace, and Files. One list, two modes: `files` shows files too and taps open them.
+// Folder list over /api/files/list: the folder picker in New Tab / New Workspace. Files has its own list (explorer.tsx).
 import { useEffect, useState } from 'react';
 import { Button, Chip, SearchInput, Skeleton, usePal } from './halaska-kit';
-import { crumbs, filesUrl, readRecent, size, writeRecent } from './folders-logic.ts';
+import { crumbs, filesUrl, readRecent, writeRecent } from './folders-logic.ts';
 
 export type Entry = { name: string; path: string; kind: 'dir' | 'file'; size?: number; mtime?: number };
 type Listing = { path: string; home: string; parent: string | null; entries: Entry[]; truncated: boolean };
 
-const WHY: Record<string, string> = {
+export const WHY: Record<string, string> = {
   escape: 'That folder is outside the places tautan may read',
   'not found': 'That folder does not exist',
   host: 'That Host is gone',
@@ -19,20 +19,15 @@ export function FolderBrowser({
   hostId,
   paneKey,
   start,
-  files,
   recents,
-  onFile,
   onUse,
 }: {
   hostId: string;
   paneKey?: string;
   /** Where to open; empty means the Host home. */
   start?: string;
-  /** Show files too, and open them with `onFile`. */
-  files?: boolean;
   /** Offer the recent folders of this Host above the list, except the one open. */
   recents?: boolean;
-  onFile?: (path: string) => void;
   /** The "Use this folder" action; omit it for browse-only. */
   onUse?: (path: string) => void;
 }) {
@@ -70,7 +65,7 @@ export function FolderBrowser({
     setPath(p);
   };
   const needle = q.trim().toLowerCase();
-  const rows = (list?.entries ?? []).filter((e) => (files || e.kind === 'dir') && (!needle || e.name.toLowerCase().includes(needle)));
+  const rows = (list?.entries ?? []).filter((e) => e.kind === 'dir' && (!needle || e.name.toLowerCase().includes(needle)));
   const recent = recents && !needle ? readRecent(hostId).filter((p) => p !== list?.path) : [];
 
   return (
@@ -93,7 +88,7 @@ export function FolderBrowser({
         </nav>
       )}
       <div className="flex items-center gap-2">
-        <SearchInput value={q} onChange={setQ} placeholder={files ? 'Filter' : 'Filter folders'} shortcut="" style={{ flex: 1, height: 44 }} />
+        <SearchInput value={q} onChange={setQ} placeholder="Filter folders" shortcut="" style={{ flex: 1, height: 44 }} />
         <Chip selected={hidden} onToggle={() => setHidden(!hidden)}>
           Hidden
         </Chip>
@@ -143,14 +138,13 @@ export function FolderBrowser({
           )}
           {rows.map((e) => (
             <li key={e.path}>
-              <button type="button" className={ROW} onClick={() => (e.kind === 'dir' ? go(e.path) : onFile?.(e.path))}>
-                <span aria-hidden style={{ color: pal.textTertiary }}>{e.kind === 'dir' ? '▸' : '·'}</span>
+              <button type="button" className={ROW} onClick={() => go(e.path)}>
+                <span aria-hidden style={{ color: pal.textTertiary }}>▸</span>
                 <span className="min-w-0 flex-1 truncate text-body">{e.name}</span>
-                {e.kind === 'file' && <span className="shrink-0 text-caption text-muted">{size(e.size)}</span>}
               </button>
             </li>
           ))}
-          {rows.length === 0 && <li className="py-2 text-caption text-muted">{needle ? 'No match' : files ? 'Empty folder' : 'No folders here'}</li>}
+          {rows.length === 0 && <li className="py-2 text-caption text-muted">{needle ? 'No match' : 'No folders here'}</li>}
           {list.truncated && <li className="py-2 text-caption text-muted">The list is cut short. Type to filter.</li>}
         </ul>
       )}

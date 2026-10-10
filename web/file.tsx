@@ -1,14 +1,15 @@
 // Files (#/file/<paneKey>[?dir=][&worktree=]) and the viewer (#/file/<paneKey>?path=). With no
-// `path` the screen is Files: the folder list at `dir`, else the Workspace cwd, else the Pane
-// cwd. The Hub reads a file through the Pane. `worktree` is another checkout of the
-// Workspace's repository; it only steers the branch chip and the Diff link.
+// `path` the screen is Files: the folder at `dir`, else the Workspace cwd, else the Pane cwd.
+// Desktop keeps the Explorer tree beside either; the phone shows one at a time. The Hub reads a
+// file through the Pane. `worktree` is another checkout of the Workspace's repository: the
+// tree's root, the branch chip's and the Diff link's checkout.
 import { lazy, Suspense, useEffect, useState } from 'react';
-import type { State, StateHost, StatePane, StateWorkspace } from '../shared/types.ts';
-import { Link, navigate } from './app.tsx';
+import type { State, StateHost, StatePane } from '../shared/types.ts';
+import { Link, useDesktop } from './app.tsx';
 import { BranchChip } from './diff.tsx';
-import { Back, Download, Folder, Lock } from './icons.tsx';
+import { Back, Download, External, Folder, Lock } from './icons.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
-import { FolderBrowser } from './folders.tsx';
+import { Crumbs, Explorer, FolderPanel, GoToFile } from './explorer.tsx';
 import { absolute, basename, dirname, filesHash, filesUrl, size, splitBom, viewerFor } from './folders-logic.ts';
 import { Markdown } from './markdown.tsx';
 import { FRAME, FullPreview } from './preview.tsx';
@@ -65,47 +66,27 @@ export function FileScreen({
   worktree?: string;
   state: State | null;
 }) {
+  const desktop = useDesktop();
+  const [hidden, setHidden] = useState(false);
+  // A branch switch changes the files under the list, so it starts over.
+  const [round, setRound] = useState(0);
   const pane = state?.panes.find((item) => item.key === paneKey);
   const mux = state?.muxes.find((item) => item.key === pane?.muxKey);
   const host = state?.hosts.find((item) => item.id === mux?.hostId);
   const ws = state?.workspaces.find((item) => item.muxKey === pane?.muxKey && item.id === pane?.workspaceId);
-  return path ? (
-    <FileView paneKey={paneKey} path={path} worktree={worktree} pane={pane} host={host} />
-  ) : (
-    <Files paneKey={paneKey} dir={dir} worktree={worktree} state={state} pane={pane} ws={ws} host={host} />
-  );
-}
-
-function Files({
-  paneKey,
-  dir,
-  worktree,
-  state,
-  pane,
-  ws,
-  host,
-}: {
-  paneKey: string;
-  dir?: string;
-  worktree?: string;
-  state: State | null;
-  pane?: StatePane;
-  ws?: StateWorkspace;
-  host?: StateHost;
-}) {
-  // A branch switch changes the files under the list, so it starts over.
-  const [round, setRound] = useState(0);
-  const start = dir || ws?.cwd || pane?.cwd || '';
+  const root = worktree || ws?.cwd || pane?.cwd || '';
+  const folder = dir || root;
+  const abs = path ? absolute(path, pane?.cwd) : '';
   const diff = ws && `#/diff/${encodeURIComponent(ws.key)}${worktree ? `?worktree=${encodeURIComponent(worktree)}` : ''}`;
-  const open = (file: string) => {
-    // Back from the file lands on its folder, not on wherever Files first opened.
-    history.replaceState(null, '', filesHash(paneKey, { dir: dirname(file), worktree }));
-    navigate(filesHash(paneKey, { path: file, worktree }));
-  };
+  // Go to file searches the Pane's own repository, which a worktree is not.
+  const goTo = !worktree && pane?.cwd ? <GoToFile paneKey={paneKey} cwd={pane.cwd} desktop={desktop} /> : null;
+
+  // The phone gives a file the whole screen, its name in the header; Back is its folder.
+  if (path && !desktop) return <FileView paneKey={paneKey} path={path} worktree={worktree} pane={pane} host={host} desktop={false} />;
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-4xl flex-col pt-[env(safe-area-inset-top)]">
-      <header className="flex h-11 shrink-0 items-center gap-1 pr-2 pl-1 lg:h-14">
+    <div className="flex h-dvh w-full flex-col pt-[env(safe-area-inset-top)]">
+      <header className="flex h-11 shrink-0 items-center gap-1 pr-2 pl-1 lg:h-14 lg:border-b lg:border-border lg:pr-4">
         <BackLink />
         <div className="flex min-w-0 flex-1 flex-col">
           <h1 className="truncate text-title tracking-tight">{ws?.label ?? 'Files'}</h1>
@@ -120,26 +101,39 @@ function Files({
           </Link>
         )}
       </header>
-      <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-1 pb-[max(env(safe-area-inset-bottom),12px)]">
-        {host ? (
-          <FolderBrowser key={round} hostId={host.id} paneKey={paneKey} start={start} files onFile={open} />
-        ) : state ? (
-          <div className="flex flex-col items-start gap-3 pt-8">
-            <p className="text-body">{pane ? 'Host not available' : 'Pane is gone'}</p>
-            {!pane && (
-              <a href="#/" className="text-body text-accent">
-                ‹ All panes
-              </a>
-            )}
-          </div>
-        ) : (
-          <div aria-busy className="flex flex-col gap-2 pt-3">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-3/4" />
-            <Skeleton className="h-4 w-1/2" />
-          </div>
+      <div className="flex min-h-0 flex-1">
+        {desktop && host && root && (
+          <aside className="flex w-64 shrink-0 flex-col gap-2 border-r border-border bg-surface pt-3 xl:w-72">
+            {goTo && <div className="px-3">{goTo}</div>}
+            <Explorer key={round} host={host.id} paneKey={paneKey} root={root} at={abs || folder} file={Boolean(path)} hidden={hidden} worktree={worktree} />
+          </aside>
         )}
-      </main>
+        <main className={`min-w-0 flex-1 ${path ? 'flex flex-col' : 'overflow-y-auto overscroll-contain'}`}>
+          {path ? (
+            <FileView paneKey={paneKey} path={path} worktree={worktree} pane={pane} host={host} desktop />
+          ) : host ? (
+            <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-4 pt-1 pb-[max(env(safe-area-inset-bottom),16px)] lg:px-8 lg:pt-5">
+              {!desktop && goTo}
+              <FolderPanel key={round} host={host.id} paneKey={paneKey} path={folder} hidden={hidden} onHidden={setHidden} worktree={worktree} desktop={desktop} />
+            </div>
+          ) : state ? (
+            <div className="flex flex-col items-start gap-3 px-4 pt-8">
+              <p className="text-body">{pane ? 'Host not available' : 'Pane is gone'}</p>
+              {!pane && (
+                <a href="#/" className="text-body text-accent">
+                  ‹ All panes
+                </a>
+              )}
+            </div>
+          ) : (
+            <div aria-busy className="flex flex-col gap-2 px-4 pt-3">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
@@ -150,12 +144,15 @@ function FileView({
   worktree,
   pane,
   host,
+  desktop,
 }: {
   paneKey: string;
   path: string;
   worktree?: string;
   pane?: StatePane;
   host?: StateHost;
+  /** Beside the Explorer, under the Files header: a breadcrumb instead of a header. */
+  desktop: boolean;
 }) {
   const [nonce, setNonce] = useState(0);
   const [data, setData] = useState<FileData | null>(null);
@@ -258,11 +255,159 @@ function FileView({
 
   const rendered = Boolean(text) && RENDERED.test(path);
   const html = HTML.test(path);
+  // Past the read cap there is no text, but the raw route has no cap: HTML still previews.
+  const tooLarge = error === 'too large';
+  const showHtml = html && ((rendered && view === 'Preview') || tooLarge);
   const showPreview = rendered && view === 'Preview';
+  const lines = text ? text.text.split(/\r\n?|\n/) : [];
+  const facts = text ? `${lines.length} ${lines.length === 1 ? 'line' : 'lines'} · ${size(text.bytes)}` : data ? size(data.bytes) : '';
+  const icon = `${ACTION} w-10 justify-center text-muted hover:text-fg`;
+
+  // The file's own bar, as a code host draws it over a file: the view switch, what the file
+  // is, and what you can do with it.
+  const bar = (
+    <div className="flex min-h-11 shrink-0 items-center gap-1 border-b border-border bg-surface pr-1 pl-2">
+      {rendered && (
+        // The kit control is 30 px tall; taller buttons keep each half a 44 px target on the phone.
+        <div className="w-44 shrink-0 [&_button]:min-h-[34px]">
+          <SegmentedControl options={['Preview', 'Source']} value={view} onChange={setView} />
+        </div>
+      )}
+      <span className="min-w-0 flex-1 truncate px-1.5 font-mono text-caption text-muted">{facts}</span>
+      {version && (
+        <button type="button" onClick={() => setEditing(true)} className={`${ACTION} px-2.5 text-body font-semibold`}>
+          Edit
+        </button>
+      )}
+      {host && (
+        <>
+          <a href={raw()} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab" className={icon}>
+            <External size={18} />
+          </a>
+          <a href={raw({ download: true })} download={name} aria-label="Download" title="Download" className={icon}>
+            <Download size={18} />
+          </a>
+        </>
+      )}
+    </div>
+  );
+
+  const body =
+    kind !== 'other' ? (
+      !host ? (
+        <p className="px-4 pt-8 text-body">Host not available</p>
+      ) : kind === 'pdf' ? (
+        // ponytail: Chrome's PDF viewer refuses every sandboxed frame (probed on Chrome 1228: '', allow-scripts,
+        // allow-same-origin and both together all blank it), so this frame is unsandboxed.
+        // The Hub sends the PDF as application/pdf from our own origin, never as HTML.
+        <iframe title={name} src={raw()} className="size-full min-h-[70dvh] flex-1 border-0" />
+      ) : kind === 'video' ? (
+        <video src={raw()} controls playsInline preload="metadata" className="max-h-full w-full bg-black" />
+      ) : (
+        <div className="flex flex-col gap-3 px-4 py-8">
+          <audio src={raw()} controls preload="metadata" className="w-full" />
+        </div>
+      )
+    ) : showHtml ? (
+      <>
+        <div className="flex shrink-0 items-center gap-2 border-b border-border pl-3 text-caption text-muted">
+          <Lock className="shrink-0" />
+          {/* It wraps rather than truncates: the note is the safety claim. */}
+          <span className="min-w-0 flex-1 py-1.5 leading-snug">{tooLarge ? `${SANDBOX_NOTE} · too large for Source and Edit` : SANDBOX_NOTE}</span>
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            onClick={() => setFull(true)}
+            className="flex min-h-11 shrink-0 items-center px-2.5 font-semibold text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]"
+          >
+            Full screen
+          </button>
+        </div>
+        {/* Keyed and versioned, so a save reloads the page instead of showing a cached one. */}
+        {host && <iframe key={version} {...FRAME} src={raw({ v: version })} title={`Preview of ${name}`} className="min-h-[50dvh] w-full flex-1 border-0 bg-white" />}
+        {full && host && <FullPreview src={raw({ v: version })} title={name} note={SANDBOX_NOTE} onClose={() => setFull(false)} />}
+      </>
+    ) : error ? (
+      <div className="flex flex-col items-start gap-3 px-4 py-8">
+        <p className="text-body">
+          {error === 'not found' ? 'File not found' : tooLarge ? 'This file is too large to show here' : 'Could not read the file'}
+        </p>
+        {tooLarge && host ? (
+          <div className="flex gap-4">
+            <a href={raw()} target="_blank" rel="noopener noreferrer" className="flex min-h-11 items-center text-body font-medium text-accent">
+              Open in a new tab
+            </a>
+            <a href={raw({ download: true })} download={name} className="flex min-h-11 items-center text-body font-medium text-accent">
+              Download
+            </a>
+          </div>
+        ) : error !== 'not found' && (
+          <>
+            <p className="text-caption text-muted">{error}</p>
+            <button type="button" onClick={() => setNonce((value) => value + 1)} className="text-body font-medium text-accent">
+              Try again
+            </button>
+          </>
+        )}
+      </div>
+    ) : !data ? (
+      <div aria-busy className="flex flex-col gap-2 px-4 py-4">
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-11/12" />
+        <Skeleton className="h-3 w-3/4" />
+      </div>
+    ) : data.kind === 'binary' ? (
+      <p className="px-4 py-8 font-mono text-caption text-muted">Binary file</p>
+    ) : data.kind === 'image' ? (
+      <div className="flex min-h-full items-start justify-center p-4">
+        <img src={data.src} alt={name} className="h-auto max-w-full" />
+      </div>
+    ) : showPreview ? (
+      // A document reads at document scale; the Markdown component's headings are sized for Chat turns.
+      <article className="px-4 py-5 text-body lg:px-8 lg:py-6 [&_h1]:text-[24px] [&_h1]:leading-tight [&_h2]:text-[19px]">
+        <Markdown text={data.text} />
+      </article>
+    ) : (
+      <div className="hscroll w-max min-w-full py-2">
+        {lines.map((line, index) => (
+          <div key={index} className="flex font-mono text-[13px] leading-5 text-fg">
+            <span
+              aria-hidden
+              style={{ width: `calc(${String(lines.length).length}ch + 2rem)` }}
+              className="shrink-0 pr-4 text-right tabular-nums text-muted/70 select-none"
+            >
+              {index + 1}
+            </span>
+            <span className="pr-4 whitespace-pre">{line}</span>
+          </div>
+        ))}
+      </div>
+    );
+
+  // One card at both widths: the bar over the content, the content scrolling inside it. A
+  // frame or a player fills the card instead of scrolling.
+  const filled = showHtml || kind === 'pdf';
+  const card = (
+    <section aria-label={name} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-border bg-bg">
+      {bar}
+      <div className={`min-h-0 flex-1 ${filled ? 'flex flex-col' : 'overflow-auto overscroll-contain'}`}>{body}</div>
+    </section>
+  );
+
+  if (desktop) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-8 pt-4 pb-6">
+        <div className="flex min-h-9 items-center">
+          <Crumbs paneKey={paneKey} path={dirname(abs)} worktree={worktree} file={name} />
+        </div>
+        {card}
+      </div>
+    );
+  }
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-4xl flex-col pt-[env(safe-area-inset-top)]">
-      <header className="flex h-11 shrink-0 items-center gap-0.5 pr-1 pl-1 lg:h-14">
+    <div className="flex h-dvh w-full flex-col pt-[env(safe-area-inset-top)]">
+      <header className="flex h-11 shrink-0 items-center gap-0.5 pr-1 pl-1">
         <BackLink />
         <div className="flex min-w-0 flex-1 flex-col">
           <h1 className="truncate text-title tracking-tight">{name}</h1>
@@ -271,121 +416,15 @@ function FileView({
             <span dir="rtl" className="min-w-0 truncate text-left">
               <bdi>{tildePath(dirname(abs))}</bdi>
             </span>
-            {data && <span className="shrink-0">&nbsp;· {size(data.bytes)}</span>}
           </p>
         </div>
-        {version && (
-          <button type="button" onClick={() => setEditing(true)} className={`${ACTION} px-2.5 text-body font-semibold`}>
-            Edit
-          </button>
-        )}
         {host && (
-          <>
-            <Link
-              to={filesHash(paneKey, { dir: dirname(abs), worktree })}
-              aria-label="Folder"
-              title="Folder"
-              className={`${ACTION} w-10 justify-center text-muted`}
-            >
-              <Folder />
-            </Link>
-            <a href={raw({ download: true })} download={name} aria-label="Download" title="Download" className={`${ACTION} w-10 justify-center text-muted`}>
-              <Download />
-            </a>
-          </>
+          <Link to={filesHash(paneKey, { dir: dirname(abs), worktree })} aria-label="Folder" title="Folder" className={`${ACTION} w-10 justify-center text-muted`}>
+            <Folder />
+          </Link>
         )}
       </header>
-
-      {rendered && (
-        // The kit control is 30 px tall; taller buttons keep each half a 44 px target.
-        <div className="shrink-0 px-4 pt-1 pb-3 [&_button]:min-h-[38px]">
-          <SegmentedControl options={['Preview', 'Source']} value={view} onChange={setView} />
-        </div>
-      )}
-
-      <main
-        className={`min-h-0 flex-1 pb-[max(env(safe-area-inset-bottom),12px)] ${
-          showPreview && html ? 'flex flex-col' : 'overflow-auto overscroll-contain'
-        }`}
-      >
-        {kind !== 'other' ? (
-          !host ? (
-            <p className="px-4 pt-8 text-body">Host not available</p>
-          ) : kind === 'pdf' ? (
-            // ponytail: Chrome's PDF viewer refuses every sandboxed frame (probed on Chrome 1228: '', allow-scripts,
-            // allow-same-origin and both together all blank it), so this frame is unsandboxed.
-            // The Hub sends the PDF as application/pdf from our own origin, never as HTML.
-            <iframe title={name} src={raw()} className="size-full min-h-[70dvh] border-0" />
-          ) : kind === 'video' ? (
-            <video src={raw()} controls playsInline preload="metadata" className="max-h-full w-full bg-black" />
-          ) : (
-            <div className="flex flex-col gap-3 px-4 pt-8">
-              <audio src={raw()} controls preload="metadata" className="w-full" />
-            </div>
-          )
-        ) : error ? (
-          <div className="flex flex-col items-start gap-3 px-4 pt-8">
-            <p className="text-body">
-              {error === 'not found' ? 'File not found' : error === 'too large' ? 'File is too large' : 'Could not read the file'}
-            </p>
-            {error !== 'not found' && error !== 'too large' && (
-              <>
-                <p className="text-caption text-muted">{error}</p>
-                <button type="button" onClick={() => setNonce((value) => value + 1)} className="text-body font-medium text-accent">
-                  Try again
-                </button>
-              </>
-            )}
-          </div>
-        ) : !data ? (
-          <div aria-busy className="flex flex-col gap-2 px-4 pt-4">
-            <Skeleton className="h-3 w-full" />
-            <Skeleton className="h-3 w-11/12" />
-            <Skeleton className="h-3 w-3/4" />
-          </div>
-        ) : data.kind === 'binary' ? (
-          <p className="px-4 pt-8 font-mono text-caption text-muted">Binary file</p>
-        ) : data.kind === 'image' ? (
-          <div className="flex min-h-full items-start justify-center p-4">
-            <img src={data.src} alt={name} className="h-auto max-w-full" />
-          </div>
-        ) : showPreview && html ? (
-          <div className="mx-3 flex min-h-[50dvh] flex-1 flex-col overflow-hidden rounded-card border border-border lg:mx-4">
-            <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface pl-3 text-caption text-muted">
-              <Lock className="shrink-0" />
-              {/* It wraps rather than truncates: the note is the safety claim. */}
-              <span className="min-w-0 flex-1 py-1.5 leading-snug">{SANDBOX_NOTE}</span>
-              <button
-                type="button"
-                aria-haspopup="dialog"
-                onClick={() => setFull(true)}
-                className="flex min-h-11 shrink-0 items-center px-2.5 font-semibold text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]"
-              >
-                Full screen
-              </button>
-            </div>
-            {/* Keyed and versioned, so a save reloads the page instead of showing a cached one. */}
-            {host && <iframe key={version} {...FRAME} src={raw({ v: version })} title={`Preview of ${name}`} className="min-h-0 w-full flex-1 border-0 bg-white" />}
-            {full && host && <FullPreview src={raw({ v: version })} title={name} note={SANDBOX_NOTE} onClose={() => setFull(false)} />}
-          </div>
-        ) : showPreview ? (
-          // A document reads at document scale; the Markdown component's headings are sized for Chat turns.
-          <article className="mx-3 rounded-card border border-border bg-elevated px-4 py-5 text-body lg:mx-4 lg:px-6 [&_h1]:text-[24px] [&_h1]:leading-tight [&_h2]:text-[19px]">
-            <Markdown text={data.text} />
-          </article>
-        ) : (
-          <div className="hscroll w-max min-w-full py-1">
-            {data.text.split(/\r\n?|\n/).map((line, index) => (
-              <div key={index} className="flex font-mono text-caption text-fg">
-                <span aria-hidden className="w-9 shrink-0 px-1.5 text-right tabular-nums text-muted select-none">
-                  {index + 1}
-                </span>
-                <span className="pr-4 whitespace-pre">{line}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </main>
+      <div className="flex min-h-0 flex-1 flex-col px-3 pt-1 pb-[max(env(safe-area-inset-bottom),12px)]">{card}</div>
     </div>
   );
 }

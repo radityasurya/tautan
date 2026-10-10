@@ -78,3 +78,21 @@ export const filesUrl = (route: 'list' | 'raw', o: Record<string, string | undef
   for (const [k, v] of Object.entries(o)) if (v) q.set(k, v);
   return `/api/files/${route}?${q}`;
 };
+
+/** The home folder a path sits under, by the usual layouts; '' when none. */
+export const homeOf = (path: string) => /^(?:\/home\/[^/]+|\/Users\/[^/]+|\/root)(?=\/|$)/.exec(path)?.[0] ?? '';
+
+/** A listing's mtime (seconds) as a code host shows it: `12 minutes ago`, then a date past a month. */
+export function modified(sec?: number, now = Date.now()): string {
+  if (!sec) return '';
+  const s = Math.max(0, now / 1000 - sec);
+  const ago = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+  if (s < 60) return 'just now';
+  if (s < 3600) return ago(Math.floor(s / 60), 'minute');
+  if (s < 86400) return ago(Math.floor(s / 3600), 'hour');
+  if (s < 30 * 86400) return ago(Math.floor(s / 86400), 'day');
+  return new Date(sec * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+/** The file a folder shows under its list. */
+export const README = /^readme(\.(md|markdown))?$/i;

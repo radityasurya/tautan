@@ -654,7 +654,7 @@ section with the same right-edge fade as the Pane grid (`FADE`, exported from
 answers uncapped, and replaces the file's hunks in place. The rest of the list
 stays as it is. A failure turns the button into **Try again**.
 
-## Files and File (`#/file/<paneKey>`) — `web/file.tsx`, `web/editor.tsx`
+## Files and File (`#/file/<paneKey>`) — `web/file.tsx`, `web/explorer.tsx`, `web/editor.tsx`
 
 One route, two screens. With `?path=` it is the file viewer; without it, it is **Files**.
 Both read through the Pane, so a relative path is under the Pane cwd. `&worktree=<path>`
@@ -662,15 +662,27 @@ rides along on both (see Worktrees below).
 
 ### Files (`#/file/<paneKey>[?dir=]`)
 
-Open it from the Pane's ⋯ menu (**Files**, above **Diff**), or from the group menu on the
-Agents screen, which reads through the Workspace's first Pane. It opens at `dir`, else the
-Workspace cwd, else the Pane cwd.
+Open it from the Pane's ⋯ menu (**Files** and **Diff** head the list, so they sit above the
+fold on a phone), or from the group menu on the Agents screen, which reads through the
+Workspace's first Pane. It opens at `dir`, else the Workspace cwd, else the Pane cwd. It is
+laid out like a code host:
 
-Header: Back, the Workspace label over `Files · <Host>`, the **branch chip**, and a **Diff**
-link (accent text) to `#/diff/<workspaceKey>`. The body is the folder browser (`FolderBrowser`, the same one
-the sheets use, with files): crumbs, **Filter**, **Hidden**, folders first. Opening a file
-first replaces the hash with `?dir=<its folder>`, so Back from the file returns to that
-folder, not to wherever Files first opened. Desktop is the same single column, centred.
+- **Header:** Back, the Workspace label over `Files · <Host>`, the **branch chip**, and a
+  **Diff** link (accent text) to `#/diff/<workspaceKey>`.
+- **Explorer** (desktop only): a column beside the content, as in VS Code. **Go to file** on
+  top, then the tree from the Workspace cwd (or the worktree), titled with its folder name. A
+  folder unfolds on demand and is listed once; the open file's or folder's ancestors unfold by
+  themselves, and the open one is highlighted. A folder row opens that folder on the right and
+  unfolds it; its chevron only folds.
+- **A folder** (`FolderPanel`), as GitHub shows one: the path as crumbs with **Hidden** beside
+  it, then a table of `..`, folders, then files — an accent folder or a muted file glyph, the
+  name, the size, and on desktop the age (`5 hours ago`, a date past a month) under a
+  Name · Size · Modified head. A `README.md` in the folder renders under the table.
+- **Go to file:** the Pane's repository files (the list `@` completes from), narrowed as you
+  type; ↑/↓, Enter, Esc. It sits above the table on the phone. A worktree has none, because
+  the list is the Pane's own checkout.
+
+Every row is a link, so Back walks back through the folders and files you opened.
 
 ### The branch chip and sheet
 
@@ -725,12 +737,18 @@ Creating, removing or pruning a worktree, and opening one as a new Workspace, ar
 
 ### File (`#/file/<paneKey>?path=`)
 
-A clickable path in the Screen or a Chat tool row, or a file in Files, opens the viewer full
-screen. The header is Back (which follows `history.back()`), the file name over its folder
-(mono, tilde-shortened, truncated from the left) and its size, then **Edit**, **Folder** and
-**Download**. **Folder** opens Files at the file's folder. **Download** streams the file from
-`/api/files/raw` as an attachment. **Edit** shows only for a text file the Hub sent with an
-etag; a remote Host without `cksum` sends none, and then the file is read-only here.
+A clickable path in the Screen or a Chat tool row, or a file in Files, opens the viewer. On
+desktop it takes the right of Files, under the path as crumbs, with the Explorer beside it. On
+the phone it is full screen: Back (which follows `history.back()`), the file name over its
+folder (mono, tilde-shortened, truncated from the left), and **Folder**, which opens Files at
+the file's folder.
+
+The file is a card with a bar over it: **Preview | Source** for a rendered kind, the line count
+and size in mono, then **Edit**, **Open in a new tab** and **Download**. **Open in a new tab**
+opens `/api/files/raw` in its own browser tab, full screen; HTML stays under the strict
+preview CSP there too. **Download** streams the same route as an attachment. **Edit** shows only
+for a text file the Hub sent with an etag; a remote Host without `cksum` sends none, and then
+the file is read-only here.
 
 The viewer follows the file's extension (`viewerFor` in `web/folders-logic.ts`):
 
@@ -746,8 +764,11 @@ The viewer follows the file's extension (`viewerFor` in `web/folders-logic.ts`):
 | Anything else | `Binary file` |
 
 Text is decoded as strict UTF-8 with the byte order mark kept aside. The HTML frame is keyed
-and versioned by the etag, so a save reloads the page. Errors read `File not found`,
-`File is too large`, or `Could not read the file` with the Hub's code and a **Try again**.
+and versioned by the etag, so a save reloads the page. Past the read cap (`TAUTAN_MAX_FILE_MB`,
+5 MB) there is no text, but the raw route has no cap: an HTML page still previews, its strip
+adding `too large for Source and Edit`, and any other file reads `This file is too large to
+show here` with **Open in a new tab** and **Download**. Other errors read `File not found`, or
+`Could not read the file` with the Hub's code and a **Try again**.
 
 ### Edit — `web/editor.tsx`
 
@@ -970,10 +991,10 @@ title and the meta line.
   menu's group, described under Pane.
 - **Rename**: one field, for a Workspace, Tab or Pane.
 - **More**: the ⋯ menu — the theme picker (`ThemePicker` from `web/settings.tsx`,
-  the same control the Settings screen shows), then Wrap, **Phone width** with
+  the same control the Settings screen shows), then **Files** (`Browse, read and edit this
+  Workspace`) and **Diff**, Read aloud for an Agent, Wrap, **Phone width** with
   `the pane draws at your columns` as its hint, **Fit to width** with the
-  grid size as its hint, **Theme colors**, **Mouse taps**, **Files** (`Browse, read and edit
-  this Workspace`), **Diff**, Rename, Close Pane, and a
+  grid size as its hint, **Theme colors**, **Mouse taps**, Rename, Close Pane, and a
   disabled `Resize to phone` marked `v2`. Desktop adds **Split view: on/off**, zoom in and
   out, and the **Layout** group.
 - **Close Pane** is a Dialog, not a drawer, so a destructive action cannot be

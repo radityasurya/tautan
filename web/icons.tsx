@@ -244,3 +244,18 @@ export const Lock = (p: Props) => (
     <path d="M8 11V8a4 4 0 0 1 8 0v3" />
   </Icon>
 );
+
+/** A file row in Files and the Explorer. */
+export const FileDoc = (p: Props) => (
+  <Icon {...p}>
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+    <path d="M14 3v5h5" />
+  </Icon>
+);
+
+/** Open in a new browser tab. */
+export const External = (p: Props) => (
+  <Icon {...p}>
+    <path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4" />
+  </Icon>
+);
