@@ -2,7 +2,7 @@
 // main.tsx loads this chunk only when the page is opened with `?mock` (or built with
 // VITE_MOCK=1); it never loads for a real page.
 import type {
-  DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope,
+  BranchList, DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope, SwitchBody, Worktree,
   Explain, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
   ScreenMode, SeenBody, Settings, SettingsBody, State, StatePane, Status, SuggestSettingBody,
 } from '../shared/types.ts';
@@ -530,6 +530,163 @@ const MOCK_DIFFS: Record<string, Partial<Record<DiffScope, DiffResult>>> = {
   },
 };
 
+// ---- files and branches ----
+// One repository with two live checkouts and a pruned one, for Files, the viewer, the editor,
+// the branch chip and the worktree rows. The content is generic, like the rest of the fixture.
+
+const HOME = '/home/dev';
+const REPO = `${HOME}/projects/tautan`;
+const WT_FILES = `${HOME}/projects/tautan-wt-files`;
+const WT_OTTER = `${HOME}/projects/tautan-swift-otter`; // prunable: its folder is gone
+
+const README = [
+  '# tautan',
+  '',
+  'A phone app for the terminal Agents you run in herdr and tmux. Read their Screens, answer their questions, and reply from the couch.',
+  '',
+  '## Run it',
+  '',
+  '```sh',
+  'make dev',
+  '```',
+  '',
+  '## Status',
+  '',
+  '- Chat and Screen views',
+  '- Needs you, with push',
+  '- Files, edit and branches',
+  '',
+  'See [the docs](https://example.com/docs) for the routes.',
+  '',
+].join('\n');
+
+const LANDING = [
+  '<!doctype html><html lang="en"><meta charset="utf-8"><title>Northwind Coffee</title>',
+  '<style>body{margin:0;font:15px/1.55 system-ui,sans-serif;background:#fffdf8;color:#2a2116}',
+  'header{display:flex;justify-content:space-between;padding:20px 24px;font-size:13px;color:#6b5e4b}',
+  'main{padding:24px}h1{font:400 32px/1.15 Georgia,serif;margin:12px 0 16px}p{color:#5a4d3b;margin:0 0 20px}',
+  '.cta{display:inline-block;padding:10px 18px;border-radius:999px;background:#2a2116;color:#fffdf8;text-decoration:none}',
+  '.menu{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:28px}.menu div{padding:12px;border-radius:10px;background:#f3ead9}</style>',
+  '<header><strong>Northwind Coffee</strong><span>Menu · Visit · Order</span></header>',
+  '<main><h1>Slow mornings, single-origin cups.</h1>',
+  '<p>The page an Agent just wrote, rendered as a browser would, inside a locked frame.</p>',
+  '<a class="cta" href="#menu">See the menu</a>',
+  '<div class="menu" id="menu"><div>Espresso</div><div>Pour-over</div><div>Cortado</div><div>Cold brew</div></div></main>',
+  '<script>document.body.style.background="red"</script></html>',
+].join('\n');
+
+const FILE_TSX = [
+  "// Full-screen file viewer (#/file/<paneKey>?path=).",
+  "import { useState } from 'react';",
+  '',
+  'export function FileScreen({ path }: { path: string }) {',
+  "  const name = path.split('/').at(-1);",
+  "  const [view, setView] = useState<'preview' | 'source'>('preview');",
+  '  return <h1>{name}</h1>;',
+  '}',
+  '',
+].join('\n');
+
+/** Every file the fake Hub can list, read and write, by absolute path. */
+const MOCK_FILES: Record<string, string> = {
+  [`${REPO}/README.md`]: README,
+  // Always answers a save with 412: the "changed on disk" banner.
+  [`${REPO}/CHANGELOG.md`]: '# Changelog\n\n## 0.1.1\n\n- Files: browse, preview and edit\n- Branch chip and worktrees\n',
+  [`${REPO}/package.json`]: '{\n  "name": "tautan",\n  "version": "0.1.1",\n  "type": "module",\n  "scripts": {\n    "dev": "make dev",\n    "build": "vite build"\n  }\n}\n',
+  [`${REPO}/.gitignore`]: 'node_modules\ndist\n',
+  [`${REPO}/web/preview.html`]: LANDING,
+  [`${REPO}/web/file.tsx`]: FILE_TSX,
+  [`${WT_FILES}/README.md`]: README.replace('- Files, edit and branches', '- Files, edit and branches\n- Worktrees in the branch sheet'),
+  [`${WT_FILES}/web/file.tsx`]: FILE_TSX.replace("useState<'preview' | 'source'>('preview')", "useState<'preview' | 'source'>('source')"),
+  [`${HOME}/projects/digivaley.com/README.md`]: '# digivaley.com\n\nListings and guides, built with Astro.\n',
+};
+/** Folders with nothing the fixture needs inside, so the list looks like a repository. */
+const MOCK_DIRS = ['docs', 'server', 'shared', 'test'].flatMap((d) => [`${REPO}/${d}`, `${WT_FILES}/${d}`]);
+const MOCK_MTIME = Math.floor(Date.now() / 1000) - 3600;
+
+const expand = (path: string, cwd = HOME): string => {
+  const at = path === '~' ? HOME : path.startsWith('~/') ? `${HOME}/${path.slice(2)}` : path;
+  const full = at.startsWith('/') ? at : `${expand(cwd)}/${at.replace(/^\.\//, '')}`;
+  return full.replace(/\/+$/, '') || '/';
+};
+const parentOf = (path: string) => (path === '/' ? null : path.slice(0, path.lastIndexOf('/')) || '/');
+
+/** What `GET /api/files/list` answers, dirs first, then by name, as server/files.ts sorts. */
+function listing(s: Store, path: string, hidden: boolean): Response {
+  const dirs = new Set<string>();
+  for (const p of [...Object.keys(s.files), ...MOCK_DIRS]) {
+    for (let up = parentOf(p); up; up = parentOf(up)) dirs.add(up);
+  }
+  for (const d of MOCK_DIRS) dirs.add(d);
+  if (path in s.files) return json({ error: 'not a directory' }, 400);
+  if (!dirs.has(path)) return json({ error: 'not found' }, 404);
+  const entries = new Map<string, { name: string; path: string; kind: 'dir' | 'file'; size?: number; mtime?: number }>();
+  for (const d of dirs) if (parentOf(d) === path && d !== path) entries.set(d, { name: d.slice(d.lastIndexOf('/') + 1), path: d, kind: 'dir' });
+  for (const [f, text] of Object.entries(s.files)) {
+    if (parentOf(f) === path) entries.set(f, { name: f.slice(f.lastIndexOf('/') + 1), path: f, kind: 'file', size: new TextEncoder().encode(text).length, mtime: MOCK_MTIME });
+  }
+  const list = [...entries.values()]
+    .filter((e) => hidden || !e.name.startsWith('.'))
+    .sort((a, b) => (a.kind === b.kind ? a.name.toLowerCase().localeCompare(b.name.toLowerCase()) : a.kind === 'dir' ? -1 : 1));
+  return json({ host: 'mbp', path, home: HOME, parent: parentOf(path), entries: list, truncated: false });
+}
+
+const etagOf = (s: Store, path: string) => `"${s.versions[path] ?? 1}-${s.files[path]!.length}"`;
+
+const DIRTY = [
+  'error: Your local changes to the following files would be overwritten by checkout:',
+  '\tweb/file.tsx',
+  'Please commit your changes or stash them before you switch branches.',
+  'Aborting',
+].join('\n');
+
+/** The Workspace's own checkout is the first worktree. A Workspace missing here is not a repo. */
+const MOCK_REPOS: Record<string, BranchList> = {
+  'mbp/herdr/tautan': {
+    current: 'main',
+    branches: ['main', 'feat/files', 'fix/ios-zoom', 'worktree/swift-otter'],
+    worktrees: [
+      { path: REPO, branch: 'main', head: '9c1e2b7d4a0f6e3c8b5a2d1f0e9c8b7a6d5e4f3a', current: true },
+      { path: WT_FILES, branch: 'feat/files', head: 'a41d0e3c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e', current: false },
+      { path: WT_OTTER, branch: null, head: '3f2a1c9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a', current: false, prunable: true },
+    ],
+  },
+  // One checkout: the sheet is artboard 3, branches only.
+  'mbp/herdr/digivaley': {
+    current: 'main',
+    branches: ['main', 'deps/astro-5', 'seo/listings'],
+    worktrees: [{ path: `${HOME}/projects/digivaley.com`, branch: 'main', head: '5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a', current: true }],
+  },
+};
+
+/** The list as seen from one checkout: `current` marks it, and its branch is the current one. */
+function branchesAt(repo: BranchList, at?: string): BranchList | undefined {
+  const here = at ? repo.worktrees.find((w) => w.path === expand(at)) : repo.worktrees[0];
+  if (!here) return undefined;
+  return { ...repo, current: here.branch, worktrees: repo.worktrees.map((w): Worktree => ({ ...w, current: w === here })) };
+}
+
+/** The `feat/files` worktree's own changes, so its Diff differs from the Workspace's. */
+const WORKTREE_DIFF: Partial<Record<DiffScope, DiffResult>> = {
+  working: {
+    scope: 'working',
+    truncated: false,
+    files: [
+      file('web/file.tsx', [
+        hunk('@@ -96,9 +96,14 @@ export function FileScreen', 96, 96, [
+          "   const name = path.split('/').at(-1);",
+          '-  const [browsing, setBrowsing] = useState(false);',
+          "+  const [view, setView] = useState<'preview' | 'source'>('preview');",
+          '+  const [editing, setEditing] = useState(false);',
+          '   return (',
+        ]),
+      ]),
+    ],
+  },
+  staged: { scope: 'staged', files: [], truncated: false },
+  base: { scope: 'base', base: 'main', files: [], truncated: false },
+};
+
 export function assertMockInvariants(): void {
   const statuses = new Set(mockState.panes.map((p) => p.status));
   const problems = [
@@ -802,6 +959,10 @@ interface Store {
   state: State;
   screens: Record<string, Record<ScreenMode, Screen>>;
   settings: Settings;
+  files: Record<string, string>;
+  /** A file's save count, which its etag carries. */
+  versions: Record<string, number>;
+  repos: Record<string, BranchList>;
 }
 
 let store: Store | null = null;
@@ -1088,7 +1249,7 @@ async function readBody(input: RequestInfo | URL, init?: RequestInit): Promise<u
   return undefined;
 }
 
-function route(s: Store, url: URL, method: string, body: unknown, headers?: Headers): Response | undefined {
+function route(s: Store, url: URL, method: string, body: unknown, headers?: Headers, raw?: string): Response | undefined {
   if (method === 'GET' && url.pathname === '/api/state') return json(s.state);
   if (url.pathname === '/api/settings') {
     if (method === 'GET') return json(s.settings);
@@ -1136,12 +1297,63 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
     );
   }
 
+  if (method === 'GET' && url.pathname === '/api/files/list') {
+    return listing(s, expand(url.searchParams.get('path') || '~'), url.searchParams.get('hidden') === '1');
+  }
+
+  // The file route reads and writes through a Pane: a relative path is under its cwd. A save
+  // needs the version it was read at, never creates, and CHANGELOG.md always answers 412.
+  const fileRoute = url.pathname.match(/^\/api\/panes\/([^/]+)\/file$/);
+  if (fileRoute && (method === 'GET' || method === 'PUT')) {
+    const pane = s.state.panes.find((p) => p.key === decodeURIComponent(fileRoute[1]!));
+    if (!pane) return json({ error: 'pane not found' }, 404);
+    const asked = url.searchParams.get('path');
+    if (!asked) return json({ error: 'path' }, 400);
+    const full = expand(asked, pane.cwd);
+    if (MOCK_DIRS.includes(full) || Object.keys(s.files).some((f) => f.startsWith(`${full}/`))) return json({ error: 'not a file' }, 415);
+    if (!(full in s.files)) return json({ error: 'not found' }, 404);
+    if (method === 'GET') return new Response(s.files[full], { headers: { 'content-type': 'text/plain; charset=utf-8', etag: etagOf(s, full) } });
+    const ifMatch = headers?.get('if-match');
+    if (!ifMatch) return json({ error: 'version' }, 428);
+    if (full.endsWith('/CHANGELOG.md') || ifMatch !== etagOf(s, full)) return json({ error: 'changed' }, 412);
+    s.files[full] = raw ?? '';
+    s.versions[full] = (s.versions[full] ?? 1) + 1;
+    return new Response(null, { status: 204, headers: { etag: etagOf(s, full) } });
+  }
+
+  // Branches and worktrees, from the Workspace's own checkout or from `?worktree=`.
+  const branches = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(branches|switch)$/);
+  if (branches) {
+    const key = decodeURIComponent(branches[1]!);
+    if (!s.state.workspaces.some((w) => w.key === key)) return json({ error: 'unknown-workspace' }, 404);
+    const repo = s.repos[key];
+    if (!repo) return json({ error: 'not-a-repo' }, 409);
+    if (method === 'GET' && branches[2] === 'branches') {
+      const list = branchesAt(repo, url.searchParams.get('worktree') ?? undefined);
+      return list ? json(list) : json({ error: 'worktree' }, 404);
+    }
+    if (method === 'POST' && branches[2] === 'switch') {
+      const branch = (body as SwitchBody | undefined)?.branch;
+      if (!branch) return json({ error: 'body' }, 400);
+      if (!repo.branches.includes(branch)) return json({ error: 'branch' }, 404);
+      // git's own refusals, verbatim: a dirty tree, and a branch another worktree holds.
+      if (branch === 'fix/ios-zoom') return json({ error: DIRTY }, 409);
+      const holder = repo.worktrees.slice(1).find((w) => w.branch === branch);
+      if (holder) return json({ error: `fatal: '${branch}' is already used by worktree at '${holder.path}'` }, 409);
+      repo.current = branch;
+      repo.worktrees[0]!.branch = branch;
+      return json(branchesAt(repo));
+    }
+  }
+
   // git runs in the Workspace cwd, so a Workspace the fixture has no repo for answers 409.
   const diff = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/diff$/);
   if (method === 'GET' && diff) {
     const key = decodeURIComponent(diff[1]!);
     if (!s.state.workspaces.some((w) => w.key === key)) return json({ error: 'unknown-workspace' }, 404);
-    const scopes = MOCK_DIFFS[key];
+    const worktree = url.searchParams.get('worktree');
+    if (worktree && !s.repos[key]?.worktrees.some((w) => w.path === expand(worktree))) return json({ error: 'worktree' }, 404);
+    const scopes = worktree && expand(worktree) === WT_FILES ? WORKTREE_DIFF : MOCK_DIFFS[key];
     if (!scopes) return json({ error: 'not-a-repo' }, 409);
     const scope = (['working', 'staged', 'base'] as DiffScope[]).find((v) => v === url.searchParams.get('scope')) ?? 'working';
     const result = scopes[scope] ?? { scope, files: [], truncated: false };
@@ -1251,8 +1463,12 @@ export function installMock(): void {
   if (!new URLSearchParams(location.search).has('mock') && meta('VITE_MOCK') !== '1') return;
   installed = true;
   if (meta('DEV') !== false) assertMockInvariants();
-  // `?mock&open=diff` opens the Diff screen on the Workspace whose diff is cut short.
+  // `?mock&open=diff` opens the Diff screen on the Workspace whose diff is cut short;
+  // `files`, `file` and `edit` open Files, README.md, and README.md in the editor.
   if (mockOpen() === 'diff' && !location.hash) location.hash = `#/diff/${encodeURIComponent('mbp/herdr/digivaley')}`;
+  const p2 = `#/file/${encodeURIComponent('mbp/herdr/p2')}`;
+  if (mockOpen() === 'files' && !location.hash) location.hash = p2;
+  if ((mockOpen() === 'file' || mockOpen() === 'edit') && !location.hash) location.hash = `${p2}?path=${encodeURIComponent(`${REPO}/README.md`)}`;
 
   const s: Store = {
     state: structuredClone(mockState),
@@ -1265,6 +1481,9 @@ export function installMock(): void {
       hosts: [{ id: 'vps', label: 'vps', target: 'dev@vps.example.ts.net' }],
       suggest: { provider: 'zai', model: 'glm-5.2', enabled: true },
     },
+    files: { ...MOCK_FILES },
+    versions: {},
+    repos: structuredClone(MOCK_REPOS),
   };
   store = s;
 
@@ -1275,7 +1494,8 @@ export function installMock(): void {
     if (!url.pathname.startsWith('/api/')) return original(input, init);
     const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-    const response = route(s, url, method, await readBody(input, init), headers);
+    const raw = typeof init?.body === 'string' ? init.body : undefined; // a file save is text, not JSON
+    const response = route(s, url, method, await readBody(input, init), headers, raw);
     await sleep(80 + Math.random() * 120); // slow enough to see the loading states
     return response ?? json({ error: 'not found' }, 404);
   };
@@ -1288,9 +1508,16 @@ export function installMock(): void {
   // ponytail: mock only, one stand-in picture; a per-id fixture when a screenshot needs two.
   // A preview iframe gets the fixture page as a data URL, which the sandbox keeps inert.
   const page = `data:text/html;charset=utf-8,${encodeURIComponent(PREVIEW_HTML)}`;
+  // `/api/files/raw` in a frame (the HTML preview in Files) gets that file's text the same way.
+  const rawFile = (value: string) => {
+    const path = new URL(value, location.origin).searchParams.get('path');
+    const text = path ? s.files[expand(path)] : undefined;
+    return text === undefined ? value : `data:text/html;charset=utf-8,${encodeURIComponent(text)}`;
+  };
   const stand = (value: string) =>
     /^\/api\/panes\/[^/]+\/chat\/image\/\d+(?:\?|$)/.test(value) ? '/icon-512.png'
       : /^\/api\/panes\/[^/]+\/chat\/preview\/\d+(?:\?|$)/.test(value) ? page
+      : /^\/api\/files\/raw\?/.test(value) ? rawFile(value)
       : value;
   for (const proto of [HTMLImageElement.prototype, HTMLIFrameElement.prototype]) {
     const src = Object.getOwnPropertyDescriptor(proto, 'src')!;
