@@ -27,8 +27,10 @@ const RENDERED = /\.(md|markdown|html?)$/i;
 const HTML = /\.html?$/i;
 const SANDBOX_NOTE = 'Sandboxed · scripts and outside requests off';
 
-// `?mock&open=edit` lands a screenshot in the editor, once.
-let autoEdit = new URLSearchParams(location.search).get('open') === 'edit';
+// `?mock&open=edit` lands a screenshot in the editor, once. The mock gate is the one
+// installMock() uses, so a real page never opens the editor on its own.
+const params = new URLSearchParams(location.search);
+let autoEdit = (params.has('mock') || import.meta.env.VITE_MOCK === '1') && params.get('open') === 'edit';
 
 const ACTION = 'flex min-h-11 shrink-0 items-center text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]';
 

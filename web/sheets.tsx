@@ -437,7 +437,7 @@ export function BranchSheet({
         </div>
         <p className="shrink-0 border-t border-border px-6 pt-3 pb-[max(env(safe-area-inset-bottom),24px)] text-caption text-muted">
           {many
-            ? 'Tap a worktree to browse its files and see its diff. Agents create these with git worktree. tautan never creates or removes one.'
+            ? 'Tap a worktree to browse its files and its diff. Agents create these with git worktree; tautan never creates or removes one.'
             : 'Switching changes the files every Pane in this Workspace sees. tautan never creates, commits or stashes.'}
         </p>
       </div>

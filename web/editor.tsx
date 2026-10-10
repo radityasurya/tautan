@@ -131,8 +131,10 @@ export default function Editor({
   const dirty = () => Boolean(view.current && savedDoc.current && !view.current.state.doc.eq(savedDoc.current));
   const unsaved = status === 'edited' || status === 'saving' || status === 'failed' || status === 'conflict';
 
-  changed.current = () =>
+  changed.current = () => {
+    copiedOnce.current = false; // an edit after a Copy invalidates it: Reload asks again
     setStatus((s) => (s === 'conflict' || s === 'saving' ? s : dirty() ? 'edited' : last.current ? 'saved' : 'clean'));
+  };
 
   save.current = async () => {
     const v = view.current;
@@ -235,7 +237,12 @@ export default function Editor({
     return () => removeEventListener('beforeunload', guard);
   }, [unsaved]);
 
-  const done = () => (unsaved ? setLeaving('done') : onDone(last.current));
+  // While a save is in flight the write may still land: Done does nothing, and the back-swipe
+  // guard (which re-pushes its entry before calling this) holds the editor in place.
+  const done = () => {
+    if (status === 'saving') return;
+    unsaved ? setLeaving('done') : onDone(last.current);
+  };
   const reload = () => (copiedOnce.current ? onReload() : setLeaving('reload'));
 
   // A back swipe (iOS) or the Android Back button would drop unsaved edits without a word:
@@ -283,73 +290,77 @@ export default function Editor({
   const canSave = status === 'edited' || status === 'failed';
 
   return (
-    // The phone: a layer the size of the visual viewport, so Save sits above the keyboard.
-    // The desktop: a centred column, like the viewer it replaces.
-    <div className="fixed inset-x-0 top-(--vv-top,0px) z-40 flex h-(--vv-h,100dvh) flex-col bg-bg lg:static lg:mx-auto lg:h-dvh lg:w-full lg:max-w-4xl">
-      <header className="flex shrink-0 items-center gap-2 border-b border-border px-1 pt-[env(safe-area-inset-top)] lg:px-2">
-        <div className="flex w-20 shrink-0">
-          <button
-            type="button"
-            onClick={done}
-            className="flex min-h-11 items-center px-3 text-body text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]"
-          >
-            Done
-          </button>
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col items-center py-1">
-          <h1 className="max-w-full truncate text-body font-semibold">{name}</h1>
-          <p aria-live="polite" className={`text-caption ${tone}`}>
-            {label}
-          </p>
-        </div>
-        <div className="flex w-20 shrink-0 justify-end pr-2">
-          {/* A 44 px target around a 36 px pill. */}
-          <button
-            type="button"
-            disabled={!canSave}
-            onClick={() => void save.current()}
-            className="group flex min-h-11 items-center outline-none"
-          >
-            <span className="rounded-chip bg-accent px-4 py-2 text-body leading-none font-semibold text-bg group-focus-visible:ring-2 group-focus-visible:ring-accent group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-bg group-disabled:bg-surface group-disabled:text-muted">
-              Save
-            </span>
-          </button>
-        </div>
-      </header>
-
-      {status === 'conflict' && (
-        // The blocked card's shape: it asks for a decision the same way.
-        <div role="alert" className="mx-3 mt-3 flex shrink-0 flex-col gap-2.5 rounded-card border border-warn/35 bg-warn/8 p-3.5">
-          {/* The warn colour pulled toward the text colour, so a 12 px heading keeps its contrast in light themes. */}
-          <p className="flex items-center gap-2 text-[12px] font-semibold text-[color-mix(in_srgb,var(--warn)_65%,var(--fg))]">
-            <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-warn" />
-            Changed on disk after you opened it
-          </p>
-          <p className="text-[14px] leading-snug">
-            Your edits are not saved, so nothing an Agent wrote is lost. Copy your text, then reload to see the new version.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={copy} className="press min-h-[38px] rounded-chip border border-border bg-bg px-3.5 text-[13px] font-medium">
-              <span aria-live="polite">{copied ? 'Copied' : 'Copy my text'}</span>
-            </button>
+    // A layer the size of the visual viewport, so Save sits above the keyboard. It is fixed on
+    // desktop too: it covers the sidebar, where a click would navigate away and drop unsaved
+    // edits with no question. The editor itself stays a centred column, like the viewer.
+    <div className="fixed inset-x-0 top-(--vv-top,0px) z-40 flex h-(--vv-h,100dvh) flex-col bg-bg">
+      <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col">
+        <header className="flex shrink-0 items-center gap-2 border-b border-border px-1 pt-[env(safe-area-inset-top)] lg:px-2">
+          <div className="flex w-20 shrink-0">
             <button
               type="button"
-              onClick={reload}
-              className="press min-h-[38px] rounded-chip bg-warn px-4 text-[13px] font-semibold"
-              style={{ color: ON_WARN }}
+              onClick={done}
+              disabled={status === 'saving'}
+              className="flex min-h-11 items-center px-3 text-body text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)] disabled:text-muted"
             >
-              Reload
+              Done
             </button>
           </div>
-        </div>
-      )}
-      {status === 'failed' && (
-        <p role="alert" className="shrink-0 px-4 pt-2 text-caption text-danger">
-          Not saved · {NOT_SAVED[error] ?? why(error)}
-        </p>
-      )}
+          <div className="flex min-w-0 flex-1 flex-col items-center py-1">
+            <h1 className="max-w-full truncate text-body font-semibold">{name}</h1>
+            <p aria-live="polite" className={`text-caption ${tone}`}>
+              {label}
+            </p>
+          </div>
+          <div className="flex w-20 shrink-0 justify-end pr-2">
+            {/* A 44 px target around a 36 px pill. */}
+            <button
+              type="button"
+              disabled={!canSave}
+              onClick={() => void save.current()}
+              className="group flex min-h-11 items-center outline-none"
+            >
+              <span className="rounded-chip bg-accent px-4 py-2 text-body leading-none font-semibold text-bg group-focus-visible:ring-2 group-focus-visible:ring-accent group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-bg group-disabled:bg-surface group-disabled:text-muted">
+                Save
+              </span>
+            </button>
+          </div>
+        </header>
 
-      <div ref={host} className={`min-h-0 flex-1 ${status === 'conflict' ? 'mt-3 border-t border-border' : ''}`} />
+        {status === 'conflict' && (
+          // The blocked card's shape: it asks for a decision the same way.
+          <div role="alert" className="mx-3 mt-3 flex shrink-0 flex-col gap-2.5 rounded-card border border-warn/35 bg-warn/8 p-3.5">
+            {/* The warn colour pulled toward the text colour, so a 12 px heading keeps its contrast in light themes. */}
+            <p className="flex items-center gap-2 text-[12px] font-semibold text-[color-mix(in_srgb,var(--warn)_65%,var(--fg))]">
+              <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-warn" />
+              Changed on disk after you opened it
+            </p>
+            <p className="text-[14px] leading-snug">
+              Your edits are not saved, so nothing an Agent wrote is lost. Copy your text, then reload to see the new version.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={copy} className="press min-h-[38px] rounded-chip border border-border bg-bg px-3.5 text-[13px] font-medium">
+                <span aria-live="polite">{copied ? 'Copied' : 'Copy my text'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={reload}
+                className="press min-h-[38px] rounded-chip bg-warn px-4 text-[13px] font-semibold"
+                style={{ color: ON_WARN }}
+              >
+                Reload
+              </button>
+            </div>
+          </div>
+        )}
+        {status === 'failed' && (
+          <p role="alert" className="shrink-0 px-4 pt-2 text-caption text-danger">
+            Not saved · {NOT_SAVED[error] ?? why(error)}
+          </p>
+        )}
+
+        <div ref={host} className={`min-h-0 flex-1 ${status === 'conflict' ? 'mt-3 border-t border-border' : ''}`} />
+      </div>
 
       <AlertDialog
         open={leaving !== null}
