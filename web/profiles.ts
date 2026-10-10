@@ -1,5 +1,5 @@
 import type { AffordanceProfile } from '../shared/affordances.ts';
-import { AGENT_KEYS, INLINE_KEYS, SHELL_KEYS } from './keys.ts';
+import { AGENT_KEYS, SHELL_KEYS } from './keys.ts';
 import { store } from './store.tsx';
 
 /** Toolbar facts read off a Screen. An absent field means the Screen does not state it — never a guess. */
@@ -16,7 +16,7 @@ export interface ToolbarData {
 
 export interface Profile extends AffordanceProfile {
   mouse: boolean;
-  keys: { inline: string[]; all: string[] };
+  keys: { all: string[] };
   replies: string[];
   /** Reads toolbar facts off the Screen's footer area. Profiles without one state nothing. */
   toolbar?: (lines: string[]) => ToolbarData;
@@ -60,19 +60,18 @@ export function toolbarFromScreen(profile: Profile, lines: string[]): ToolbarDat
   return profile.toolbar ? profile.toolbar(lines) : {};
 }
 
-const agentKeys = { inline: INLINE_KEYS.agent, all: AGENT_KEYS.map(([name]) => name) };
-const shellKeys = { inline: INLINE_KEYS.shell, all: SHELL_KEYS.map(([name]) => name) };
+const agentKeys = { all: AGENT_KEYS.map(([name]) => name) };
+const shellKeys = { all: SHELL_KEYS.map(([name]) => name) };
 const agent = (replies: string[], extra: Partial<Profile> = {}): Profile => ({ mouse: false, keys: agentKeys, replies, ...extra });
 const tool = (mouse: boolean, keys = shellKeys): Profile => ({ mouse, keys, replies: ['Continue'] });
 
 // The Herdr contract test proved herdr accepts these key names. htop and less both show a
-// function-key footer, so their full key bar offers them too; the inline dock stays the
-// short SHELL_KEYS set.
+// function-key footer, so their full key bar offers them too.
 const FUNCTION_KEYS: [name: string, label: string][] = [
   ['f1', 'F1'], ['f2', 'F2'], ['f3', 'F3'], ['f4', 'F4'], ['f5', 'F5'],
   ['f6', 'F6'], ['f7', 'F7'], ['f8', 'F8'], ['f9', 'F9'], ['f10', 'F10'],
 ];
-const functionKeys = { inline: INLINE_KEYS.shell, all: [...shellKeys.all, ...FUNCTION_KEYS.map(([name]) => name)] };
+const functionKeys = { all: [...shellKeys.all, ...FUNCTION_KEYS.map(([name]) => name)] };
 
 export const PROFILES: Record<string, Profile> = {
   claude: agent(['Continue', 'Run the tests', 'Commit and push', 'Explain the diff', 'Stop here'], { toolbar: claudeToolbar, statusItems: [

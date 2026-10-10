@@ -1,12 +1,12 @@
 // Quick replies for the Pane dock: which pills to offer, in which order.
-// Pure — no React, no fetch. `web/pane.tsx` renders them and decides what a tap does.
+// Pure — no React, no fetch. `web/composer.tsx` renders them and decides what a tap does.
 import { offeredKeys } from '../shared/blocked.ts';
 import type { Explain } from '../shared/types.ts';
 import { keyGlyph } from './keys.ts';
 import { profileFor } from './profiles.ts';
 
 export interface Pill {
-  /** `key` sends its keys at once; `text` fills the composer for review. */
+  /** `key` sends its keys at once; `text` is a reply: a preset sends, a draft fills the composer. */
   kind: 'key' | 'text';
   /** What the pill prints. */
   label: string;
@@ -16,7 +16,8 @@ export interface Pill {
   keys?: string[];
   /** Key pills: the key glyph printed after the label. */
   glyph?: string;
-  /** Text pills the Hub drafted, marked with ✦. */
+  /** Text pills the Hub drafted, marked with ✦: they fill the composer for review. Any other
+   *  text pill is a preset and sends in one tap. */
   generated?: boolean;
 }
 
@@ -47,12 +48,15 @@ export const isNumberedList = (detection: string): boolean =>
 /**
  * The dock's pill row: key pills first, then the Hub's drafts, then the static set.
  * Smart replies are the client's choice, so `suggestions` are dropped when `smart` is off.
+ * A blocked Pane drops the static set: the prompt's own choices answer it, and "Commit and
+ * push" is no answer to a permission box.
  */
 export function quickReplies(o: {
   agent?: string;
   explain?: Explain | null;
   suggestions?: string[];
   smart: boolean;
+  blocked?: boolean;
 }): Pill[] {
   const pills: Pill[] = [];
 
@@ -65,14 +69,14 @@ export function quickReplies(o: {
 
   const texts = [
     ...(o.smart ? (o.suggestions ?? []).slice(0, 3).map((t) => [t, true] as const) : []),
-    ...profileFor({ agent: o.agent }).replies.map((t) => [t, false] as const),
+    ...(o.blocked ? [] : profileFor({ agent: o.agent }).replies.map((t) => [t, false] as const)),
   ];
   const seen = new Set<string>();
   for (const [label, generated] of texts) {
     const text = label.trim();
     if (!text || seen.has(text.toLowerCase())) continue;
     seen.add(text.toLowerCase());
-    pills.push({ kind: 'text', label: text, aria: `${text}, fills the reply box`, generated });
+    pills.push({ kind: 'text', label: text, aria: generated ? `${text}, fills the reply box` : `${text}, sends`, generated });
   }
 
   return pills;

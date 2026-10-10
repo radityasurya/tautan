@@ -29,7 +29,9 @@ the Workspace whose fixture diff is cut short.
 | `text-caption` | 12/1.35 | meta lines, mono text |
 | `text-body` | 15/1.45 | rows, fields |
 | `text-title` | 17/1.25/600 | screen and sheet titles |
-| `label-caps` | 11px, 600, `.08em`, uppercase | section headings |
+
+On a touch screen every text field is at least 16 px (`web/theme.css`, `pointer: coarse`),
+because iOS zooms the page into a smaller field when it takes focus and stays zoomed.
 
 ## Motion
 
@@ -86,8 +88,9 @@ with its Workspace and Tab, the command from Explain, and three buttons.
 - **Phone.** **Yes**, **No** and **Open**. Yes and No send the Pane's own plain yes/no keys,
   from `yesNoKeys()`, through `sendBlocked()` and its stale-prompt guard. Open goes to the
   Pane.
-- **Desktop sidebar.** A 36 px line with **Yes** only. **No** stays in the Pane; the row itself
-  opens it.
+- **Desktop sidebar.** Two lines with **Yes** only: the title, then the Agent, its Workspace
+  and Tab, and its Host when there are several. **No** stays in the Pane; the row itself opens
+  it.
 
 Explain loads once per card, so only blocked Panes cost a fetch. The card refetches after
 the Pane's revision has been still for 2 s, drops a response that arrives late, and locks
@@ -135,7 +138,8 @@ word for `blocked` reads `needs you`.
 **Blocked.** A 2 px `--warn` line draws under the header while Status is `blocked`, and the
 Status word reads `needs you`. That is all the header does: the lens stays, and the header
 offers no answer. The answer lives in the blocked card, which is always on screen: the
-composer's card in the Screen view, the approval row in the Chat view.
+composer's card in the Screen view, the approval row in the Chat view. While the Chat view
+loads its transcript, the composer keeps its card.
 
 **Approval rows (Chat view).** While the Pane is blocked, every pending tool of the final
 assistant turn (`pendingTools()` in `shared/chat.ts`), oldest first, becomes its own
@@ -169,7 +173,8 @@ stop work asks first, and any other Tab closes at once.
   position and a dot per Tab, and opens Switch at Tab level; long-press opens the Tab's
   menu. A horizontal **touch** swipe on the strip moves between Tabs. Chromium gives a
   horizontal drag to the nearest scroller and fires `pointercancel`, so the gesture reads
-  `touchend`, and it is ignored when the strip itself scrolled.
+  `touchend`, and it is ignored when the strip itself scrolled. A drag that starts on the Pane
+  chips row (`data-noswipe`) is that row's scroll, never a Tab switch.
 - **Desktop.** Browser tabs: the open Tab takes the Pane's background and a 2 px accent
   top edge. Close (×) shows on hover and always on the open Tab. Right-click opens the Tab's
   menu. Press ⌘1–⌘9 to open Tab *n* and ⌘T for New Tab. Both are **Meta only**: Ctrl+T and
@@ -235,8 +240,10 @@ row there is hinted with the grid size.
 |---|---|---|
 | Fit | off | `tautan.fit` = `on` \| `off` |
 | Theme colors | on | `tautan.themedColors` = `on` \| `off` |
-| Key grid, agent Panes | closed | `tautan.keys.agent` = `on` \| `off` |
-| Key grid, shell Panes | closed | `tautan.keys.shell` = `on` \| `off` |
+| Key grid, agent Panes | closed | `tautan.tray.keys.agent` = `on` \| `off` |
+| Key grid, shell Panes | open | `tautan.tray.keys.shell` = `on` \| `off` |
+| Suggestions, agent Panes | open | `tautan.tray.suggest.agent` = `on` \| `off` |
+| Suggestions, shell Panes | closed | `tautan.tray.suggest.shell` = `on` \| `off` |
 | Wrap, agent Panes | on | `tautan.wrap.agent` = `on` \| `off` |
 | Wrap, shell Panes | off | `tautan.wrap.shell` = `on` \| `off` |
 | Sidebar, desktop | open | `tautan.sidebar` = `open` \| `closed` |
@@ -248,7 +255,11 @@ Wrap is remembered per kind, not per Pane: agent output is prose and wants
 reflowing, a shell Pane is htop and logs, where the columns are the layout. What
 counts as a full-screen program — the thing that keeps its grid — comes from a real
 signal, not a guess: mouse forwarding on, then the alternate screen when the Mux reports
-it, then a drawn share of at least 40 % of the grid. The wrap width itself is the text's
+it, then the drawn share of the grid: 40 % on a first read, then past 50 % to turn
+full-screen and under 30 % to turn back, so a table scrolling through does not flip the
+view on every update. An Agent's own Screen is never read full-screen from its text: a
+Claude Code Markdown table is not a TUI, so only mouse forwarding or the alternate screen
+make it one. The wrap width itself is the text's
 own widest prose line, so one long code row no longer locks the whole reflow wide.
 
 **Affordances** (`shared/affordances.ts` finds them, `web/affordances.tsx`
@@ -324,29 +335,57 @@ permission box matches `live_blocked_form`, never `bash_permission_prompt`.
 `yesNoKeys()` returns the Yes and No keys only for a plain yes/no prompt, never for one
 with an Always option. The Pane list uses it for its Yes and No.
 
-The composer is the only place with input, and it is one bar plus what it opens:
+The composer is the only place with input: one box, and two trays that open above it.
 
-| Row | Agent Pane | Shell Pane |
+| Part | Agent Pane | Shell Pane |
 |---|---|---|
-| 1 | the keys toggle, then `esc` `^C`, then a hairline, then the pills | the toggle, then `esc` `tab` `▲` `^C`, then the Hint pills the Screen printed |
-| 2 | the whole preset, while the toggle is on | the same |
-| 3 | the input | the input, behind the `$` prompt |
+| Suggestions tray | the pills, one scrolling row; open by default | recent commands; closed by default |
+| Keys tray | the key grid; closed by default | the key grid; open by default |
+| Box, line 1 | the field, behind `›` | the field, behind the `$` prompt |
+| Box, line 2, phone | ✦ and Keys toggles, `esc` `^C`, attach, `/` `@`, then the mic or Send | ✦ and Keys toggles, attach, then the mic or Run |
 
-The open preset is a fixed six-column grid, one cap per key the App profile carries
-(`grid-cols-6`: 40 px caps on the phone, 32 px on desktop). It is the only place the
-arrows, `tab` and `⇧tab` live for an agent Pane.
+`esc` and `^C` sit on an Agent Pane's resting row in every Status: `esc` backs out of a
+menu or a prompt, `^C` stops the run. On pi it is the other way round, as pi binds them:
+`esc` aborts (danger red) and `^C` clears the editor. Neither sits beside Send, where a slip
+would interrupt instead of reply. A shell's keys are in its tray, which opens by default.
 
-The toggle leads the row it opens, filled with `--surface` and the hairline so
-it reads as a control among the caps, and accent while the preset is open. The
-pills scroll at the right of the row behind the same right-edge fade the
-grid uses (`FADE`). The toggle carries `aria-expanded` and remembers its state
-per kind (`tautan.keys.agent`, `tautan.keys.shell`), and the row it opens rises
-into place with `.rise`, which reduced motion turns off. Which caps the grid holds
-is the App profile's call (`web/profiles.ts`): an agent Pane gets the agent set,
-htop and less also get `F1`…`F10`, because their own footer offers them.
+The open tray is a four-column grid on the phone (48 px caps) and a wrapping row on desktop
+(44 px caps). Each cap has two lines: the key as a footer prints it (`^O`, `⌥P`, `esc esc`)
+and, under it, what the key does on this Pane (`transcript`, `model`, `rewind`). The groups
+follow the Pane: **Control** (an Agent's `^D` reads as exit, in red; pi gets `esc` abort, `^C`
+clear), the Agent's own keys (**Claude**: mode, rewind, transcript, tasks, background,
+model, thinking, from Claude Code 2.1.296's keybinding table; **pi**: thinking level, model,
+next model, tool output, show thinking, follow-up, dequeue, from pi's
+`docs/keybindings.md`), **Menu** (`1`…`5` for a numbered menu on an Agent Pane), then
+**Navigate** and **Edit**. Alt chords go out as `ESC` plus the letter. It is the only place
+the arrows, `tab` and `⇧tab` live for an agent Pane.
 
-Both kinds start **closed**. The resting row already carries the keys a hand reaches
-for, and opening the grid hides the replies.
+Each toggle is outlined while its tray is closed and accent-tinted while it is open.
+The pills scroll behind the same right-edge fade the grid uses (`FADE`). A toggle
+carries `aria-pressed` and remembers its tray per kind (`tautan.tray.keys.agent`,
+`tautan.tray.suggest.shell`, …), and the tray it opens rises into place with `.rise`,
+which reduced motion turns off. Both trays can be open at once; they stack. Which caps
+the grid holds is the App profile's call (`web/profiles.ts`): an agent Pane gets the
+agent set, htop and less also get `F1`…`F10`, because their own footer offers them.
+
+**Type directly.** On the Screen and on a shell, a **Type directly** toggle (the terminal
+icon) stops the field composing a line: each key goes to the Pane as it is typed, in typing
+order. The Composer shrinks to one bar: the ✦, Keys and Type directly toggles, then a status
+that reads **Typing into the Pane** beside a blinking caret, or **Tap to type** when the
+field has lost focus. The field itself stays mounted out of sight, so the phone's keyboard
+still opens for it; a tap on the status or on the Screen focuses it. While it has focus, the
+Screen draws a blinking `▍` where the input most likely is (`caretAt` in
+`shared/layout.ts`: Claude's `❯` row, else the row inside pi's editor, else the last row with
+text), because herdr reports no cursor. Reduced motion keeps both carets steady. Text rides `beforeinput`, an IME's word goes out whole at
+`compositionend`, and Enter, Backspace, esc, Tab, the arrows, Home/End/PgUp/PgDn/Delete and
+Ctrl or Alt chords go out as keys (`web/keys.ts` `directKey`); a Cmd chord stays the
+browser's. An armed `ctrl` or `alt` folds into the next typed key. The toggle is remembered
+per kind (`tautan.direct.agent`, `tautan.direct.shell`) and is hidden in the Chat view, where
+a line is what the Agent reads.
+
+No control in the dock takes focus from the field: each one prevents `pointerdown`'s
+default, as the completion list does, so a tap on a key, a pill or a toggle leaves the
+phone's keyboard up.
 
 **Quick replies** (`web/replies.ts`, a pure function; `web/composer.tsx` renders
 them) scroll horizontally in one row, 8 px radius, 13 px:
@@ -355,8 +394,8 @@ them) scroll horizontally in one row, 8 px radius, 13 px:
 |---|---|---|
 | Key, primary | accent fill, the key glyph at 11 px mono, 70 % opacity | sends the key at once |
 | Key, secondary | `--bg`, hairline border, the glyph in `--muted` | sends the key at once |
-| Generated text | `--bg`, hairline border, `✦` in accent, label in `--fg` | fills the composer |
-| Static text | `--bg`, hairline border, label in `--muted` | fills the composer |
+| Draft (generated) | `--bg`, hairline border, `✦` in accent, label in `--fg` | fills the composer |
+| Preset (static) | `--bg`, hairline border, label in `--fg`, Send's arrow in `--muted` | sends the reply at once |
 
 A key pill is a short label and a compact glyph, because it shares one scrolling
 row with every other: `pillLabel()` in `web/replies.ts` drops a parenthesised
@@ -369,16 +408,23 @@ The order is: the keys `shared/blocked.ts` offers for the blocked prompt
 (`Yes ↵`, `No esc`, then the Mux's own hint keys); then the Hints the Screen
 itself printed — the arrows live in the open key grid, so a numbered
 list adds no arrow pills; then up to three drafts from
-`StatePane.suggestions`; then the static set for the Agent — Claude Code gets
+`StatePane.suggestions`; then the presets for the Agent — Claude Code gets
 Continue · Run the tests · Commit and push · Explain the diff · Stop here, Pi
 gets Continue · Run the tests · Show me the plan, any other Agent gets
-Continue. A draft that repeats a static reply is listed once, as the draft.
+Continue. A draft that repeats a preset is listed once, as the draft. A blocked Pane
+drops the presets: the prompt's own choices answer it, and the approval rows own that
+state.
 
-A text pill is a draft, not an answer: it lands in the composer for review and
-never sends, appended after what you have already typed, like dictation. Drafts
-appear only while **Smart replies** is on (`tautan.smart`); a blocked Pane with no
-drafts for the current revision asks the Hub for one, once, with
-`POST /api/panes/:key/suggest`.
+A preset is a whole reply: one tap sends it, like any reply while the Agent works,
+and whatever is half-typed in the field stays there. A `✦` draft is not an answer yet: it
+lands in the composer for review, appended after what you have already typed, like
+dictation. On a touch screen the field is not focused, so the keyboard stays down and
+Send is one tap away. Drafts appear only while **Smart replies** is on (`tautan.smart`); a
+blocked Pane with no drafts for the current revision asks the Hub for one, once, with
+`POST /api/panes/:key/suggest`. A blocked prompt opens the suggestions tray by itself only
+while it holds a draft for the prompt, and closing the tray then dismisses only that
+prompt's opening. Hint pills come only from this Pane's own Screen, never from the last
+Pane's Screen held on the grid during a switch.
 
 **Theme colors** (on by default, `tautan.themedColors`, toggled in ⋯) snaps every
 256-colour and truecolour span to the nearest of the theme's own 16, so one Pane
@@ -391,18 +437,28 @@ the span renders exactly what the agent sent. A palette with no orange, such as
 the Catppuccin sixteen, sends a peach 256-colour to its pink slot; that is the
 rule working, and the toggle is there for when you want the agent's own colours.
 
-**Composer.** `web/composer.tsx` draws the one composer at both widths. Enter sends;
-Shift+Enter inserts a newline. The mic is the Send button's alternative: on the phone the
-mic becomes **Send** as soon as the field holds text, and with no `webkitSpeechRecognition`
-the disabled Send button keeps its place. A transcript lands in the field for review and
-is never sent on its own.
+**Composer.** `web/composer.tsx` draws the one composer at both widths. On desktop, Enter
+sends and Shift+Enter inserts a newline. On a touch screen (`pointer: coarse`) an Agent's
+Return inserts a newline (`enterkeyhint="enter"`) and the Send button sends, because a
+reply typed on a phone keyboard is easy to send half-written; a shell's Return still runs
+the line. Nothing sends while an input method is composing, and Safari's closing Enter
+(keyCode 229) counts as composing. A trailing newline does not go out. A transcript from
+the mic lands in the field for review and is never sent on its own.
 
-- **Phone.** One row: the keys toggle, the inline keys, the quick replies, then the input
-  with the agent's glyph before the placeholder. The open key grid sits above the input.
-- **Desktop.** Suggestion chips above a bordered box. The box has a two-line textarea and a
-  toolbar: attach, `/`, `@`, the mode chip, the inline keys, then context left, model, mic
-  and Send. The mode chip sends `shift+tab`, and the next Screen says which mode the Agent
-  landed in.
+- **Phone.** The trays above, then the box: the field with the agent's glyph before the
+  placeholder, and under it the ✦ and Keys toggles, `esc` `^C`, attach, `/` and `@`, then
+  one slot on the right — the mic while the field is empty or while it listens, **Send**
+  as soon as there is text. With no `webkitSpeechRecognition` the slot is always Send.
+- **Desktop.** The trays above a bordered box. The box has a two-line textarea and a
+  toolbar: the ✦ and Keys toggles, `esc` `^C`, attach, `/`, `@`, the mic, then the mode
+  chip, model and context left, and Send. The mode chip sends `shift+tab`, and the next
+  Screen says which mode the Agent landed in.
+- **Keyboard, phone.** iOS keeps the layout viewport when the keyboard opens and ignores
+  `interactive-widget`, so `web/app.tsx` follows `visualViewport`: the Pane screen is
+  `fixed` at `--vv-top` and `--vv-h` tall, and the composer sits on the keyboard.
+  `--safe-b` drops the home-indicator inset while the keyboard is up. A pinned Chat or
+  Screen stays on its newest line as the keyboard shrinks it; a reader who scrolled up
+  stays where they were. A pinch zoom (`visualViewport.scale` above 1) moves nothing.
 - **Mode, model and context** come only from this Pane's Screen, through
   `toolbarFromScreen()` in `web/profiles.ts`. The Claude Code recogniser reads the last 15
   lines: the `⏵⏵` or `⏸` mode line, a literal model name on that line, and a context
@@ -476,12 +532,39 @@ the transcript. The transcript renders for Claude, pi, Codex and omp Panes — a
 it names which. Every other Agent falls back to the Screen with no error (ADR 0005: never
 guess a transcript).
 
+When Main answers 404, the view reads **No turns yet** with a **Show Screen** button and
+asks again each second, because a fresh Agent writes its transcript with its first reply.
+Still 404 after 5 s, the lens falls back to the Screen for this visit; the saved lens is
+not changed. A first load that fails in passing — a 5xx, a dropped connection, a Hub
+restart — is asked again 1, 2 and 4 s later before it falls back. Once a transcript has
+loaded, a failed ask only waits for the next poll.
+
 **Turns.** An assistant turn is a `--surface` card on the left; a user turn is an accent
 card on the right. Text renders as Markdown — reference links and task lists included —
 and pasted images load out of band from `/chat/image/:id`. The turn's time rides its last
 row. When the Agent works, a **Working** line with the Screen's own spinner sits at the
-bottom; a reply sent meanwhile appears at once as a pending turn marked **Held until the
-Agent is idle**, and is delivered when the Agent returns to a prompt.
+bottom.
+
+**Thinking.** A turn whose transcript kept the run's reasoning (`Turn.thinking`: pi, and
+Claude with thinking summaries on) shows a muted **Thinking** row above its text, folded.
+A tap opens it as Markdown under a hairline; the body renders only once opened, and the
+chevron's turn is off under reduced motion. A turn without the field shows no row.
+
+**Replies while the Agent works.** Claude and pi queue a reply typed mid-run in their own
+prompt (pi steers with it), so tautan sends it at once; its pending turn reads **Queued for
+Claude** with the send time until the transcript logs it. Any other Agent's reply is held.
+**Held replies.** A held reply shows at once as a pending
+turn marked **Held until Claude is idle** (the Agent's own name), and the composer lists it
+under **1 held · sends when Claude is idle**. Held replies live in `web/pending.ts`, outside
+any one screen, and the App sends them by themselves, oldest first, when that Pane's Status
+turns `idle` or `done` — whichever screen is open. Never while `blocked`: text plus Enter
+could answer a permission box. Then **Send now**, in the composer or on the pending turn,
+sends them at once, and **Remove** (× in the composer) drops one. A send that fails stays
+held and is tried again when the Pane next changes. A held reply lives as long as the tab.
+A slash command (`/name args`) and a shell line (`!cmd`) are user turns in the transcript,
+so their pending turns settle against it like any other reply. A shell line shows its output
+under it as a code block, the last 40 lines (Claude's `<bash-stdout>`/`<bash-stderr>`, pi's
+`bashExecution` output).
 
 **Tool rows.** Each tool call is one collapsed row: a chip with the tool's name and a line
 of its input, a link card when the tool published one, or the subagent's name for a Task.
@@ -495,8 +578,12 @@ and a preview over the inline limit serves by id. The output half renders as Mar
 (`?since=`, [ADR 0007](./adr/0007-chat-deltas.md)); a `chat` event on the event stream
 wakes the ask, so a busy conversation costs its new turns, not its history. The first
 load is windowed to the last 100 turns, and **Load earlier turns** fetches the 100 before
-the oldest shown. A Hub that predates deltas answers the full Chat response and the view
-resets to it.
+the oldest shown — by itself as the reader scrolls within 600 px of the top, or on a tap.
+Every turn carries its clock time (the date too before today), under its text or on its
+last tool row. A Hub that predates deltas answers the full Chat response and the view
+resets to it. Between events the view polls every 1.5 s while the Agent works, a reply
+waits for its turn, or a subagent row still runs (an idle Pane's background subagents
+included); 5 s while blocked; otherwise 15 s, then 30 s once quiet.
 
 **Scroll.** The transcript pins to the bottom; read further up and a **New messages** pill
 sits at the bottom until you tap it. While blocked and reading elsewhere, the
@@ -726,8 +813,17 @@ Bottom sheets are the shadcn Drawer (vaul): swipe to dismiss, scroll lock,
 focus trap and Escape come from the library. `Sheet` supplies the surface, the
 title and the meta line.
 
-- **Switch** (`web/switch.tsx`): 85 dvh, search field, Host chips, then every
-  Workspace with its Panes under the Tab they belong to. Two taps to any Pane.
+- **Switch** (`web/switch.tsx`): the search field, Host chips when there are several Hosts,
+  then Home's list in one scroller: **Needs you**, **Running**, and every other Pane under
+  its Workspace header. The header shows the Workspace path under the label, cut from the
+  left like the Spaces list. The sheet is 320 px wide, the sidebar's width, so it draws the
+  sidebar's rows and headers on every device. Rows inset 24 px, like the sheet title, and a
+  header is 44 px tall on a touch screen. A blocked Pane is a row, not a card: the drawer
+  switches, it does not answer. Groups follow the Spaces sort and rows the Agents sort. A
+  header folds its section until the Pane screen closes; a search opens every fold. The open
+  Pane is tinted and carries `aria-current="page"`. A pick goes to the Pane and closes the
+  drawer, so any Pane is two taps away. The Tab picker opens it as **Switch Tab**, with the
+  Workspace's Tabs above the Pane sections; they hide while a search is typed.
 - **New Tab**: label, directory (mono) with a **Browse** button, one Agent chip per known
   agent plus `shell only`, as radio inputs. **Browse** swaps the form for the folder
   browser — a second sheet would sit inside the first one's transform — titled **Choose a
@@ -794,8 +890,12 @@ window resize, so a window dragged across 1024 px changes layout with no reload.
 | Settings and Host detail | one scrolling screen | a 240 px section nav replaces the sidebar |
 | Pane | one column, the window wide | fills the space beside the sidebar |
 
-The sidebar is the same `Home` list in its `compact` form: 36 px rows with no preview, and
-a Yes-only Needs you card. Press ⌘B to hide or show it. Press Ctrl+B for the same, except
+The sidebar is the same `Home` list in its `compact` form: two-line rows with no preview, at
+least 44 px tall, and a Yes-only Needs you card. A row's first line is the title beside its
+Status dot. The second is muted: the Agent by name (`Claude`, `Codex`, `pi`), then its
+Workspace and Host when no heading above the row names them; the Host shows only when there
+are several. In the herdr list a Space row carries its Workspace path under the label, with
+the home directory as `~`; a long path gives up its start, so the project name stays. Press ⌘B to hide or show it. Press Ctrl+B for the same, except
 inside an input, a textarea or an editable field, so the tmux prefix still reaches the
 terminal. The state is remembered in `tautan.sidebar` (`open` or `closed`). With the sidebar
 hidden, `#/` shows the full Pane list.
@@ -803,6 +903,10 @@ hidden, `#/` shows the full Pane list.
 The sidebar footer holds two links. **Settings** opens `#/settings`. **Hosts** opens
 `#/hosts`, which lands on the Hosts section of Settings. Above them sits the usage strip
 described under Settings, whenever a provider runs low.
+
+Closing Settings or Hosts returns to the screen they were opened from, not to `#/`. **All
+panes** in the section nav and **Panes** in the phone tab bar both go back to that screen, so
+an open Pane comes back in the same lens. Browser back does the same through history.
 
 Hash routes use `history.pushState`, so the iOS edge swipe and the Android back button
 work, wrapped in a View Transition. There is one `EventSource` for the whole app. It

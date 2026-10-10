@@ -62,6 +62,15 @@ describe('quickReplies', () => {
       'Continue', 'Run the tests', 'Show me the plan',
     ]);
   });
+  test('a blocked Pane drops the static set and keeps the drafts', () => {
+    expect(labels('claude', { explain: BOX, blocked: true })).toEqual(['Yes', 'No', 'Quit']);
+    expect(labels('pi', { suggestions: ['Allow it once'], smart: true, blocked: true })).toEqual(['Allow it once']);
+  });
+  test('a preset says it sends; a draft says it fills the reply box', () => {
+    const pills = quickReplies({ agent: 'pi', suggestions: ['Run it in a worktree'], smart: true });
+    expect(pills.find((p) => p.label === 'Continue')?.aria).toBe('Continue, sends');
+    expect(pills[0]).toMatchObject({ generated: true, aria: 'Run it in a worktree, fills the reply box' });
+  });
   test('a drafted reply that repeats a static one is listed once, as the draft', () => {
     const pills = quickReplies({ agent: 'pi', suggestions: ['Continue'], smart: true });
     expect(pills.filter((p) => p.label === 'Continue')).toEqual([

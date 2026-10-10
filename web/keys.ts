@@ -31,16 +31,6 @@ export const SHELL_KEYS: [name: string, label: string][] = [
   ['ctrl+c', '^C'],
 ];
 
-/**
- * The keys the dock shows without expanding, next to the keys toggle. An agent gets the two
- * that stop it; a shell gets the ones a prompt line needs. Names only — the cap's label
- * still comes from the preset above.
- */
-export const INLINE_KEYS: Record<'agent' | 'shell', string[]> = {
-  agent: ['esc', 'ctrl+c'],
-  shell: ['esc', 'tab', 'up', 'ctrl+c'],
-};
-
 // ---- the Keys tray ----
 
 /**
@@ -54,33 +44,55 @@ export interface Cap {
   label: string;
   /** What a screen reader says. */
   name: string;
+  /** One or two words under the cap: what the key does here, not what it is. */
+  hint?: string;
   keys?: string[];
   csi?: string;
   byte?: string;
+  /** Bytes sent as they are, for an Agent's alt chord (`ESC p`); no modifier folds in. */
+  raw?: string;
   danger?: boolean;
 }
 
 export type Modifier = 'ctrl' | 'alt';
 export interface CapGroup { label: string; caps: Cap[] }
 
-const ctrl = (letter: string, name: string): Cap => ({ label: `^${letter.toUpperCase()}`, name, keys: [`ctrl+${letter}`] });
+const ctrl = (letter: string, name: string, hint?: string): Cap => ({ label: `^${letter.toUpperCase()}`, name, hint, keys: [`ctrl+${letter}`] });
+const alt = (letter: string, name: string, hint: string): Cap => ({ label: `⌥${letter.toUpperCase()}`, name, hint, raw: `\x1b${letter}` });
 
 const CONTROL: Cap[] = [
   // ^C first: the interrupt is the one key that must never be a hunt.
-  { ...ctrl('c', 'Interrupt, control C'), danger: true },
-  { label: 'esc', name: 'Escape', keys: ['esc'] },
-  ctrl('d', 'End of input, control D'),
-  ctrl('z', 'Suspend, control Z'),
-  ctrl('l', 'Clear screen, control L'),
-  ctrl('r', 'Search history, control R'),
+  { ...ctrl('c', 'Interrupt, control C', 'stop'), danger: true },
+  { label: 'esc', name: 'Escape', hint: 'back', keys: ['esc'] },
+  ctrl('d', 'End of input, control D', 'end input'),
+  ctrl('z', 'Suspend, control Z', 'suspend'),
+  ctrl('l', 'Clear screen, control L', 'clear'),
+  ctrl('r', 'Search history, control R', 'search'),
+];
+/** An Agent's control keys. ^D quits the Agent, so it reads as danger; ^Z would suspend it
+ *  to the shell, so it is left out. */
+const AGENT_CONTROL: Cap[] = [
+  { ...ctrl('c', 'Interrupt, control C', 'stop'), danger: true },
+  { label: 'esc', name: 'Escape', hint: 'back', keys: ['esc'] },
+  { ...ctrl('d', 'Exit, control D', 'exit'), danger: true },
+  ctrl('l', 'Clear input, control L', 'clear input'),
+  ctrl('r', 'Search history, control R', 'history'),
+];
+/** pi aborts a run on esc; its ^C only clears the editor (pi's docs/keybindings.md). */
+const PI_CONTROL: Cap[] = [
+  { label: 'esc', name: 'Abort, escape', hint: 'abort', keys: ['esc'], danger: true },
+  ctrl('c', 'Clear editor, control C', 'clear'),
+  { ...ctrl('d', 'Exit, control D', 'exit'), danger: true },
 ];
 /** Line editing for a shell prompt; an Agent's input box does not read these. */
 const LINE: Cap[] = [
-  ctrl('a', 'Start of line, control A'),
-  ctrl('e', 'End of line, control E'),
-  ctrl('u', 'Delete to start of line, control U'),
-  ctrl('w', 'Delete word, control W'),
+  ctrl('a', 'Start of line, control A', 'line start'),
+  ctrl('e', 'End of line, control E', 'line end'),
+  ctrl('u', 'Delete to start of line, control U', 'cut line'),
+  ctrl('w', 'Delete word, control W', 'cut word'),
 ];
+/** An Agent's numbered menu (a model picker, a question) takes the digit itself. */
+const MENU: Cap[] = ['1', '2', '3', '4', '5'].map((n) => ({ label: n, name: `Option ${n}`, raw: n }));
 const NAVIGATE: Cap[] = [
   { label: GLYPH.up!, name: 'Up', keys: ['up'], csi: 'A' },
   { label: GLYPH.down!, name: 'Down', keys: ['down'], csi: 'B' },
@@ -93,18 +105,33 @@ const NAVIGATE: Cap[] = [
 ];
 const EDIT: Cap[] = [
   { label: 'tab', name: 'Tab', keys: ['tab'], byte: '\t' },
-  { label: '⇧tab', name: 'Shift tab', keys: ['shift+tab'] },
-  { label: GLYPH.enter!, name: 'Enter', keys: ['enter'], byte: '\r' },
-  { label: GLYPH.space!, name: 'Space', keys: ['space'], byte: ' ' },
-  { label: GLYPH.backspace!, name: 'Backspace', keys: ['backspace'], byte: '\x7f' },
-  { label: 'del', name: 'Delete', csi: '3~' },
+  { label: '⇧tab', name: 'Shift tab', hint: 'back tab', keys: ['shift+tab'] },
+  { label: GLYPH.enter!, name: 'Enter', hint: 'enter', keys: ['enter'], byte: '\r' },
+  { label: GLYPH.space!, name: 'Space', hint: 'space', keys: ['space'], byte: ' ' },
+  { label: GLYPH.backspace!, name: 'Backspace', hint: 'delete', keys: ['backspace'], byte: '\x7f' },
+  { label: 'del', name: 'Delete', hint: 'forward', csi: '3~' },
 ];
 export const MODIFIERS: Modifier[] = ['ctrl', 'alt'];
 
-/** Claude Code's own keys: shift+tab cycles its mode, esc twice opens the rewind list. */
+/** Claude Code's own keys, from the default keybinding table of Claude Code 2.1.296. */
 const CLAUDE: Cap[] = [
-  { label: '⇧⇥ mode', name: 'Cycle mode, shift tab', keys: ['shift+tab'] },
-  { label: 'esc esc', name: 'Rewind, escape twice', keys: ['esc', 'esc'] },
+  { label: '⇧⇥', name: 'Cycle mode, shift tab', hint: 'mode', keys: ['shift+tab'] },
+  { label: 'esc esc', name: 'Rewind, escape twice', hint: 'rewind', keys: ['esc', 'esc'] },
+  ctrl('o', 'Transcript, control O', 'transcript'),
+  ctrl('t', 'Task list, control T', 'tasks'),
+  ctrl('b', 'Run in background, control B', 'background'),
+  alt('p', 'Model picker, alt P', 'model'),
+  alt('t', 'Thinking on or off, alt T', 'thinking'),
+];
+/** pi's own keys, from its docs/keybindings.md defaults. */
+const PI: Cap[] = [
+  { label: '⇧⇥', name: 'Cycle thinking level, shift tab', hint: 'thinking', keys: ['shift+tab'] },
+  ctrl('l', 'Model selector, control L', 'model'),
+  ctrl('p', 'Next model, control P', 'next model'),
+  ctrl('o', 'Tool output, control O', 'tool output'),
+  ctrl('t', 'Thinking blocks, control T', 'show thinking'),
+  { label: '⌥↵', name: 'Queue a follow-up, alt enter', hint: 'follow-up', raw: '\x1b\r' },
+  { label: `⌥${GLYPH.up}`, name: 'Restore queued messages, alt up', hint: 'dequeue', raw: '\x1b[1;3A' },
 ];
 
 /**
@@ -112,14 +139,16 @@ const CLAUDE: Cap[] = [
  * the function keys a profile lists (htop, less). Modifiers are drawn by the Composer, which
  * owns the armed state.
  */
-export function trayGroups(o: { shell: boolean; claude: boolean; profileKeys: string[] }): CapGroup[] {
+export function trayGroups(o: { shell: boolean; claude: boolean; pi?: boolean; profileKeys: string[] }): CapGroup[] {
   const fn = o.profileKeys.filter((name) => /^f\d{1,2}$/.test(name))
     .map((name): Cap => ({ label: name.toUpperCase(), name: name.toUpperCase(), keys: [name] }));
-  const app = [...(o.claude ? CLAUDE : []), ...fn];
-  const edit = o.claude ? EDIT.filter((cap) => cap.keys?.join() !== 'shift+tab') : EDIT; // the App group says it better
+  const own = o.claude ? CLAUDE : o.pi ? PI : [];
+  const app = [...own, ...fn];
+  const edit = own.length ? EDIT.filter((cap) => cap.keys?.join() !== 'shift+tab') : EDIT; // the App group says it better
   return [
-    { label: 'Control', caps: o.shell ? [...CONTROL, ...LINE] : CONTROL },
-    ...(app.length ? [{ label: o.claude ? 'Claude' : 'App', caps: app }] : []),
+    { label: 'Control', caps: o.shell ? [...CONTROL, ...LINE] : o.pi ? PI_CONTROL : AGENT_CONTROL },
+    ...(app.length ? [{ label: o.claude ? 'Claude' : o.pi ? 'pi' : 'App', caps: app }] : []),
+    ...(o.shell ? [] : [{ label: 'Menu', caps: MENU }]),
     { label: 'Navigate', caps: NAVIGATE },
     { label: 'Edit', caps: edit },
   ];
@@ -132,6 +161,7 @@ export function trayGroups(o: { shell: boolean; claude: boolean; profileKeys: st
  * ^ caps or shift+tab, so those go out as they are.
  */
 export function capInput(cap: Cap, mod: Modifier | null): { keys?: string[]; raw?: string } {
+  if (cap.raw) return { raw: cap.raw };
   const m = mod === 'ctrl' ? 5 : mod === 'alt' ? 3 : 0;
   if (cap.csi) {
     const tilde = cap.csi.endsWith('~');
@@ -141,6 +171,29 @@ export function capInput(cap: Cap, mod: Modifier | null): { keys?: string[]; raw
   if (mod === 'alt' && cap.byte) return { raw: `\x1b${cap.byte}` };
   return { keys: cap.keys };
 }
+
+/**
+ * A key pressed while typing straight into the Pane: what it sends, or null to leave it to the
+ * field. Plain text arrives through `beforeinput` instead, and a Cmd chord stays the
+ * browser's (copy, paste).
+ */
+export function directKey(e: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean }): { keys?: string[]; raw?: string } | null {
+  if (e.metaKey) return null;
+  if (e.key === 'Tab' && e.shiftKey) return { keys: ['shift+tab'] };
+  if (e.key === 'Enter' && e.altKey) return { raw: '\x1b\r' };
+  const named = DIRECT_NAMES[e.key];
+  if (named) return { keys: [named] };
+  const csi = DIRECT_CSI[e.key];
+  if (csi) return { raw: `\x1b[${csi}` };
+  if (e.key.length === 1 && e.ctrlKey) return { keys: [`ctrl+${e.key.toLowerCase()}`] };
+  if (e.key.length === 1 && e.altKey) return { raw: `\x1b${e.key}` };
+  return null;
+}
+const DIRECT_NAMES: Record<string, string> = {
+  Enter: 'enter', Backspace: 'backspace', Escape: 'esc', Tab: 'tab',
+  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+};
+const DIRECT_CSI: Record<string, string> = { Home: 'H', End: 'F', PageUp: '5~', PageDown: '6~', Delete: '3~' };
 
 /** A typed letter or symbol while a modifier is armed: `ctrl+r`, `alt+.`. */
 export const modified = (mod: Modifier, ch: string): string => `${mod}+${ch.toLowerCase()}`;

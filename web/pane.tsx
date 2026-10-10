@@ -1,8 +1,8 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
-import { boxInner, classify, continues, fillOf, fullScreen, hangOf, splitAt, type LineKind } from '../shared/layout.ts';
+import { boxInner, caretAt, classify, continues, fillOf, fullScreen, hangOf, splitAt, type LineKind } from '../shared/layout.ts';
 import type {
   MoveBody, NewTabBody, NewTabResult, RenameBody, ResizeBody, SplitBody, SwapBody, ZoomBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
 } from '../shared/types.ts';
@@ -11,7 +11,7 @@ import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordan
 import { api, haptic, navigate, opensWith, post, reducedMotion, setSplitOn, splitSet, useDesktop, useSplitPref } from './app.tsx';
 import { fetchExplain, sendBlocked, type ExplainResponse } from './blocked.tsx';
 import { Chat, readLens, writeLens, type LensMode } from './chat.tsx';
-import { Composer, FADE } from './composer.tsx';
+import { Composer, FADE, subscribeTyping, typingSnapshot } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, unseen } from './home.tsx';
@@ -118,7 +118,23 @@ function sliceSpans(spans: Span[], start: number, end: number): Span[] {
   return out;
 }
 
-const runs = (spans: Span[]) => spans.map((sp, j) => <span key={j} style={spanStyle(sp)}>{sp.text}</span>);
+/** The caret the Screen draws while the Composer types straight into this Pane. */
+type CaretSpan = Span & { caret?: true };
+const caretClass = (sp: Span) => ((sp as CaretSpan).caret ? 'caret-blink text-accent' : undefined);
+
+/** The lines with a blinking caret in the cell where the input most likely is (`caretAt`):
+ *  a `▍` takes that cell, so the grid keeps its columns and Wrap's trim keeps the caret. */
+function withCaret(lines: Span[][]): Span[][] {
+  const at = caretAt(lines.map(textOf));
+  if (!at) return lines;
+  const spans = lines[at.row]!;
+  const width = textOf(spans).length;
+  const out = lines.slice();
+  out[at.row] = [...sliceSpans(spans, 0, at.col), { text: '▍', caret: true } as CaretSpan, ...sliceSpans(spans, at.col + 1, width)];
+  return out;
+}
+
+const runs = (spans: Span[]) => spans.map((sp, j) => <span key={j} className={caretClass(sp)} style={spanStyle(sp)}>{sp.text}</span>);
 
 /** Box chrome redrawn by CSS: each edge and row is one block, so a run of them stacks into one box. */
 const CHROME: Partial<Record<LineKind, string>> = {
@@ -254,6 +270,7 @@ function Wrapped({ lines, kinds, joins, fills }: {
 const gridRuns = (spans: Span[]) => spans.map((sp, j) => (
   <span
     key={j}
+    className={caretClass(sp)}
     style={sp.bg !== undefined || sp.inverse ? { ...spanStyle(sp), display: 'inline-block', height: '1lh', verticalAlign: 'top' } : spanStyle(sp)}
   >
     {sp.text}
@@ -493,7 +510,8 @@ function PaneChips({ panes, paneKey, className, zoom }: {
 }) {
   const zoomed = panes.some((p) => p.zoomed);
   return (
-    <div role="group" aria-label="Panes in this Tab" className={`hscroll flex items-center gap-1.5 ${className}`}>
+    // `data-noswipe`: the row scrolls sideways, so a drag on it is not a Tab swipe.
+    <div role="group" aria-label="Panes in this Tab" data-noswipe className={`hscroll flex items-center gap-1.5 ${className}`}>
       {panes.map((p) => (
         <button
           key={p.key}
@@ -594,6 +612,13 @@ interface GridMeasure {
 // on Pane close if the entry count ever matters. Survives the Chat lens unmounting the grid.
 const scrollMemo = new Map<string, { pinned: boolean; scrollTop: number }>();
 
+/** Wrap's last auto answer per Pane, so the full-screen read has hysteresis (shared/layout.ts
+ *  tuiScreen). PaneGrid writes it; the ⋯ menu's label reads the same value. Never pruned,
+ *  like scrollMemo. */
+const fullMemo = new Map<string, boolean>();
+const autoFull = (paneKey: string, mouse: boolean, pane: StatePane | undefined, alt: boolean | undefined, text: string) =>
+  fullScreen(mouse, alt, text, pane?.cols, { agent: !!pane?.agent, was: fullMemo.get(paneKey) });
+
 /**
  * One Pane's Screen grid (ADR 0003): the wrap/fit/mixed render, the scroller, the Affordance
  * overlay and mouse forwarding, measured against its own frame. The Chat lens and every
@@ -631,6 +656,11 @@ function PaneGrid({
   const held = !current && !waited ? screen : null;
   const shown = current ?? held;
   const lines = useMemo(() => (shown ? parseAnsi(shown.text) : []), [shown]);
+  // Typing straight into this Pane: a tap on the Screen brings the keyboard, and while the
+  // field has focus the grid shows a blinking caret where the input most likely is.
+  const typing = useSyncExternalStore(subscribeTyping, typingSnapshot);
+  const typingHere = typing?.paneKey === paneKey && !!current ? typing : null;
+  const drawn = useMemo(() => (typingHere?.focused ? withCaret(lines) : lines), [lines, typingHere?.focused]);
 
   const kind = pane?.agent ? 'agent' : 'shell';
   const wrapChoice = readWrapChoice(kind);
@@ -648,6 +678,8 @@ function PaneGrid({
   const box = useRef<HTMLDivElement>(null);
   const pre = useRef<HTMLPreElement>(null);
   const pinned = useRef(scrollMemo.get(paneKey)?.pinned ?? true);
+  /** The scroller's height at the last scroll or resize (see the Chat view's boxH). */
+  const boxH = useRef(0);
   const restored = useRef(false);
   const [room, setRoom] = useState(0);
 
@@ -657,7 +689,8 @@ function PaneGrid({
     setFade(el.scrollWidth > el.clientWidth + 1 && el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
   };
 
-  useEffect(() => {
+  // Before paint, so a Pane opens on its newest line instead of flashing its first.
+  useLayoutEffect(() => {
     const el = box.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
     else if (lines.length) {
@@ -686,7 +719,13 @@ function PaneGrid({
   useEffect(() => {
     const el = frame.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => { setViewportW(el.clientWidth); measure(); });
+    // The keyboard shrinks the frame from below: a grid pinned to its newest line stays there.
+    const ro = new ResizeObserver(() => {
+      setViewportW(el.clientWidth);
+      if (box.current) boxH.current = box.current.clientHeight;
+      if (pinned.current && box.current) box.current.scrollTop = box.current.scrollHeight;
+      measure();
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -711,10 +750,14 @@ function PaneGrid({
   const fits = !!gridWidth && !!potentialRoom && gridWidth <= potentialRoom + 34;
   // Auto keeps the grid for a full-screen program: profile mouse, then Screen.alt, then the
   // text itself (shared/layout.ts fullScreen).
-  const wrap = wrapChoice === 'auto' ? !fullScreen(profile.mouse, shown?.alt, screenText, pane?.cols) : wrapChoice === 'on';
+  const full = wrapChoice === 'auto' && autoFull(paneKey, profile.mouse, pane, shown?.alt, screenText);
+  // ponytail: written during render; the band makes a second pass with the same text agree.
+  if (wrapChoice === 'auto' && shown) fullMemo.set(paneKey, full);
+  const wrap = wrapChoice === 'auto' ? !full : wrapChoice === 'on';
   const effectiveWrap = wrap && !fits;
-  // A split cell's grid (a TUI, or Wrap off) fits its cell; a single Pane only on the Fit pref.
-  const fit = fitPref || (split && !effectiveWrap);
+  // A split cell draws at the single Pane's size and scrolls sideways; Fit is the user's
+  // pref in both, because a cell scaled to fit read too small to use.
+  const fit = fitPref;
   const kinds = useMemo(
     () => effectiveWrap
       ? {
@@ -761,6 +804,13 @@ function PaneGrid({
     measure();
   }, [fit, split, effectiveWrap, lines, viewportW, fonts, cell.cw]);
 
+  // The scale and the font swap land a render after the lines and move the grid's height; a
+  // pinned grid follows them to the new bottom.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [scale, shrink.h, fonts, cell.rh]);
+
   // The grid is the only place these can be measured; the ⋯ menu and the strip live above it.
   useEffect(() => {
     onMeasure?.({ cell, room, effectiveWrap });
@@ -773,8 +823,14 @@ function PaneGrid({
       <div
         ref={box}
         {...mouse}
+        onClick={typingHere && !forwarding ? () => typingHere.focus() : undefined}
         onScroll={(e) => {
           const el = e.currentTarget;
+          // A scroll that arrives with a new height is the frame shrinking, not the reader.
+          if (el.clientHeight !== boxH.current) {
+            boxH.current = el.clientHeight;
+            if (pinned.current) return void (el.scrollTop = el.scrollHeight);
+          }
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
           if (pinned.current) setFresh(false);
           scrollMemo.set(paneKey, { pinned: pinned.current, scrollTop: el.scrollTop });
@@ -811,9 +867,9 @@ function PaneGrid({
           }}
         >
           {effectiveWrap && kinds ? (
-            <Wrapped lines={lines} kinds={kinds.kinds} joins={kinds.joins} fills={kinds.fills} />
+            <Wrapped lines={drawn} kinds={kinds.kinds} joins={kinds.joins} fills={kinds.fills} />
           ) : (
-            lines.map((spans, i) => (
+            drawn.map((spans, i) => (
               <Fragment key={i}>
                 {gridRuns(spans)}
                 {'\n'}
@@ -898,12 +954,45 @@ function useCellSeen(paneKey: string, revision: number | undefined) {
   }, [paneKey, revision, visible]);
 }
 
+/** A split cell in the Chat lens. The focused cell passes the route's handlers; any other is
+ *  view-only and falls back to its grid for a Pane the Hub serves no Chat for, without
+ *  touching the saved lens. One component for both, so a focus move keeps each Chat mounted. */
+function CellChat({ pane, screen, onUnavailable, onReview, approval, onReady }: {
+  pane: StatePane;
+  screen: ScreenEvent | null;
+  onUnavailable?: () => void;
+  onReview?: () => void;
+  approval?: Parameters<typeof Chat>[0]['approval'];
+  onReady?: (shown: boolean) => void;
+}) {
+  const [noChat, setNoChat] = useState(false);
+  const fallback = useCallback(() => setNoChat(true), []);
+  const profile = useMemo(() => profileFor(pane), [pane.agent, pane.command]);
+  const lines = useMemo(() => (screen?.key === pane.key ? parseAnsi(screen.text) : null), [screen, pane.key]);
+  if (noChat) return <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={false} split />;
+  return (
+    <Chat
+      key={pane.key}
+      paneKey={pane.key}
+      revision={pane.revision}
+      onUnavailable={onUnavailable ?? fallback}
+      agent={pane.agent!}
+      status={pane.status}
+      lines={lines}
+      profile={profile}
+      onReview={onReview}
+      approval={approval}
+      onReady={onReady}
+    />
+  );
+}
+
 function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMeasure }: {
   pane: StatePane;
   focused: boolean;
   screen: ScreenEvent | null;
   box: CSSProperties;
-  /** What the focused cell shows instead of its grid: the Chat view in the Chat lens. */
+  /** What the cell shows instead of its grid: the Chat view in that Pane's Chat lens. */
   content?: ReactNode;
   onFocus: () => void;
   /** Zoom this Pane to fill its Tab in the Mux; absent while a zoom is in flight. */
@@ -958,7 +1047,7 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMea
           <ZoomIn size={12} />
         </button>
       </div>
-      {focused && content ? (
+      {content ? (
         content
       ) : (
         <div className={`flex min-h-0 flex-1 flex-col transition-opacity duration-150 motion-reduce:transition-none ${focused ? '' : 'opacity-90 group-hover/cell:opacity-100 group-focus-within/cell:opacity-100'}`}>
@@ -1063,14 +1152,17 @@ function Divider({ edge, W, H, host, onResize }: {
  * A split Tab at `lg` (ADR 0006): every Pane's grid placed at the Mux's own rect, as a
  * proportion of the Tab. The route is the focus; a click on another cell only moves it,
  * and sends nothing to the program. View-only cells have no Affordances, no mouse.
- * `focusedContent` replaces the focused cell's grid (the Chat lens); the others stay Screen.
+ * `focusedContent` replaces the focused cell's grid (the Chat lens); every other agent cell
+ * shows its own lens, so a focus move never flips a neighbour's Chat to Screen.
  */
-function SplitView({ panes, focusKey, screens, held, focusedContent, onZoom, onResize, onMeasure }: {
+function SplitView({ panes, focusKey, screens, held, focusedContent, cellChat, onZoom, onResize, onMeasure }: {
   panes: StatePane[];
   focusKey: string;
   screens: Record<string, ScreenEvent>;
   held: ScreenEvent | null;
   focusedContent?: ReactNode;
+  /** An unfocused agent cell's Chat view, when that Pane's own lens is Chat. */
+  cellChat?: (pane: StatePane) => ReactNode;
   /** absent while a zoom is in flight */
   onZoom?: (key: string) => void;
   /** a divider drag or key step: the Pane that grows, the way, and the cells */
@@ -1089,7 +1181,7 @@ function SplitView({ panes, focusKey, screens, held, focusedContent, onZoom, onR
           // Only the focused cell holds the last Screen across a switch: another cell showing
           // it would draw a stranger's grid until its own first Screen lands.
           screen={screens[p.key] ?? (p.key === focusKey ? held : null)}
-          content={focusedContent}
+          content={p.key === focusKey ? focusedContent : p.agent && readLens(p.key) === 'chat' ? cellChat?.(p) : undefined}
           onMeasure={onMeasure}
           onZoom={onZoom && (() => onZoom(p.key))}
           onFocus={() => navigate(`#/pane/${encodeURIComponent(p.key)}`, { replace: true, transition: false })}
@@ -1173,12 +1265,28 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     paneKey,
     mode: readLens(paneKey),
   }));
-  const lens = lensChoice.paneKey === paneKey ? lensChoice.mode : readLens(paneKey);
+  /** A Pane whose Chat the Hub cannot serve (tmux): Screen for now, the saved choice untouched. */
+  const [noChat, setNoChat] = useState<string | null>(null);
+  const lens = noChat === paneKey ? 'screen' : lensChoice.paneKey === paneKey ? lensChoice.mode : readLens(paneKey);
   const setLens = useCallback((mode: LensMode) => {
     writeLens(paneKey, mode);
+    setNoChat(null);
     setLensChoice({ paneKey, mode });
   }, [paneKey]);
-  const showScreen = useCallback(() => setLens('screen'), [setLens]);
+  const showScreen = useCallback(() => setNoChat(paneKey), [paneKey]);
+  /** The Pane whose Chat view has drawn its transcript: only then does it carry the approval
+   *  rows, so until then the dock keeps the blocked card. */
+  const [chatShown, setChatShown] = useState<string | null>(null);
+  const onChatReady = useCallback((shown: boolean) => setChatShown(shown ? paneKey : null), [paneKey]);
+
+  // A focus move inside one Tab keeps this component (App keys it by Tab), so the
+  // per-Pane state a remount used to clear is cleared here.
+  useEffect(() => {
+    setExplain(null);
+    setStalePrompt(null);
+    setRename(false);
+    setConfirmClose(false);
+  }, [paneKey]);
 
   // ---- split view (ADR 0006) ----
   // The slot is the Pane column's grid area. Every cell must reach 420 x 180 px there, or the
@@ -1210,7 +1318,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   // The App profile is the gate: it says which Hints to look for, which keys the dock
   // carries, and whether this program reads a mouse report at all.
   const profile = useMemo(() => profileFor(pane), [pane?.agent, pane?.command]);
-  const affordances = useMemo(() => findAffordances(lines, profile), [lines, profile]);
+  // The dock's Hint pills type into this Pane, so a held Screen (the last Pane's) offers none.
+  const affordances = useMemo(() => (current ? findAffordances(lines, profile) : []), [current, lines, profile]);
   // ---- phone width (ADR 0004) ----
   const [phoneWidth, setPhoneWidth] = useState(() => holdsLease(streamId, paneKey));
   useEffect(() => { setPhoneWidth(holdsLease(streamId, paneKey)); }, [paneKey, streamId]); // the Hub's reaper releases on leave
@@ -1244,7 +1353,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   };
   // The ⋯ menu's Wrap line names what auto resolved to. PaneGrid applies the same rule.
   const screenText = useMemo(() => lines.map(textOf).join('\n'), [lines]);
-  const wrap = wrapChoice === 'auto' ? !fullScreen(profile.mouse, shown?.alt, screenText, pane?.cols) : wrapChoice === 'on';
+  const wrap = wrapChoice === 'auto' ? !autoFull(paneKey, profile.mouse, pane, shown?.alt, screenText) : wrapChoice === 'on';
   /** Bumped by the ⋯ switch, so the per-Pane override is re-read without a second store. */
   const [override, setOverride] = useState(0);
   const mouseOn = useMemo(() => mouseAllowed(paneKey, pane), [paneKey, pane?.agent, pane?.command, override]);
@@ -1261,8 +1370,14 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     if (pane) lastPane.set(`${pane.muxKey}/${pane.tabId}`, pane.key);
   }, [pane?.key]);
 
-  // The blocked card outlives the status by 150 ms, so it fades instead of vanishing.
-  const loadExplain = () => fetchExplain(paneKey).then(setExplain).catch(() => {});
+  // The blocked card outlives the status by 150 ms, so it fades instead of vanishing. A focus
+  // move keeps this screen mounted, so an answer for the Pane left behind is dropped.
+  const openKey = useRef(paneKey);
+  openKey.current = paneKey;
+  const loadExplain = () => {
+    const asked = paneKey;
+    return fetchExplain(asked).then((e) => { if (openKey.current === asked) setExplain(e); }).catch(() => {});
+  };
   useEffect(() => {
     if (pane?.status === 'blocked') {
       loadExplain();
@@ -1429,7 +1544,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   // the nearest scroller and fires `pointercancel`, so `pointerup` never arrives on a phone.
   // `touchend` always does. The strip's own scroll position guards the ambiguous case —
   // with more Tabs than fit, dragging scrolls the strip and must not also switch Tab.
-  const swipe = useRef({ x: 0, scroll: 0 });
+  const swipe = useRef({ x: 0, scroll: 0, off: false });
 
   if (state && !pane) {
     return (
@@ -1506,7 +1621,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         : `from ${pane?.command ?? pane?.agent ?? 'the generic'} profile`;
 
   return (
-    <div className="flex h-dvh w-full flex-col">
+    // On the phone the screen is the visual viewport (app.tsx sets --vv-h and --vv-top), so
+    // the keyboard pushes the composer up instead of covering it.
+    <div className={desktop ? 'flex h-dvh w-full flex-col' : 'fixed inset-x-0 top-(--vv-top,0px) flex h-(--vv-h,100dvh) flex-col'}>
       <PaneHeader
         desktop={desktop}
         title={pane?.title ?? '…'}
@@ -1570,12 +1687,16 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         <div
           className="shrink-0 px-3 pb-1.5"
           onTouchStart={(e) => {
-            swipe.current = { x: e.touches[0]?.clientX ?? 0, scroll: strip.current?.scrollLeft ?? 0 };
+            swipe.current = {
+              x: e.touches[0]?.clientX ?? 0,
+              scroll: strip.current?.scrollLeft ?? 0,
+              off: !!(e.target as Element).closest('[data-noswipe]'),
+            };
           }}
           onTouchEnd={(e) => {
             const dx = (e.changedTouches[0]?.clientX ?? 0) - swipe.current.x;
             const scrolled = Math.abs((strip.current?.scrollLeft ?? 0) - swipe.current.scroll) > 4;
-            if (scrolled || Math.abs(dx) < 40 || !active) return;
+            if (swipe.current.off || scrolled || Math.abs(dx) < 40 || !active) return;
             const i = tabs.indexOf(active) + (dx < 0 ? 1 : -1);
             if (tabs[i]) openTab(tabs[i].id);
           }}
@@ -1642,6 +1763,10 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
       )}
 
       {(() => {
+        const approvalProps = inlineApproval ? { explain: explain!, stale, desktop, onAnswer: answer, onReread: reread, ref: approvalRow } : null;
+        const cellChat = agent && lens === 'chat' && pane && (
+          <CellChat pane={pane} screen={screen} onUnavailable={showScreen} onReview={explain ? review : undefined} approval={approvalProps} onReady={onChatReady} />
+        );
         const chat = agent && lens === 'chat' && (
           <Chat
             key={paneKey}
@@ -1653,7 +1778,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
             lines={current ? lines : null}
             profile={profile}
             onReview={explain ? review : undefined}
-            approval={inlineApproval ? { explain: explain!, stale, desktop, onAnswer: answer, onReread: reread, ref: approvalRow } : null}
+            approval={approvalProps}
+            onReady={onChatReady}
           />
         );
         return (
@@ -1664,20 +1790,22 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                 focusKey={paneKey}
                 screens={screens}
                 held={last}
-                focusedContent={chat || undefined}
+                focusedContent={cellChat || undefined}
+                cellChat={(p) => <CellChat pane={p} screen={screens[p.key] ?? null} />}
                 onZoom={zooming ? undefined : (key) => void zoomTo(key, true)}
                 onResize={(key, direction, amount) =>
                   editing ? undefined : void edit('Resize', () => api<void>(`/api/panes/${encodeURIComponent(key)}/resize`, { direction, amount } satisfies ResizeBody))}
                 onMeasure={onGridMeasure}
               />
             ) : (
-              chat || <PaneGrid paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
+              chat || <PaneGrid key={paneKey} paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
             )}
           </div>
         );
       })()}
 
       <Composer
+        key={paneKey}
         paneKey={paneKey}
         pane={pane}
         desktop={desktop}
@@ -1689,7 +1817,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         onAnswer={answer}
         onReread={reread}
         cardRef={card}
-        hideCard={chatLens}
+        // The Chat view answers the prompt in its transcript once it has one on screen; while
+        // it loads (or falls back), the dock's card stays.
+        hideCard={chatLens && chatShown === paneKey}
       />
 
       <SwitchDrawer
@@ -1715,7 +1845,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                     className={`${SWITCH_ROW} ${t.id === pane?.tabId ? 'bg-muted/20' : 'hover:bg-bg active:bg-bg'}`}
                   >
                     <Dot status={t.status} seen={t.status === 'idle' || t.status === 'unknown'} />
-                    <span className="min-w-0 flex-1 truncate text-body">{t.label}</span>
+                    <span className="min-w-0 flex-1 truncate text-[13px]">{t.label}</span>
                     {t.status === 'blocked' && <span className="shrink-0 text-caption text-warn">needs you</span>}
                     {t.panes.length > 1 && <span className="shrink-0 text-caption text-muted">{t.panes.length} Panes</span>}
                     <span className="w-4 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted">{i + 1}</span>

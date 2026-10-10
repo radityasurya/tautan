@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { parseAnsi } from '../shared/ansi.ts';
-import { boxInner, classify, continues, fillOf, fullScreen, hangOf, splitAt, tuiScreen } from '../shared/layout.ts';
+import { boxInner, caretAt, classify, continues, fillOf, fullScreen, hangOf, splitAt, tuiScreen } from '../shared/layout.ts';
 
 const kinds = (text: string) => classify(text, 120).join(',');
 
@@ -276,6 +276,44 @@ describe('fullScreen', () => {
     expect(fullScreen(false, false, panels)).toBe(false); // a confident false beats it too
     expect(fullScreen(true, false, shell)).toBe(true); // a mouse-forwarding profile wins
   });
+
+  test('an Agent is never inferred full-screen; only mouse forwarding or alt say so', () => {
+    // Claude Code's prose with a Markdown table filling most of the Screen.
+    const table = [
+      '● Here is the comparison:',
+      '  | Sequence           | Before    | After |',
+      '  |--------------------|-----------|-------|',
+      '  | ESC[1m … ESC[22m   | ok        | ok    |',
+      '  | ESC[2m … ESC[22m   | dim kept  | ok    |',
+      '  | ESC[1;2m … ESC[22m | dim kept  | ok    |',
+    ].join('\n');
+    expect(fullScreen(false, undefined, table)).toBe(true); // a shell would keep the grid
+    expect(fullScreen(false, undefined, table, 80, { agent: true })).toBe(false);
+    expect(fullScreen(false, true, table, 80, { agent: true })).toBe(true);
+    expect(fullScreen(true, undefined, table, 80, { agent: true })).toBe(true);
+  });
+});
+
+describe('tuiScreen hysteresis', () => {
+  // Ten lines, `n` of them drawn: a table scrolling through a shell's output.
+  const screen = (n: number) =>
+    Array.from({ length: 10 }, (_, i) => (i < n ? `| row ${i}  | value ${i} | more ${i} |` : `plain output line ${i}`)).join('\n');
+
+  test('with no last answer the line is 0.4', () => {
+    expect(tuiScreen(screen(4), 80)).toBe(true);
+    expect(tuiScreen(screen(3), 80)).toBe(false);
+  });
+
+  test('turning full-screen takes half the lines; turning back takes under 0.3', () => {
+    expect(tuiScreen(screen(4), 80, false)).toBe(false);
+    expect(tuiScreen(screen(5), 80, false)).toBe(true);
+    expect(tuiScreen(screen(3), 80, true)).toBe(true);
+    expect(tuiScreen(screen(2), 80, true)).toBe(false);
+  });
+
+  test('a share in the band keeps whatever it was', () => {
+    for (const was of [true, false]) expect(fullScreen(false, undefined, screen(4), 80, { was })).toBe(was);
+  });
 });
 
 describe('splitFloor', () => {
@@ -287,5 +325,21 @@ describe('splitFloor', () => {
     expect(splitFloor(16)).toBe(0.45);
     expect(splitFloor(0)).toBe(0.75);
     expect(splitFloor(NaN)).toBe(0.75);
+  });
+});
+
+describe('caretAt', () => {
+  const rule = '─'.repeat(40);
+  test("Claude: just past the text on the prompt row, never inside the ❯", () => {
+    expect(caretAt(['● Done.', rule, '❯\u00a0', rule, '  ⏵⏵ auto mode on'])).toEqual({ row: 2, col: 2 });
+    expect(caretAt(['❯ old prompt', 'output', rule, '❯ fix the te', rule, '  footer'])).toEqual({ row: 3, col: 12 });
+  });
+  test('pi: the row inside its editor, between the last two rules', () => {
+    expect(caretAt(['reply', rule, '', rule, '~/projects   zai/glm-5.3'])).toEqual({ row: 2, col: 0 });
+    expect(caretAt(['reply', rule, 'hello there', '', rule, 'footer'])).toEqual({ row: 2, col: 11 });
+  });
+  test('a shell: past the last row with text; an empty Screen has no caret', () => {
+    expect(caretAt(['$ ls', 'a b', 'tautan ❯ pnpm dev', '', ''])).toEqual({ row: 2, col: 17 });
+    expect(caretAt(['', ''])).toBeNull();
   });
 });

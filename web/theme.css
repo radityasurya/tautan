@@ -151,6 +151,16 @@
   to { transform: none; opacity: 1 }
 }
 
+/* The caret while the Composer types straight into a Pane: on the Screen and in the bar.
+   A terminal's own blink, on and off with no fade. Reduced motion keeps it steady. */
+@utility caret-blink {
+  animation: tautan-caret 1.06s steps(1) infinite;
+}
+
+@keyframes tautan-caret {
+  50% { opacity: 0 }
+}
+
 /* Unlayered, so it outranks the utilities layer without fighting specificity. */
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*),
@@ -160,7 +170,8 @@
   }
 
   .fade,
-  .rise {
+  .rise,
+  .caret-blink {
     animation: none !important;
   }
 
@@ -179,6 +190,17 @@
    making a scroll container. `!important` because the kit's <style> lands after this file. */
 @media (max-width: 719px) {
   html, body { overflow-x: clip !important; }
+}
+
+/* iOS zooms the page into any text field under 16 px when it takes focus, and stays zoomed.
+   On a touch screen every field is at least 16 px. `!important` because the kit's fields set
+   their size inline. */
+@media (pointer: coarse) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"]),
+  textarea,
+  select {
+    font-size: max(16px, 1em) !important;
+  }
 }
 
 /* Horizontal strips (Tab strip, Pane chips, Host chips, suggestion pills) scroll without a

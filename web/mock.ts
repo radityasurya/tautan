@@ -62,8 +62,20 @@ const CLAUDE_VISIBLE = [
   `${DIM}⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent${RESET}`,
 ].join('\r\n');
 
-/** A Claude Pane at work: the spinner line sits above the input box, as recorded live. */
+/** A Claude Pane at work: the spinner line sits above the input box, as recorded live. Its
+ *  answer carries a Markdown table, which Claude Code draws in box glyphs: the Screen that
+ *  must stay wrapped prose with one sideways table, never a full-screen grid. */
 const CLAUDE_WORKING = [
+  `${CLAUDE}●${RESET} Three event kinds leave the Hub, each with its own consumer:`,
+  '',
+  '  ┌────────┬──────────────────────────┬──────────────────────────────┐',
+  '  │ Event  │ Sent when                │ Read by                      │',
+  '  ├────────┼──────────────────────────┼──────────────────────────────┤',
+  '  │ state  │ any Pane, Tab or Host    │ web/app.tsx useEvents        │',
+  '  │ screen │ a watched Pane redraws   │ web/pane.tsx PaneGrid        │',
+  '  │ chat   │ a transcript grows       │ web/chat.tsx the Chat poll   │',
+  '  └────────┴──────────────────────────┴──────────────────────────────┘',
+  '',
   `${BLUE}●${RESET} ${BOLD}Read${RESET} ${DIM}server/events.ts${RESET}`,
   `  ${GREEN}⎿${RESET}  ${DIM}Read 212 lines${RESET}`,
   '',
@@ -682,6 +694,15 @@ const mockChat = (agent?: string): ChatResponse => agent ? {
           result: 'bun test v1.3.2 (b131639c)\n\ntest/ansi.test.ts:\n✓ parseAnsi > SGR 22 clears dim [0.21ms]\n✓ parseAnsi > 256 colours [0.08ms]\n\n 41 pass, 0 fail, 112 expect() calls',
         },
       ],
+      thinking: [
+        'The user says a dim run keeps its **bold** weight. `SGR 22` is *normal intensity*, so it',
+        'has to clear both attributes. The parser only clears `bold`, which means:',
+        '',
+        '- a run styled `ESC[2m` keeps `dim` after `ESC[22m`',
+        '- `mergeSpans()` then copies the stale style forward',
+        '',
+        'Fix the branch, then add a regression test for `ESC[2m … ESC[22m`.',
+      ].join('\n'),
       text: [
         '## Root cause',
         '',

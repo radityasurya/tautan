@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import { Blocked, ON_WARN, type ExplainResponse } from './blocked.tsx';
-import { Dot, timeAgo } from './home.tsx';
+import { Dot } from './home.tsx';
 import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown } from './markdown.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
@@ -12,6 +12,7 @@ import type { Span, Status } from '../shared/types.ts';
 import { deliver, dropPending, pendingSnapshot, settled, subscribePending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
 import { toolbarFromScreen, type Profile } from './profiles.ts';
+import { store } from './store.tsx';
 import { finishedIn, readSubagent, setShowing, subagentChips, subagentName, subagentRows, subagentRunning, writeSubagent } from './subagents.ts';
 
 export type LensMode = 'chat' | 'screen';
@@ -20,12 +21,18 @@ export type LensMode = 'chat' | 'screen';
 
 const OPTIONS = ['Chat', 'Screen'];
 const storageKey = (paneKey: string) => `tautan.lens.${paneKey}`;
+/** The last lens picked on any Pane: what a Pane never switched opens in. */
+const LAST_LENS = 'tautan.lens';
 
-export const readLens = (paneKey: string): LensMode =>
-  sessionStorage.getItem(storageKey(paneKey)) === 'chat' ? 'chat' : 'screen';
+/** This Pane's own choice, else the last one picked anywhere, else Chat. */
+export const readLens = (paneKey: string): LensMode => {
+  const v = store.get(storageKey(paneKey)) ?? store.get(LAST_LENS);
+  return v === 'screen' ? 'screen' : 'chat';
+};
 
 export function writeLens(paneKey: string, mode: LensMode) {
-  sessionStorage.setItem(storageKey(paneKey), mode);
+  store.set(storageKey(paneKey), mode);
+  store.set(LAST_LENS, mode);
 }
 
 export function LensSwitch({ value, onChange }: { value: LensMode; onChange: (mode: LensMode) => void }) {
@@ -66,28 +73,54 @@ function toolImage(paneKey: string, tool: Tool, agent?: string): { src: string; 
 }
 
 const CAPTION: Record<Pending['state'], string> = {
-  held: 'Held until the Agent is idle',
+  held: 'Held',
   sending: 'Sending…',
   sent: 'Sent',
   late: 'Not in the transcript yet',
   failed: 'Not sent',
 };
 
-/** A reply the transcript has not caught up with: dimmed, with what happened to it underneath. */
-function PendingTurn({ entry }: { entry: Pending }) {
+const LINK = 'press -my-2 inline-flex min-h-8 items-center font-semibold';
+
+/**
+ * A reply the transcript has not caught up with: dimmed, with what happened to it underneath.
+ * A held one can go now (not while the Agent works: it would only queue) or be removed.
+ */
+function PendingTurn({ entry, agent, working }: { entry: Pending; agent: string; working: boolean }) {
   const failed = entry.state === 'failed';
+  const held = entry.state === 'held';
   return (
     <li className="flex flex-col items-end">
       <div className={`min-w-0 max-w-[88%] whitespace-pre-wrap break-words rounded-card bg-accent/10 px-3 py-2.5 text-body text-fg ${failed ? '' : 'opacity-60'}`}>
         {entry.text}
       </div>
       <span aria-live="polite" className={`mt-1 px-1 text-right text-[11px] ${failed ? 'text-danger' : 'text-muted'}`}>
-        {CAPTION[entry.state]}
+        {held ? `Held until ${capital(agent)} is idle`
+          // Claude and pi queue a reply typed mid-run and log it when they take it.
+          : working && (entry.state === 'sent' || entry.state === 'late') ? `Queued for ${capital(agent)}`
+          : CAPTION[entry.state]}
+        {!held && !failed && ` · ${clock(entry.at)}`}
         {failed && (
           <>
             {' · '}
-            <button type="button" onClick={() => void deliver(entry.id)} className="press -my-2 inline-flex min-h-8 items-center font-semibold text-accent">
+            <button type="button" onClick={() => void deliver(entry.id)} className={`${LINK} text-accent`}>
               Retry
+            </button>
+          </>
+        )}
+        {held && !working && (
+          <>
+            {' · '}
+            <button type="button" onClick={() => void deliver(entry.id)} className={`${LINK} text-accent`}>
+              Send now
+            </button>
+          </>
+        )}
+        {held && (
+          <>
+            {' · '}
+            <button type="button" aria-label={`Remove held message: ${entry.text}`} onClick={() => dropPending([entry.id])} className={`${LINK} text-muted`}>
+              Remove
             </button>
           </>
         )}
@@ -96,11 +129,63 @@ function PendingTurn({ entry }: { entry: Pending }) {
   );
 }
 
+/**
+ * The run's reasoning, folded: one muted row above the turn's text. The body renders only
+ * once opened, so a long transcript of thoughts costs nothing until asked for. A teammate's
+ * message folds the same way, under its own label, the way Claude Code prints it.
+ */
+function Thinking({ text, label = 'Thinking' }: { text: string; label?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="group mb-1 w-[min(88%,42rem)]" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className={`${SUMMARY} -mx-1 flex min-h-9 w-fit items-center gap-1 px-1 text-caption text-muted lg:min-h-7`}>
+        <ChevronRight size={14} className="shrink-0 transition-transform group-open:rotate-90 motion-reduce:transition-none" />
+        {label}
+      </summary>
+      {open && (
+        <div className="mt-0.5 mb-1.5 border-l-2 border-border pl-3 text-caption text-muted [&_h1]:text-caption [&_h2]:text-caption [&_h3]:text-caption">
+          <Markdown text={text} />
+        </div>
+      )}
+    </details>
+  );
+}
+
+/** The clock time today, the date and time before: a transcript is read back hours later,
+ *  where "3h" says little and never moves on its own. */
+export const clock = (at: number) => {
+  const date = new Date(at);
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return date.toDateString() === new Date().toDateString() ? time : `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+};
+
+/**
+ * `Load earlier turns`, which also asks by itself as it nears the top of the scroller, so
+ * scrolling up reads straight on into the older pages. The button stays for a tap.
+ */
+function Earlier({ root, onLoad }: { root: RefObject<HTMLDivElement | null>; onLoad: () => void }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !root.current) return;
+    const observer = new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) onLoad(); }, { root: root.current, rootMargin: '600px 0px 0px 0px' });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [root, onLoad]);
+  return (
+    <p ref={ref} className="mb-4 flex justify-center">
+      <button type="button" onClick={onLoad} className="press min-h-9 rounded-chip border border-border bg-surface px-3 text-caption text-muted active:text-fg">
+        Load earlier turns
+      </button>
+    </p>
+  );
+}
+
 function Stamp({ at }: { at?: number }) {
   if (!at) return null;
   return (
-    <time dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()} className="shrink-0 font-mono text-[10px] tabular-nums text-muted">
-      {timeAgo(at)}
+    <time dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()} className="shrink-0 text-[11px] tabular-nums text-muted">
+      {clock(at)}
     </time>
   );
 }
@@ -646,6 +731,13 @@ const tail = (chat: ChatResponse) => {
 
 /** A reply that waits for its answer longer than this, with the Status never moving, stops showing the dots. */
 const AWAIT_MS = 30_000;
+/** How long Main may answer 404 before the view stops waiting for a first turn: a fresh Agent
+ *  writes its transcript with the first reply, a Pane whose transcript the Hub cannot resolve
+ *  never does, and that one belongs on its Screen (ADR 0005). */
+const GIVE_UP_MS = 5_000;
+/** A first load that fails in passing (a 5xx, a dropped connection, a Hub restart) is asked
+ *  again this many times, 1 s, 2 s and 4 s apart, before the view falls back. */
+const RETRIES = 3;
 
 export function Chat({
   paneKey,
@@ -657,9 +749,11 @@ export function Chat({
   profile,
   onReview,
   approval,
+  onReady,
 }: {
   paneKey: string;
   revision: number;
+  /** No transcript to show: the Pane falls back to its Screen (ADR 0005). */
   onUnavailable: () => void;
   /** The Pane's Agent, by its Mux name ("claude"). */
   agent: string;
@@ -671,6 +765,8 @@ export function Chat({
   onReview?: () => void;
   /** Set while the Pane is blocked: the prompt is answered in the transcript. */
   approval?: Approval | null;
+  /** Whether a transcript is on screen, so the dock knows the approval rows are. */
+  onReady?: (shown: boolean) => void;
 }) {
   const [selected, setSelected] = useState<string | undefined>(() => readSubagent(paneKey));
   const [data, setData] = useState<{ agent?: string; chat: ChatResponse } | null>(null);
@@ -681,6 +777,9 @@ export function Chat({
   const view = data && data.agent === selected ? data.chat : null;
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  /** The scroller's height at the last scroll or resize: a scroll that arrives with a new one
+   *  is the keyboard moving the frame, not the reader. */
+  const boxH = useRef(0);
   /** Each conversation's scroll, kept across switches; null means "at the bottom". */
   const scrolls = useRef(new Map<string, number | null>());
   const restore = useRef<number | null>(null);
@@ -732,9 +831,9 @@ export function Chat({
   // reset's upserts to the newest turns and `after` names the oldest Turn held, so the Hub
   // never sends an upsert the view cannot place.
   const pace = useRef({ fast: false, blocked: false });
-  pace.current = { fast: status === 'working' || waiting.some((p) => p.state !== 'held' && p.state !== 'failed'), blocked: status === 'blocked' };
   const poke = useRef(() => {});
   const back = useRef(() => {});
+  const loadEarlier = useCallback(() => back.current(), []);
   useEffect(() => {
     const root = `/api/panes/${encodeURIComponent(paneKey)}/chat`;
     const base = `${root}?since=`;
@@ -743,7 +842,9 @@ export function Chat({
     let cursor = '';
     let turns: Turn[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let busy = false, again = false, loaded = false, quiet = 0;
+    let busy = false, again = false, early = false, loaded = false, quiet = 0;
+    /** When Main first answered 404, the failed first asks so far, and the next ask's delay. */
+    let missSince = 0, misses = 0, retryIn = 0;
     // An id-less oldest Turn cannot be named to the Hub: that ask keeps today's whole-list
     // form, and `Load earlier` stays hidden.
     const windowed = () => turns.length === 0 || turns[0]?.id !== undefined;
@@ -752,7 +853,8 @@ export function Chat({
       if (controller.signal.aborted || document.visibilityState === 'hidden') return;
       const { fast, blocked } = pace.current;
       if (fast || blocked) quiet = 0; // the 30 s back-off counts idle 304s only
-      timer = setTimeout(run, fast ? 1_500 : blocked ? 5_000 : quiet >= 4 ? 30_000 : 15_000);
+      timer = setTimeout(run, retryIn || (fast ? 1_500 : blocked ? 5_000 : quiet >= 4 ? 30_000 : 15_000));
+      retryIn = 0;
     };
     const show = (delta: ChatDelta) => {
       setData((prev) => ({
@@ -768,7 +870,7 @@ export function Chat({
       try {
         const ask = `${base}${encodeURIComponent(cursor)}${agentQuery}${windowed() ? `&limit=${CHAT_PAGE_TURNS}${turns[0]?.id !== undefined ? `&after=${encodeURIComponent(turns[0].id)}` : ''}` : ''}`;
         const response = await fetch(ask, { signal: controller.signal, cache: 'no-store' });
-        if (!response.ok) throw Object.assign(new Error(String(response.status)), { gone: response.status === 404 || response.status === 501 });
+        if (!response.ok) throw Object.assign(new Error(String(response.status)), { status: response.status, gone: response.status === 404 || response.status === 501 });
         // A Hub that predates ?since= ignores it and answers the full ChatResponse (version
         // skew across an upgrade): its turns are a reset with no cursor, so the next ask
         // starts over instead of failing the view.
@@ -778,6 +880,8 @@ export function Chat({
           : null;
         if (!delta) throw new Error('invalid chat');
         const merged = mergeTurns(turns, delta);
+        missSince = 0;
+        misses = 0;
         cursor = delta.cursor;
         setTotal(delta.total);
         if (merged === turns && loaded && !delta.subagents) quiet++;
@@ -791,23 +895,40 @@ export function Chat({
         }
       } catch (error) {
         if ((error as Error).name === 'AbortError') return;
-        // A transcript that went away, or one that never loaded: a subagent's falls back to
-        // Main, Main's to Screen. A blip on a loaded view only waits for the next poll.
-        if (!loaded || (error as { gone?: boolean }).gone) {
+        const { status: code, gone } = error as { status?: number; gone?: boolean };
+        const fallBack = () => {
           controller.abort();
           if (selected) pick(undefined);
           else onUnavailable();
-          return;
+        };
+        if (!selected && code === 404) {
+          // Main with no transcript yet (a fresh Agent that has not been asked anything): an
+          // empty view that asks again each second, so the Chat lens holds until the first
+          // turn lands. Still 404 after GIVE_UP_MS, it is not fresh: back to Screen.
+          const first = !missSince;
+          if (first) missSince = Date.now();
+          else if (Date.now() - missSince >= GIVE_UP_MS) return fallBack();
+          cursor = '';
+          if (first && !loaded) show({ sessionId: '', cursor: '', reset: true, upserts: [] });
+          retryIn = 1_000;
+        } else if (gone || (!loaded && ++misses > RETRIES)) {
+          // A transcript that went away, or one that never loaded through every retry: a
+          // subagent's falls back to Main, Main's to Screen.
+          return fallBack();
+        } else if (!loaded) {
+          retryIn = 500 * 2 ** misses;
         }
+        // A blip on a loaded view only waits for the next poll.
       } finally { busy = false; }
-      if (again) { again = false; void run(); } else next();
+      if (early) { early = false; void earlier(); } // its own tail consumes `again`
+      else if (again) { again = false; void run(); } else next();
     };
     // The amendment's earlier page: the turns before the oldest one held, prepended in one
-    // piece with the reading place kept. A poll in flight swallows the click; the button
-    // stays, so the next click goes through.
+    // piece with the reading place kept. Asked during a poll, it goes out after it.
     const earlier = async () => {
       const oldest = turns[0]?.id;
-      if (busy || oldest === undefined) return;
+      if (oldest === undefined) return;
+      if (busy) return void (early = true);
       busy = true;
       const el = box.current;
       const was = el ? el.scrollHeight : 0;
@@ -906,15 +1027,24 @@ export function Chat({
     else if (before && before !== view && before.agent === view.agent && tail(before) !== tail(view)) setFresh(true);
   }, [view, newest]);
 
-  // Images load after the turns render and grow the list; a pinned view follows them down.
+  // Images load after the turns render and grow the list, and the keyboard shrinks the
+  // scroller from below: a pinned view follows both down.
   useEffect(() => {
     const el = box.current;
     const list = el?.firstElementChild;
     if (!el || !list) return;
-    const observer = new ResizeObserver(() => { if (pinned.current) el.scrollTop = el.scrollHeight; });
+    const observer = new ResizeObserver(() => {
+      boxH.current = el.clientHeight;
+      if (pinned.current) el.scrollTop = el.scrollHeight;
+    });
     observer.observe(list);
+    observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  const ready = !!view;
+  useEffect(() => { onReady?.(ready); }, [ready, onReady]);
+  useEffect(() => () => onReady?.(false), [onReady]);
 
   // A new prompt comes into view, unless the user reads further up: then the pill says so.
   const prompt = approval && view ? approval.explain.promptId ?? 'mock' : null;
@@ -947,7 +1077,7 @@ export function Chat({
   }, [sentIds]);
   useEffect(() => {
     if (awaiting === null) return;
-    if (status === 'working' || mainTurns?.slice(awaiting).some((t) => t.role === 'assistant')) return setAwaiting(null);
+    if (status === 'working' || mainTurns?.slice(awaiting).some((t) => t.role === 'assistant' && !t.from)) return setAwaiting(null);
     // ponytail: a fixed cap for a Mux that never reports working (tmux); a Status event would be exact.
     const t = setTimeout(() => setAwaiting(null), AWAIT_MS);
     return () => clearTimeout(t);
@@ -963,6 +1093,12 @@ export function Chat({
   const open = selected ? byId.get(selected) : undefined;
   const live = status === 'working' || status === 'blocked';
   const running = useCallback((item: Subagent) => subagentRunning(item, subagents, finished, live), [subagents, finished, live]);
+  // Fast while the Agent works, a reply waits for its turn, or a background subagent still
+  // runs under an idle Pane: each of them is about to write.
+  pace.current = {
+    fast: status === 'working' || waiting.some((p) => p.state !== 'held' && p.state !== 'failed') || subagents.some(running),
+    blocked: status === 'blocked',
+  };
   const openRunning = open ? running(open) : false;
   const pendingShown = selected ? [] : waiting;
   /** Every pending tool of the final turn, oldest first: the first is the one the on-screen
@@ -993,6 +1129,11 @@ export function Chat({
         aria-label={open ? `${subagentName(open)}, subagent transcript` : `${agent} transcript`}
         onScroll={(event) => {
           const el = event.currentTarget;
+          // Chrome fires this scroll before the ResizeObserver when the frame shrinks.
+          if (el.clientHeight !== boxH.current) {
+            boxH.current = el.clientHeight;
+            if (pinned.current) return void (el.scrollTop = el.scrollHeight);
+          }
           pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
           if (pinned.current) setFresh(false);
           const row = approval?.ref.current;
@@ -1013,22 +1154,28 @@ export function Chat({
               <Skeleton className="h-20 w-5/6 rounded-card" />
             </div>
           ) : view.turns.length === 0 && !pendingShown.length && !approval ? (
-            <p className="text-caption text-muted">No turns yet</p>
+            <p className="flex items-center gap-3 text-caption text-muted">
+              No turns yet
+              <button type="button" onClick={onUnavailable} className="press inline-flex min-h-9 items-center rounded-chip border border-border bg-surface px-3 text-caption text-fg">
+                Show Screen
+              </button>
+            </p>
           ) : (
             <>
-            {total !== undefined && view.turns.length < total && view.turns[0]?.id !== undefined && (
-              <p className="mb-4 flex justify-center">
-                <button type="button" onClick={() => back.current()} className="press min-h-9 rounded-chip border border-border bg-surface px-3 text-caption text-muted active:text-fg">
-                  Load earlier turns
-                </button>
-              </p>
-            )}
+            {total !== undefined && view.turns.length < total && view.turns[0]?.id !== undefined && <Earlier root={box} onLoad={loadEarlier} />}
             <ol className="flex flex-col gap-4">
               {view.turns.map((turn, turnIndex) => {
                 const assistant = turn.role === 'assistant';
                 const tools = assistant ? turn.tools : [];
+                if (turn.from) return (
+                  <li key={turn.id ?? turnIndex} className="flex flex-col items-start">
+                    <Thinking label={`Message from @${turn.from}`} text={turn.text} />
+                    <span className="px-1"><Stamp at={turn.at} /></span>
+                  </li>
+                );
                 return (
                   <li key={turn.id ?? turnIndex} className={`flex flex-col ${assistant ? 'items-start' : 'items-end'}`}>
+                    {assistant && turn.thinking && <Thinking text={turn.thinking} />}
                     {(turn.text || Boolean(turn.images?.length)) && (
                       <div
                         className={`min-w-0 max-w-[88%] break-words rounded-card px-3 py-2.5 text-body ${
@@ -1089,7 +1236,7 @@ export function Chat({
                   </li>
                 );
               })}
-              {pendingShown.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} />)}
+              {pendingShown.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} agent={agent} working={status === 'working'} />)}
               {approval && !targets.length && <ApprovalItem approval={approval} agent={agent} />}
             </ol>
             </>

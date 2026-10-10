@@ -3,12 +3,12 @@ import type { Affordance, InputBody, Span, StatePane } from '../shared/types.ts'
 import { hintPills } from './affordances.tsx';
 import { haptic, post, reducedMotion } from './app.tsx';
 import { Blocked, type ExplainResponse } from './blocked.tsx';
-import { Attach, Keyboard, Mic, Send } from './icons.tsx';
-import { applyKeyPrefs, capInput, editableCaps, modified, MODIFIERS, moveRow, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
+import { Attach, Keyboard, Mic, ScreenLens, Send } from './icons.tsx';
+import { applyKeyPrefs, capInput, directKey, editableCaps, modified, MODIFIERS, moveRow, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
 import { applyPick, Picker, tokenAt, useComplete, type Item } from './complete.tsx';
 import { CYCLE_MODE_KEYS, toolbarFromScreen, type Profile } from './profiles.ts';
 import { quickReplies, type Pill } from './replies.ts';
-import { deliver, dropPending, holdPending, trackPending } from './pending.ts';
+import { deliver, dropPending, flushHeld, heldOf, isFlushing, pendingSnapshot, subscribePending, trackPending } from './pending.ts';
 import { showingSubagent, subscribeShowing } from './subagents.ts';
 import { store } from './store.tsx';
 
@@ -42,12 +42,26 @@ const writeDraft = (paneKey: string, text: string) => {
   } catch {}
 };
 
+/** The Pane the Composer types straight into, whether its field has focus, and how to give it
+ *  focus: the Screen draws its caret from this, and a tap on the Screen focuses the field. */
+export interface Typing { paneKey: string; focused: boolean; focus: () => void }
+let typing: Typing | null = null;
+const typingListeners = new Set<() => void>();
+export const subscribeTyping = (fn: () => void) => {
+  typingListeners.add(fn);
+  return () => { typingListeners.delete(fn); };
+};
+export const typingSnapshot = () => typing;
+const setTyping = (next: Typing | null) => {
+  typing = next;
+  typingListeners.forEach((fn) => fn());
+};
+
 /** The key bar the user chose, per kind. */
+/** Agents whose own prompt queues a reply typed mid-run (pi steers with it). */
+const QUEUES = new Set(['claude', 'pi', 'omp']);
 const keysKey = (kind: 'agent' | 'shell') => `tautan.keys.${kind}`;
 const readKeyPrefs = (kind: 'agent' | 'shell'): KeyPrefs | null => parseKeyPrefs(store.get(keysKey(kind)));
-
-/** `id` is the pending entry's (web/pending.ts), so the Chat view shows it held as well. */
-interface HeldMessage { id: number; text: string }
 
 /** `1.2 MB` for the composer chip. */
 const human = (n: number) =>
@@ -224,14 +238,22 @@ const HOVER = `${RING} hover:bg-surface hover:text-fg`;
 /** The hairline between toolbar groups. */
 const Divider = () => <span aria-hidden className="mx-1 h-[18px] w-px shrink-0 bg-border" />;
 
+/** A dock control keeps the keyboard up: the press never takes focus from the field. */
+const keepFocus = (e: { preventDefault(): void }) => e.preventDefault();
+
+/** A touch screen: Return breaks the line and the Send button sends, because a reply typed on
+ *  a phone keyboard is easy to send half-written. */
+const COARSE = matchMedia('(pointer: coarse)').matches;
+
 /**
  * The dock under the Screen, at both widths. Two toggles, Suggestions and Keys, each open
  * their own tray above the input; both open stack them, both closed leave the input alone.
  * Send (Run for a shell) is always the right-most control and stands alone; everything else
- * sits to its left, in the toolbar under the field: the toggles, ^C while working, attach,
- * mic. Desktop (`lg`) adds `/`, `@`, and mode, model and context read off the Screen. A blocked prompt keeps its
- * card on top and opens Suggestions; a Pane with no Agent gets a `$` prompt, and its recent
- * commands are its suggestions.
+ * sits to its left, in the toolbar under the field: the toggles, an Agent's esc and ^C,
+ * attach, `/` and `@`, mic. Desktop (`lg`) adds mode, model and context read off the Screen.
+ * A blocked prompt keeps its card on top; a Pane with no Agent gets a `$` prompt, and its
+ * recent commands are its suggestions. No dock control takes focus from the field, so the
+ * phone's keyboard stays up through a tap on a key or a pill.
  */
 export function Composer({
   paneKey,
@@ -274,24 +296,8 @@ export function Composer({
     agent: { suggest: readTray('agent', 'suggest'), keys: readTray('agent', 'keys') },
     shell: { suggest: readTray('shell', 'suggest'), keys: readTray('shell', 'keys') },
   }));
-  // A blocked prompt opens the suggestions for as long as it asks, without touching the
-  // remembered choice. Closing them then dismisses only this prompt's opening.
   const [dismissed, setDismissed] = useState(false);
   useEffect(() => setDismissed(false), [paneKey, status]);
-  const forced = status === 'blocked' && !dismissed;
-  const showSuggest = trays[kind].suggest || forced;
-  const showKeys = trays[kind].keys;
-  const keep = (tray: Tray, v: boolean) => {
-    store.set(`tautan.tray.${tray}.${kind}`, v ? 'on' : 'off');
-    setTrays((t) => ({ ...t, [kind]: { ...t[kind], [tray]: v } }));
-  };
-  const toggleTray = (tray: Tray) => {
-    haptic();
-    if (tray === 'keys') return keep('keys', !showKeys);
-    if (!showSuggest) return keep('suggest', true);
-    if (trays[kind].suggest) keep('suggest', false);
-    if (status === 'blocked') setDismissed(true);
-  };
 
   // Smart replies are the phone's own switch; Settings writes it and tells the Hub too.
   const [smart] = useState(() => store.get('tautan.smart') === 'on');
@@ -325,16 +331,10 @@ export function Composer({
     }
     writeDraft(paneKey, text); // a send clears the field, and with it the draft
   }, [paneKey, text]);
-  const [heldMessages, setHeldMessages] = useState<HeldMessage[]>([]);
-  const [sendingHeld, setSendingHeld] = useState(false);
-  const heldGeneration = useRef(0);
-  const flushingHeld = useRef(false);
-  useEffect(() => {
-    heldGeneration.current += 1;
-    flushingHeld.current = false;
-    setHeldMessages((list) => { dropPending(list.map((m) => m.id)); return []; });
-    setSendingHeld(false);
-  }, [paneKey]);
+  // Held replies live in web/pending.ts, not here: they outlive this Composer and go out on
+  // their own when the Pane is idle again (autoDeliver, driven by the App).
+  const heldMessages = heldOf(useSyncExternalStore(subscribePending, pendingSnapshot), paneKey);
+  const sendingHeld = isFlushing(paneKey);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     const el = input.current;
@@ -347,6 +347,54 @@ export function Composer({
   // ctrl and alt are one-shot: armed, the next cap or typed character goes out with it.
   const [armed, setArmed] = useState<Modifier | null>(null);
   useEffect(() => setArmed(null), [paneKey, kind]);
+
+  // ---- typing straight into the Pane ----
+  // On the Screen (and a shell), the field can stop composing a line: each key goes out as it
+  // is typed, as in a terminal, and the field stays empty. Remembered per kind. `hideCard` is
+  // true exactly while the Chat view shows this Pane, where a line is what the Agent reads.
+  const [direct, setDirect] = useState(() => ({ agent: store.get('tautan.direct.agent') === 'on', shell: store.get('tautan.direct.shell') === 'on' }));
+  const directOn = direct[kind] && !hideCard;
+  const toggleDirect = () => {
+    haptic();
+    const on = !direct[kind];
+    store.set(`tautan.direct.${kind}`, on ? 'on' : 'off');
+    setDirect((d) => ({ ...d, [kind]: on }));
+    setText('');
+    input.current?.focus();
+  };
+  /** One lane per Composer, so keys reach the Pane in the order they were typed. */
+  const lane = useRef<Promise<unknown>>(Promise.resolve());
+  const typeRaw = (body: InputBody) => { lane.current = lane.current.then(() => post(paneKey, 'input', body)); };
+  const composing = useRef(false);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!directOn) return;
+    setTyping({ paneKey, focused, focus: () => input.current?.focus() });
+    return () => setTyping(null);
+  }, [directOn, paneKey, focused]);
+  // React's onBeforeInput carries no inputType; the native event does.
+  useEffect(() => {
+    const el = input.current;
+    if (!el || !directOn) return;
+    const on = (event: InputEvent) => {
+      if (event.inputType === 'insertCompositionText') return; // compositionend sends it whole
+      if (event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') {
+        event.preventDefault();
+        return typeRaw({ keys: ['enter'] });
+      }
+      if (!event.inputType.startsWith('insert')) return event.preventDefault(); // nothing to delete
+      const data = event.data ?? event.dataTransfer?.getData('text/plain');
+      event.preventDefault();
+      if (!data) return;
+      if (armed && [...data].length === 1) {
+        setArmed(null);
+        return typeRaw({ keys: [modified(armed, data)] });
+      }
+      typeRaw({ text: data });
+    };
+    el.addEventListener('beforeinput', on);
+    return () => el.removeEventListener('beforeinput', on);
+  }, [directOn, armed, paneKey]);
 
   // ---- completion ----
   // `/` at the start and `@` anywhere complete from the Hub; a shell has neither. Esc closes
@@ -386,49 +434,32 @@ export function Composer({
   const picker = useRef<HTMLInputElement>(null);
   const running = useRef(new Map<number, XMLHttpRequest>());
 
+  /** An Agent's reply also goes to the Chat view as a pending turn. Claude and pi queue a reply
+   *  typed while they work, so it goes out at once; any other Agent's is held while it works,
+   *  and goes out by itself once the Pane is idle or done again. */
+  const say = (body: string) => {
+    if (status === 'working' && !QUEUES.has(agent ?? '')) trackPending(paneKey, body, true);
+    else void deliver(trackPending(paneKey, body));
+  };
+
   const send = (override?: string) => {
-    const body = override ?? text;
-    const sent = body.trim();
+    const raw = override ?? text;
+    const sent = raw.trim();
     if (!sent) return;
     // A bare `/model` opens the card first; the same text with a space sends it as typed.
-    if (override === undefined && agent && body === '/model') return setText('/model ');
+    if (override === undefined && agent && raw === '/model') return setText('/model ');
+    // A stray Return at the end (the phone's Return breaks the line) does not go out.
+    const body = raw.replace(/\n+$/, '');
     haptic();
-    // An Agent's reply also goes to the Chat view as a pending turn; a shell has no transcript.
-    if (status === 'working') {
-      setHeldMessages((list) => [...list, { id: trackPending(paneKey, body, true), text: body }]);
-    } else if (agent) {
-      void deliver(trackPending(paneKey, body));
-    } else {
-      void post(paneKey, 'input', { text: body, keys: ['enter'] } satisfies InputBody);
-    }
+    // A shell has no transcript: its line goes straight to the Pane.
+    if (agent) say(body);
+    else void post(paneKey, 'input', { text: body, keys: ['enter'] } satisfies InputBody);
     if (!agent && mayRemember(screenText)) setHistory(remember(sent));
     setText('');
     writeDraft(paneKey, '');
-    // The paths went with the text. A chip still uploading keeps its place.
+    // The paths went with the text. A chip still uploading keeps its place. Focus stays where
+    // it was: Send keeps it in the field, and a ✦ draft sent from a phone keeps the keyboard down.
     setUploads((list) => list.filter((u) => u.status === 'uploading'));
-    input.current?.focus();
-  };
-
-  const flushHeld = async () => {
-    if (flushingHeld.current || status === 'working') return;
-    const generation = heldGeneration.current;
-    const batch = heldMessages;
-    flushingHeld.current = true;
-    setSendingHeld(true);
-    haptic();
-    for (const message of batch) {
-      if (!(await deliver(message.id))) {
-        holdPending(message.id);
-        break;
-      }
-      if (heldGeneration.current === generation) {
-        setHeldMessages((list) => list.filter((item) => item.id !== message.id));
-      }
-    }
-    if (heldGeneration.current === generation) {
-      flushingHeld.current = false;
-      setSendingHeld(false);
-    }
   };
 
   const keys = (names: string[]) => {
@@ -447,12 +478,20 @@ export function Composer({
     void post(paneKey, 'input', capInput(cap, armed) satisfies InputBody);
   };
 
-  /** A text pill is a draft, not an answer: it lands in the composer for review. */
+  /** A ✦ draft is not an answer yet: it lands in the composer for review. On a phone the field
+   *  is not focused, so the keyboard stays down and Send is one tap away. */
   const fill = (reply: string) => {
     haptic();
     setText((t) => `${t}${t && !t.endsWith(' ') ? ' ' : ''}${reply}`);
-    input.current?.focus();
+    if (!COARSE) input.current?.focus();
     setCaret(Infinity); // the reply lands at the end
+  };
+
+  /** A preset is a whole reply: one tap sends it (held while the Agent works), and whatever is
+   *  half-typed in the field stays there. */
+  const preset = (reply: string) => {
+    haptic();
+    say(reply);
   };
 
   /** `/` and `@` type their character at the caret and send nothing: the Agent's own TUI
@@ -631,7 +670,7 @@ export function Composer({
   const canDictate = 'webkitSpeechRecognition' in window;
   const hasText = !!text.trim();
   const Agent = agent ? `${agent[0]!.toUpperCase()}${agent.slice(1)}` : '';
-  const replies = agent ? quickReplies({ agent, explain, suggestions: pane?.suggestions, smart }) : [];
+  const replies = agent ? quickReplies({ agent, explain, suggestions: pane?.suggestions, smart, blocked: status === 'blocked' }) : [];
   // The keys the blocked prompt offers stay first, because answering it is why the Pane is
   // open; then the Hints the Screen itself printed, then the quick replies. Deduped, so a
   // Hint that repeats the prompt's own `esc to cancel` is listed once.
@@ -646,7 +685,7 @@ export function Composer({
   const commands = agent ? [] : history;
   // Control, the App profile's own keys, Navigate, Edit; the Modifiers are drawn here.
   const defaults = useMemo(
-    () => trayGroups({ shell: !agent, claude: !!agent?.toLowerCase().includes('claude'), profileKeys: profile.keys.all }),
+    () => trayGroups({ shell: !agent, claude: !!agent?.toLowerCase().includes('claude'), pi: agent === 'pi' || agent === 'omp', profileKeys: profile.keys.all }),
     [agent, profile],
   );
   // The user's own bar, per kind; null is the defaults.
@@ -668,6 +707,24 @@ export function Composer({
   const waiting = pills.length + commands.length;
   const gutter = desktop ? '' : 'px-4';
 
+  // A blocked prompt opens the suggestions while they hold a draft for it, without touching
+  // the remembered choice; with nothing to offer it leaves the tray as it was. Closing them
+  // then dismisses only this prompt's opening.
+  const forced = status === 'blocked' && !dismissed && pills.some((p) => p.generated);
+  const showSuggest = trays[kind].suggest || forced;
+  const showKeys = trays[kind].keys;
+  const keep = (tray: Tray, v: boolean) => {
+    store.set(`tautan.tray.${tray}.${kind}`, v ? 'on' : 'off');
+    setTrays((t) => ({ ...t, [kind]: { ...t[kind], [tray]: v } }));
+  };
+  const toggleTray = (tray: Tray) => {
+    haptic();
+    if (tray === 'keys') return keep('keys', !showKeys);
+    if (!showSuggest) return keep('suggest', true);
+    if (trays[kind].suggest) keep('suggest', false);
+    if (status === 'blocked') setDismissed(true);
+  };
+
   // ---- parts ----
   const chip = desktop
     ? 'press flex h-[30px] shrink-0 items-center gap-1.5 px-3 text-[13px] whitespace-nowrap'
@@ -681,6 +738,7 @@ export function Composer({
         key={`${p.label}-${i}`}
         type="button"
         aria-label={p.aria}
+        onPointerDown={keepFocus}
         onClick={() => keys(p.keys!)}
         className={`${pill} ${
           i === 0 ? 'bg-accent font-semibold text-bg' : 'border border-border bg-bg font-medium text-fg active:bg-surface'
@@ -689,16 +747,30 @@ export function Composer({
         {p.label}
         {p.glyph && <span className={`font-mono text-[11px] ${i === 0 ? 'opacity-70' : 'text-muted'}`}>{p.glyph}</span>}
       </button>
-    ) : (
+    ) : p.generated ? (
       <button
         key={`${p.label}-${i}`}
         type="button"
         aria-label={p.aria}
+        onPointerDown={keepFocus}
         onClick={() => fill(p.label)}
-        className={`${pill} border border-border bg-bg active:bg-surface ${p.generated ? 'text-fg' : 'text-muted'}`}
+        className={`${pill} border border-border bg-bg text-fg active:bg-surface`}
       >
-        {p.generated && <span aria-hidden className="text-accent">✦</span>}
+        <span aria-hidden className="text-accent">✦</span>
         {p.label}
+      </button>
+    ) : (
+      // A preset sends: it reads like the secondary key pills, with Send's arrow as its glyph.
+      <button
+        key={`${p.label}-${i}`}
+        type="button"
+        aria-label={status === 'working' ? `${p.label}, sends when ${Agent} is idle` : p.aria}
+        onPointerDown={keepFocus}
+        onClick={() => preset(p.label)}
+        className={`${pill} border border-border bg-bg font-medium text-fg active:bg-surface`}
+      >
+        {p.label}
+        <Send size={12} className="text-muted" />
       </button>
     ),
   );
@@ -709,6 +781,7 @@ export function Composer({
       key={c}
       type="button"
       aria-label={`${c}, fills the command line`}
+      onPointerDown={keepFocus}
       onClick={() => {
         haptic();
         setText(c);
@@ -731,6 +804,7 @@ export function Composer({
       aria-label={`Suggestions, ${waiting} waiting`}
       aria-pressed={showSuggest}
       aria-controls="pane-suggestions"
+      onPointerDown={keepFocus}
       onClick={() => toggleTray('suggest')}
       className={toggle(showSuggest)}
     >
@@ -745,6 +819,7 @@ export function Composer({
       aria-label="Keys"
       aria-pressed={showKeys}
       aria-controls="pane-keys"
+      onPointerDown={keepFocus}
       onClick={() => toggleTray('keys')}
       className={toggle(showKeys)}
     >
@@ -752,27 +827,59 @@ export function Composer({
       {desktop && 'Keys'}
     </button>
   );
+  // The rest of the bar while typing directly: what the keys do now, and a tap that brings the
+  // keyboard back. The caret blinks here and on the Screen while the field has focus.
+  const typingStatus = (
+    <button
+      type="button"
+      onClick={() => input.current?.focus()}
+      className={`press flex min-h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left text-caption ${focused ? 'text-fg' : 'text-muted'}`}
+    >
+      <span aria-hidden className={`h-4 w-[2px] shrink-0 rounded-full bg-accent ${focused ? 'caret-blink' : 'opacity-40'}`} />
+      <span className="truncate">{focused ? 'Typing into the Pane' : desktop ? 'Click here or the Screen to type' : 'Tap to type'}</span>
+    </button>
+  );
+  const directToggle = !hideCard && (
+    <button
+      type="button"
+      aria-label="Type directly"
+      aria-pressed={directOn}
+      title={directOn ? 'Each key goes straight to the Pane. Tap to compose a line again.' : 'Send each key as you type it, as in a terminal'}
+      onPointerDown={keepFocus}
+      onClick={toggleDirect}
+      className={toggle(directOn)}
+    >
+      <ScreenLens size={desktop ? 15 : 17} />
+      {desktop && 'Type directly'}
+    </button>
+  );
 
   const groupLabel = 'text-[10px] font-semibold uppercase tracking-[0.06em] text-muted';
-  const capClass = `press flex min-w-0 items-center justify-center rounded-chip border font-mono whitespace-nowrap ${
-    desktop ? 'h-7 min-w-8 px-2' : 'h-9 px-1'
+  // Two lines per cap: the key as its footer prints it, and under it what it does here.
+  const capClass = `press flex min-w-0 flex-col items-center justify-center gap-0.5 rounded-chip border whitespace-nowrap ${
+    desktop ? 'h-11 min-w-14 px-2.5' : 'h-12 px-1'
   }`;
-  // A lone glyph (⌫, ␣, ▲) needs a size step to read like the word caps beside it; a long
-  // label (`⇧⇥ mode`) takes two of the phone's six columns.
+  // A lone glyph (⌫, ␣, ▲) needs a size step to read like the word caps beside it.
   const capSize = (label: string) =>
-    `${[...label].length === 1 ? (desktop ? 'text-[13px]' : 'text-[15px]') : desktop ? 'text-[11px]' : 'text-[12px]'} ${
-      !desktop && label.length > 4 ? 'col-span-2' : ''
-    }`;
-  const capRow = desktop ? 'flex flex-wrap gap-1.5' : 'grid grid-cols-6 gap-1.5';
+    [...label].length === 1 ? (desktop ? 'text-[14px]' : 'text-[16px]') : desktop ? 'text-[12px]' : 'text-[13px]';
+  const capRow = desktop ? 'flex flex-wrap gap-1.5' : 'grid grid-cols-4 gap-1.5';
+  const capFace = (label: string, hint?: string) => (
+    <>
+      <span className={`font-mono leading-none ${capSize(label)}`}>{label}</span>
+      {hint && <span className="max-w-full truncate text-[10px] leading-none text-muted">{hint}</span>}
+    </>
+  );
   const capButton = (cap: Cap) => (
     <button
       key={cap.label}
       type="button"
       aria-label={cap.name}
+      title={cap.name}
+      onPointerDown={keepFocus}
       onClick={() => press(cap)}
-      className={`${capClass} ${capSize(cap.label)} border-border bg-surface active:bg-border ${cap.danger ? 'text-danger' : 'text-fg'}`}
+      className={`${capClass} border-border bg-surface active:bg-border ${cap.danger ? 'text-danger' : 'text-fg'}`}
     >
-      {cap.label}
+      {capFace(cap.label, cap.hint)}
     </button>
   );
 
@@ -815,7 +922,7 @@ export function Composer({
     </div>
   );
 
-  // Groups with a tiny label each: one wrapping row on desktop, a six-column grid per group
+  // Groups with a tiny label each: one wrapping row on desktop, a four-column grid per group
   // on the phone, which scrolls inside the tray past 38% of the screen.
   const keysTray = (
     <div
@@ -825,7 +932,7 @@ export function Composer({
       className={`rise ${
         desktop
           ? 'flex flex-wrap gap-x-4 gap-y-2 rounded-composer border border-border bg-bg p-2'
-          : 'flex max-h-[38vh] flex-col gap-2 overflow-y-auto overscroll-contain px-4'
+          : 'flex max-h-[44vh] flex-col gap-2 overflow-y-auto overscroll-contain px-4'
       }`}
     >
       {editing ? keysEditor : <>
@@ -844,10 +951,11 @@ export function Composer({
               type="button"
               aria-label={`${armed === mod ? 'Disarm' : 'Arm'} ${mod === 'ctrl' ? 'Control' : 'Alt'}`}
               aria-pressed={armed === mod}
+              onPointerDown={keepFocus}
               onClick={() => arm(mod)}
-              className={`${capClass} ${capSize(mod)} ${armed === mod ? 'border-accent/45 bg-accent/12 text-accent' : 'border-border bg-surface text-fg active:bg-border'}`}
+              className={`${capClass} ${armed === mod ? 'border-accent/45 bg-accent/12 text-accent' : 'border-border bg-surface text-fg active:bg-border'}`}
             >
-              {mod}
+              {capFace(mod, armed === mod ? 'armed' : 'next key')}
             </button>
           ))}
         </div>
@@ -879,21 +987,35 @@ export function Composer({
     </div>
   );
 
-  // While the Agent works, ^C stays one tap away beside the toggles, whatever the trays
-  // show — never beside Send, where a slip would interrupt instead of reply.
-  const stopButton = status === 'working' && (
+  // An Agent Pane keeps esc and ^C one tap away beside the toggles in every Status: esc
+  // backs out of a menu or a prompt, ^C stops the run. Never beside Send, where a slip would
+  // interrupt instead of reply. A shell's keys live in its tray, which opens by default.
+  const inlineKey = (label: string, name: string, key: string, danger?: boolean) => (
     <button
       type="button"
-      aria-label="Interrupt, control C"
-      title="Sends ^C"
-      onClick={() => keys(['ctrl+c'])}
-      className={`press flex shrink-0 items-center justify-center border border-danger/40 font-mono text-danger ${RING} hover:border-danger/60 hover:bg-danger/10 ${
-        desktop ? 'h-8 rounded-composer px-2.5 text-[11px]' : 'h-9 rounded-composer px-2.5 text-[12px]'
-      }`}
+      aria-label={name}
+      title={`Sends ${label}`}
+      onPointerDown={keepFocus}
+      onClick={() => keys([key])}
+      className={`press flex shrink-0 items-center justify-center rounded-composer border font-mono ${RING} ${
+        desktop ? 'h-8 px-2.5 text-[11px]' : 'h-9 px-2 text-[12px]'
+      } ${danger ? 'border-danger/40 text-danger hover:border-danger/60 hover:bg-danger/10' : 'border-border bg-bg text-fg hover:bg-surface'}`}
     >
-      ^C
+      {label}
     </button>
   );
+  // pi aborts on esc and only clears its editor on ^C, so there esc is the stop key.
+  const stopKeys = agent && (agent === 'pi' || agent === 'omp' ? (
+    <>
+      {inlineKey('esc', 'Abort, escape', 'esc', true)}
+      {inlineKey('^C', 'Clear editor, control C', 'ctrl+c')}
+    </>
+  ) : (
+    <>
+      {inlineKey('esc', 'Escape', 'esc')}
+      {inlineKey('^C', 'Interrupt, control C', 'ctrl+c', true)}
+    </>
+  ));
 
   const fileInput = (
     <input
@@ -927,6 +1049,7 @@ export function Composer({
   const sendButton = agent || !desktop ? (
     <button
       type="button"
+      onPointerDown={keepFocus}
       onClick={() => send()}
       disabled={!hasText}
       aria-label={agent ? 'Send' : 'Run'}
@@ -938,6 +1061,7 @@ export function Composer({
   ) : (
     <button
       type="button"
+      onPointerDown={keepFocus}
       onClick={() => send()}
       disabled={!hasText}
       className={`${sendLook} h-8 gap-1.5 px-3 text-[12px] ${hasText ? 'font-medium' : ''}`}
@@ -968,13 +1092,25 @@ export function Composer({
       : subagentOpen ? desktop ? 'Reply goes to the main Agent' : 'Reply to main Agent…'
       : desktop ? `Reply to ${Agent} — / for commands, @ for files` : `Reply to ${Agent}…`
     : 'Type a command';
+  const returnBreaks = COARSE && !!agent;
+  const directHint = directOn ? (desktop ? 'Typing goes straight to the Pane' : 'Keys go straight to the Pane') : placeholder;
   const textarea = (
     <textarea
       ref={input}
       rows={desktop && agent ? 2 : 1}
       value={text}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onCompositionStart={() => { composing.current = true; }}
+      onCompositionEnd={(e) => {
+        composing.current = false;
+        if (!directOn) return;
+        if (e.data) typeRaw({ text: e.data });
+        setText('');
+      }}
       onChange={(e) => {
         const el = e.target;
+        if (directOn) return void setText(composing.current ? el.value : '');
         const at = el.selectionStart;
         // Armed, one typed character is a chord, not text: it goes out as ctrl+r and the field stays.
         if (armed && el.value.length === text.length + 1 && at > 0 && el.value.slice(0, at - 1) + el.value.slice(at) === text) {
@@ -987,12 +1123,25 @@ export function Composer({
         setText(el.value);
       }}
       onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-      // Enter sends and Shift+Enter breaks the line; every other key, Ctrl included, is the
-      // field's own.
+      // Desktop: Enter sends and Shift+Enter breaks the line. A touch screen's Return breaks the
+      // line for an Agent and Send sends; a shell's Return still runs the line. Every other
+      // key, Ctrl included, is the field's own. Safari ends an IME composition with an Enter
+      // whose `isComposing` is already false, so keyCode 229 counts as composing too.
       onKeyDown={(e) => {
-        if (open && !e.nativeEvent.isComposing) {
+        const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+        if (directOn) {
+          const sent = composing ? null : directKey(e);
+          if (sent) {
+            e.preventDefault();
+            if (armed) setArmed(null);
+            typeRaw(sent);
+          }
+          return;
+        }
+        if (open && !composing) {
           const item = items[active]!;
-          const typed = token?.kind === 'slash' && item.value === text.trim(); // already typed in full: Enter sends it
+          // Already typed in full: Enter sends it, where Enter sends at all.
+          const typed = !returnBreaks && token?.kind === 'slash' && item.value === text.trim();
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
             setActive((a) => (a + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length);
@@ -1009,7 +1158,7 @@ export function Composer({
             return;
           }
         }
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+        if (e.key === 'Enter' && !e.shiftKey && !composing && !returnBreaks) {
           e.preventDefault();
           send();
         }
@@ -1019,12 +1168,12 @@ export function Composer({
       aria-controls={open ? pickerId : undefined}
       aria-activedescendant={open ? `${pickerId}-${active}` : undefined}
       aria-autocomplete={open ? 'list' : undefined}
-      enterKeyHint={agent ? 'send' : 'go'}
-      autoCapitalize={agent ? undefined : 'off'}
-      autoCorrect={agent ? undefined : 'off'}
-      spellCheck={agent ? undefined : false}
-      aria-label={agent ? `Reply to ${agent}` : 'Command'}
-      placeholder={placeholder}
+      enterKeyHint={returnBreaks ? 'enter' : agent ? 'send' : 'go'}
+      autoCapitalize={agent && !directOn ? undefined : 'off'}
+      autoCorrect={agent && !directOn ? undefined : 'off'}
+      spellCheck={agent && !directOn ? undefined : false}
+      aria-label={directOn ? 'Type directly into the Pane' : agent ? `Reply to ${agent}` : 'Command'}
+      placeholder={directHint}
       className={`min-w-0 flex-1 resize-none self-center bg-transparent placeholder:truncate placeholder:text-muted focus:outline-none ${
         desktop && agent
           ? 'min-h-11 py-0 text-[15px] leading-[22px]'
@@ -1048,24 +1197,29 @@ export function Composer({
       {open && token && desktop && (
         <Picker id={pickerId} kind={token.kind} items={items} active={active} desktop onActive={setActive} onPick={pick} />
       )}
-      <div className={`flex ${desktop ? 'gap-2.5 px-3 pt-3 pb-1.5' : 'gap-2 px-3 pt-1'}`}>
+      {/* Typing directly, the field only catches keys: out of sight, still focusable, so the
+          phone's keyboard still opens for it. The bar below is the whole Composer. */}
+      <div className={directOn ? 'pointer-events-none absolute bottom-0 left-0 h-px w-px overflow-hidden opacity-0' : `flex ${desktop ? 'gap-2.5 px-3 pt-3 pb-1.5' : 'gap-2 px-3 pt-1'}`}>
         {glyph}
         {textarea}
       </div>
-      <div role="toolbar" aria-label="Composer" className={`flex items-center gap-1 ${desktop ? 'flex-wrap px-2 pt-1 pb-2' : 'px-1 pb-1'}`}>
+      <div role="toolbar" aria-label="Composer" className={`flex items-center gap-1 ${desktop ? `flex-wrap px-2 pb-2 ${directOn ? 'pt-2' : 'pt-1'}` : `px-1 pb-1 ${directOn ? 'pt-1' : ''}`}`}>
         {suggestToggle}
         {keysToggle}
-        {stopButton}
-        <Divider />
+        {directToggle}
+        {directOn ? typingStatus : <>
+        {stopKeys}
+        {desktop && <Divider />}
         {attachButton}
-        {agent && desktop && (
+        {agent && (
           <>
             <button
               type="button"
               aria-label="Type /"
               title="Types / — the Agent shows its commands"
+              onPointerDown={keepFocus}
               onClick={() => typeAtCaret('/')}
-              className={`press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[15px] text-muted ${HOVER}`}
+              className={`press flex shrink-0 items-center justify-center rounded-chip font-mono text-muted ${HOVER} ${desktop ? 'size-8 text-[15px]' : 'h-9 w-8 text-[16px]'}`}
             >
               /
             </button>
@@ -1073,14 +1227,15 @@ export function Composer({
               type="button"
               aria-label="Type @"
               title="Types @ — the Agent offers files"
+              onPointerDown={keepFocus}
               onClick={() => typeAtCaret('@')}
-              className={`press flex size-8 shrink-0 items-center justify-center rounded-chip font-mono text-[14px] text-muted ${HOVER}`}
+              className={`press flex shrink-0 items-center justify-center rounded-chip font-mono text-muted ${HOVER} ${desktop ? 'size-8 text-[14px]' : 'h-9 w-8 text-[15px]'}`}
             >
               @
             </button>
           </>
         )}
-        {micButton && (
+        {micButton && desktop && (
           <>
             <Divider />
             {micButton}
@@ -1097,6 +1252,7 @@ export function Composer({
                 <button
                   type="button"
                   aria-label={`Mode: ${toolbar.mode}. Send shift+tab to cycle`}
+                  onPointerDown={keepFocus}
                   onClick={() => keys(CYCLE_MODE_KEYS)}
                   className={`press flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-2 text-[12px] text-muted ${HOVER}`}
                 >
@@ -1114,7 +1270,10 @@ export function Composer({
           </>
         )}
         <span className="flex-1" />
-        {sendButton}
+        {/* The phone has one slot on the right: the mic while the field is empty (or while it
+            listens), Send as soon as there is text. No dictation engine, Send keeps it. */}
+        {micButton && !desktop && (listening || !hasText) ? micButton : sendButton}
+        </>}
       </div>
     </div>
   );
@@ -1124,7 +1283,7 @@ export function Composer({
       className={`flex shrink-0 flex-col ${
         desktop
           ? 'border-t border-border bg-elevated px-4 pt-3 pb-2'
-          : 'rounded-t-drawer bg-elevated pt-3 pb-[max(env(safe-area-inset-bottom),8px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]'
+          : 'rounded-t-drawer bg-elevated pt-3 pb-[max(var(--safe-b,env(safe-area-inset-bottom)),8px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]'
       }`}
     >
       <div className={`flex flex-col gap-2.5 ${desktop ? 'mx-auto w-full max-w-5xl' : ''}`}>
@@ -1156,14 +1315,18 @@ export function Composer({
         {heldMessages.length > 0 && (
           <section aria-label="Held messages" className={`overflow-hidden rounded-composer border border-border bg-bg ${desktop ? '' : 'mx-4'}`}>
             <div className={`flex min-h-9 items-center gap-3 px-3 ${heldFolded ? '' : 'border-b border-border'}`}>
-              <span aria-live="polite" className="flex-1 text-caption font-medium text-muted">
-                {heldMessages.length} held
+              <span aria-live="polite" className="min-w-0 flex-1 truncate text-caption text-muted">
+                <span className="font-medium text-fg">{heldMessages.length} held</span> · sends when {Agent || 'the Agent'} is idle
               </span>
               {status !== 'working' && (
                 <button
                   type="button"
                   disabled={sendingHeld}
-                  onClick={() => void flushHeld()}
+                  onPointerDown={keepFocus}
+                  onClick={() => {
+                    haptic();
+                    void flushHeld(paneKey);
+                  }}
                   className="press min-h-9 shrink-0 text-caption font-semibold text-accent disabled:text-muted"
                 >
                   {sendingHeld ? 'Sending…' : 'Send now'}
@@ -1181,10 +1344,8 @@ export function Composer({
                       type="button"
                       disabled={sendingHeld}
                       aria-label={`Remove held message: ${message.text}`}
-                      onClick={() => {
-                        dropPending([message.id]);
-                        setHeldMessages((list) => list.filter((item) => item.id !== message.id));
-                      }}
+                      onPointerDown={keepFocus}
+                      onClick={() => dropPending([message.id])}
                       className="press flex size-9 shrink-0 items-center justify-center text-muted disabled:opacity-40"
                     >
                       ×

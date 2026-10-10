@@ -140,15 +140,18 @@ export function fillOf(spans: { text: string; bg?: number | string }[], cols = 8
 /**
  * A full-screen program's Screen (htop, k9s, a dashboard): most of its lines are columns
  * or drawn boxes. A shell's output is mostly lines of text, so Wrap can reflow it.
+ * `was` is the last answer for the same Pane: the share must pass 0.5 to turn full-screen
+ * and fall under 0.3 to turn back, so a table scrolling through the Screen does not flip the
+ * view on every update. With no last answer the line is 0.4.
  */
 // ponytail: a share of lines, not alt-screen detection — herdr reports no alternate-screen
 // signal (neither its pane records nor pane.read carry one, 0.9.3), so this heuristic stays
 // its fallback; tmux's real flag rides Screen.alt and replaces it where the Mux reports one.
-export function tuiScreen(text: string, cols = 80): boolean {
+export function tuiScreen(text: string, cols = 80, was?: boolean): boolean {
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
   if (!lines.length) return false;
   const drawn = lines.filter((line) => kindOf(line, cols) === 'structure' || /\S\s*[│┃║]\s*\S/.test(line)).length;
-  return drawn / lines.length >= 0.4;
+  return drawn / lines.length >= (was === undefined ? 0.4 : was ? 0.3 : 0.5);
 }
 
 /**
@@ -156,7 +159,36 @@ export function tuiScreen(text: string, cols = 80): boolean {
  * the App profile's mouse flag first (a program tautan forwards the mouse to is full-screen),
  * then the Mux's own alternate-screen flag (Screen.alt, tmux), then tuiScreen's read of the
  * text — herdr reports no flag, so an unknown TUI there keeps its grid by its drawn share.
+ * An Agent's own screen is never inferred full-screen: its prose carries a Markdown table
+ * now and then, and the drawn share of that table is not a TUI.
  */
-export function fullScreen(mouse: boolean, alt: boolean | undefined, text: string, cols = 80): boolean {
-  return mouse || (alt ?? tuiScreen(text, cols));
+export function fullScreen(mouse: boolean, alt: boolean | undefined, text: string, cols = 80, o: { agent?: boolean; was?: boolean } = {}): boolean {
+  if (mouse) return true;
+  if (alt !== undefined) return alt;
+  return !o.agent && tuiScreen(text, cols, o.was);
+}
+
+/**
+ * Where a Pane's input most likely sits, for the caret the Screen draws while the Composer
+ * types straight into it: herdr reports no cursor (probed on 0.9.0, neither `pane.read` nor
+ * `pane.get` carries one). Claude's prompt row (`❯`), else the row inside pi's editor (between
+ * its last two rules), else the last row with text; the column is just past that row's text.
+ * ponytail: a heuristic, and a JS-string column (a wide glyph counts as one); read the real
+ * cursor when herdr reports it (tmux has `cursor_x`/`cursor_y`).
+ */
+export function caretAt(rows: string[]): { row: number; col: number } | null {
+  const end = (row: string) => row.replace(/[\s\u00a0]+$/, '').length;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const at = rows[i]!.search(/\S/);
+    if (rows[i]![at] === '❯') return { row: i, col: Math.max(end(rows[i]!), at + 2) };
+  }
+  const rules = rows.flatMap((row, i) => (/^\s*─{20,}\s*$/.test(row) ? [i] : []));
+  const [top, bottom] = rules.slice(-2);
+  if (top !== undefined && bottom !== undefined && bottom - top >= 2) {
+    let row = bottom - 1;
+    while (row > top + 1 && !rows[row]!.trim()) row--;
+    return { row, col: end(rows[row]!) };
+  }
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.trim()) return { row: i, col: end(rows[i]!) };
+  return null;
 }

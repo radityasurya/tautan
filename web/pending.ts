@@ -1,7 +1,9 @@
-// Replies sent from the Composer that the transcript has not caught up with yet. The Chat
-// view shows them as pending user turns and drops each one when its real turn arrives.
-// ponytail: a module store with one listener set, no state library; it lives as long as the tab.
-import type { InputBody } from '../shared/types.ts';
+// Replies sent from the Composer that the transcript has not caught up with yet, and replies
+// held while the Agent works. The Chat view shows them as pending user turns and drops each
+// one when its real turn arrives; held ones go out on their own when the Pane is idle again.
+// ponytail: a module store with one listener set, no state library; it lives as long as the
+// tab, so a reload drops a held reply.
+import type { InputBody, Status } from '../shared/types.ts';
 import type { Turn } from '../shared/chat.ts';
 
 export type PendingState = 'held' | 'sending' | 'sent' | 'late' | 'failed';
@@ -44,16 +46,17 @@ export function dropPending(ids: number[]) {
   notify();
 }
 
-/** Start tracking a reply. A held one waits for `deliver`. */
+/** Start tracking a reply. A held one waits for its Pane to come back to a prompt. */
 export function trackPending(paneKey: string, text: string, held = false): number {
   const id = (nextId += 1);
   pending = [...pending, { id, paneKey, text, state: held ? 'held' : 'sending', at: Date.now() }];
   notify();
+  if (held) autoDeliver();
   return id;
 }
 
-/** Back to held, after a held flush failed: the Composer still lists it with Send now. */
-export const holdPending = (id: number) => set(id, { state: 'held' });
+/** One Pane's held replies, oldest first. */
+export const heldOf = (list: Pending[], paneKey: string) => list.filter((p) => p.paneKey === paneKey && p.state === 'held');
 
 /**
  * Type the reply into the Pane and press Enter. Resolves false when the Hub refused it or
@@ -69,11 +72,63 @@ export async function deliver(id: number): Promise<boolean> {
     body: JSON.stringify({ text: entry.text, keys: ['enter'] } satisfies InputBody),
   }).then((r) => r.ok, () => false);
   if (!pending.some((p) => p.id === id)) return ok; // the transcript caught up first
-  // A slash command runs in the Agent and never becomes a transcript turn.
-  if (ok && entry.text.trim().startsWith('/')) { dropPending([id]); return ok; }
+  // A slash command (`/name args`) and a shell line (`!cmd`) are user turns too, so they
+  // settle against the transcript like any other text.
   set(id, ok ? { state: 'sent', at: Date.now() } : { state: 'failed' });
   if (ok) setTimeout(() => { if (pending.find((p) => p.id === id)?.state === 'sent') set(id, { state: 'late' }); }, LATE_MS);
   return ok;
+}
+
+// ---- held replies ----
+
+/** Panes whose held replies are going out now: one flush per Pane at a time. */
+const flushing = new Set<string>();
+export const isFlushing = (paneKey: string) => flushing.has(paneKey);
+
+/**
+ * Type a Pane's held replies, oldest first. A failure puts that reply back to held and stops,
+ * so nothing goes out of order; resolves false then.
+ */
+export async function flushHeld(paneKey: string): Promise<boolean> {
+  if (flushing.has(paneKey)) return true;
+  flushing.add(paneKey);
+  notify();
+  try {
+    for (const { id } of heldOf(pending, paneKey)) {
+      if (!pending.some((p) => p.id === id && p.state === 'held')) continue; // removed meanwhile
+      if (!(await deliver(id))) {
+        set(id, { state: 'held' });
+        return false;
+      }
+    }
+    return true;
+  } finally {
+    flushing.delete(paneKey);
+    notify();
+  }
+}
+
+/** Each Pane's Status and revision, as the last `state` said. */
+let panes = new Map<string, { status: Status; revision: number }>();
+/** The revision a Pane's flush failed at: no retry until the Pane moves again. */
+const stuck = new Map<string, number>();
+
+/**
+ * Held replies go out on their own, in order, once their Pane is back at a prompt (`idle` or
+ * `done`). Never while `blocked`: text plus Enter could answer a permission box. The App
+ * calls it with every `state`; a newly held reply calls it too, so a Status that turned
+ * before the hold is not missed.
+ */
+export function autoDeliver(list?: { key: string; status: Status; revision: number }[]) {
+  if (list) panes = new Map(list.map((p) => [p.key, p]));
+  for (const key of new Set(pending.filter((p) => p.state === 'held').map((p) => p.paneKey))) {
+    const pane = panes.get(key);
+    if (!pane || (pane.status !== 'idle' && pane.status !== 'done') || stuck.get(key) === pane.revision) continue;
+    void flushHeld(key).then((ok) => {
+      if (ok) stuck.delete(key);
+      else stuck.set(key, pane.revision);
+    });
+  }
 }
 
 // Paragraphs with their whitespace collapsed, split by NUL so a match stays paragraph-bound.
