@@ -1,10 +1,13 @@
 import { expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Explain, Mux, Pane, Screen, ScreenEvent, ScreenMode, Tree, Workspace } from '../shared/types.ts';
 import { startHttp } from '../server/http.ts';
 import { hostId } from '../server/hosts.ts';
-import { Hub } from '../server/mux.ts';
+import { Hub, previewLine } from '../server/mux.ts';
 import { offeredKeys } from '../shared/blocked.ts';
 import { isUnseen } from '../shared/seen.ts';
+import { parseAnsi } from '../shared/ansi.ts';
 
 test('Hub adds tabs, status timestamps, and cached agent last lines', async () => {
   let reads = 0;
@@ -79,6 +82,66 @@ test('a new device seeds done revisions while blocked panes remain actionable', 
   expect(isUnseen(done, seeded)).toBe(false);
   expect(isUnseen(blocked, seeded)).toBe(true);
   expect(isUnseen({ ...done, statusChangedAt: 2_000_000_000_000 }, { done: 1_900_000_000_000 })).toBe(true);
+});
+
+test('Seen survives a herdr restart and travels between devices', () => {
+  const base = { muxKey: 'local/fake', workspaceId: 'w1', tabId: 't1', title: 'Pane' };
+  const restarted = { ...base, key: 'p', id: 'p', status: 'done' as const, revision: 3, seenRevision: 0 };
+  // A restart reset the live revision below the device's stored one: unseen, so Needs you shows.
+  expect(isUnseen(restarted, { p: 11_868 })).toBe(true);
+  // Another device marked it Seen on the Hub: seen here too, even with the stale local value.
+  expect(isUnseen({ ...restarted, seenRevision: 3 }, { p: 11_868 })).toBe(false);
+  // The device's own match still reads seen.
+  expect(isUnseen(restarted, { p: 3 })).toBe(false);
+  // Blocked stays actionable whatever the records say, and idle is never unseen.
+  expect(isUnseen({ ...restarted, status: 'blocked' }, { p: 3 })).toBe(true);
+  expect(isUnseen({ ...restarted, status: 'idle' }, {})).toBe(false);
+});
+
+test('previewLine drops prompt boxes, footers and spinners from real Screens', () => {
+  const lines = (name: string) => parseAnsi(readFileSync(join(import.meta.dir, 'fixtures', name), 'utf8'))
+    .map(spans => spans.map(span => span.text).join('').trim());
+  // The Claude fixture ends in: spinner, rules around typed input, [PONYTAIL], mode footer,
+  // and the background-agent panel; the pi fixture in: rules, cwd bar, ponytail status line.
+  expect(previewLine(lines('claude-screen.txt'))).toBe("● The three fix lanes are still running. I'll review each one's changes as it finishes.");
+  expect(previewLine(lines('pi-screen.txt'))).toBe('are recorded in the step file as later follow-ups.');
+  expect(previewLine(['plain output'])).toBe('plain output');
+  expect(previewLine(['work', '', '✻ Thinking…', '❯', '⏵⏵ auto mode on'])).toBe('work');
+  expect(previewLine(['⏵⏵ auto mode on', '○ idle'])).toBeUndefined();
+  // Claude's right-aligned notice above the box is chrome; an indented code line is not.
+  expect(previewLine(['● Done.', `${' '.repeat(80)}new task? /clear to save 193.6k tokens`, '─'.repeat(40), '❯ ', '─'.repeat(40)])).toBe('● Done.');
+  expect(previewLine(['    const x = 1;', '─'.repeat(40), '❯ '])).toBe('const x = 1;');
+});
+
+test('a working Pane re-reads its Screen on the poll even when the revision stands still', async () => {
+  let reads = 0;
+  const tree: Tree = {
+    workspaces: [{ id: 'w1', label: 'Work' }],
+    tabs: [{ id: 't1', workspaceId: 'w1', label: 'T' }],
+    panes: [{ id: 'p', tabId: 't1', workspaceId: 'w1', title: 'A', agent: 'claude', status: 'working', revision: 5 }],
+  };
+  const mux: Mux = {
+    kind: 'herdr', id: 'fake', socketPath: '/run/tautan/reread.sock', tree: async () => tree,
+    read: async (_paneId: string, mode: ScreenMode): Promise<Screen> => { reads++; return { text: `out ${reads}`, ansi: false, revision: 5, mode }; },
+    sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
+    newTab: async (): Promise<Pane> => tree.panes[0]!, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
+    rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+  };
+  const hub = new Hub({ refreshMs: 0, suggest: null }); hub.add('local', mux);
+  try {
+    expect((await hub.state()).panes[0]!.lastLine).toBe('out 1');
+    tree.panes[0]!.status = 'done';
+    await hub.refreshHost('local');
+    expect(reads).toBe(1); // a settled Pane keeps the cached Screen until the revision moves
+    tree.panes[0]!.status = 'working';
+    await Bun.sleep(5);
+    await hub.refreshHost('local');
+    expect(reads).toBe(2); // the poll re-reads a working Pane (refreshMs 0 → every refresh)
+    expect((await hub.state()).panes[0]!.lastLine).toBe('out 2');
+    await Bun.sleep(5);
+    await hub.refreshHost('local');
+    expect(reads).toBe(3);
+  } finally { hub.close(); }
 });
 
 test('offeredKeys leads with Yes/No on an approval box and leaves a plain menu alone', () => {
@@ -204,3 +267,14 @@ test('a long-blank Pane backs off to the quiet ceiling, and a change re-reads it
     await until(() => f.reads.a.length, n => n > before, 500);
   } finally { off(); f.hub.close(); }
 }, 10_000);
+
+test('asksOnScreen reads a question or permission footer after the last rule, never a working Screen', async () => {
+  const { asksOnScreen } = await import('../server/mux.ts');
+  const question = readFileSync(join(import.meta.dir, 'fixtures/claude-question.txt'), 'utf8').split('\n');
+  expect(asksOnScreen(question)).toBe(true);
+  const rule = '─'.repeat(60);
+  expect(asksOnScreen(['Bash command', rule, ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', ' esc to cancel · enter to confirm'])).toBe(true);
+  expect(asksOnScreen(readFileSync(join(import.meta.dir, 'fixtures/claude-screen.txt'), 'utf8').split('\n'))).toBe(false);
+  // the footer quoted above a later rule (a transcript that mentions it) is not a live box
+  expect(asksOnScreen(['esc to cancel · enter to confirm', rule, '❯ ', rule, '  ⏵⏵ auto mode on'])).toBe(false);
+});

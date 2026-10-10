@@ -51,6 +51,14 @@ behind the two irreversible choices live in `docs/adr/`.
   `bash_permission_prompt` has 850. Every real box ends in a rule plus
   `esc to cancel · enter to confirm`, so the first rule always wins. Never key behaviour off
   `ruleId.includes('permission')`; `shared/blocked.ts` reads the box instead.
+- herdr can take well over a minute to turn a working Claude blocked (100 s on an
+  AskUserQuestion form, 2026-10-10), though its `live_blocked_form` rule matches at once.
+  The Hub reads the same footer on each poll of a working Agent (`asksOnScreen`) and reports
+  blocked itself. Claude writes that question's assistant message to the transcript only
+  after it is answered, so the Chat view can show the question through Explain alone.
+- Claude's question form draws a second full-width rule inside its menu (between
+  `Type something.` and `Chat about this`); `readBox` in `shared/blocked.ts` skips a rule a
+  numbered row follows, or the card reads only the last option.
 - A throwaway herdr has no client attached, and then it does almost nothing on its own:
   `pane.updated` fires only on a structural change (title, cwd, agent status), never on raw
   output — `printf '\033]0;x\007'` (OSC title) triggers it, `echo` does not; on subscribe

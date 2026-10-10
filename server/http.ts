@@ -14,6 +14,9 @@ import { EmptyBody, sanitizeName, TooLarge, writeAttachment } from './attach.ts'
 import { CompleteError, paneCompletion } from './complete.ts';
 import { fileList, fileRaw, FilesError, inside, quoteShell } from './files.ts';
 
+/** The Agents whose transcripts the ChatLens parses. */
+const CHAT_AGENTS = new Set(['claude', 'pi', 'omp', 'codex']);
+
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 /** Chat bodies over 8 KB go out gzipped when the client accepts it; small ones stay plain. */
 const zipped = (req: Request, body: string, headers: Record<string, string>) => {
@@ -362,7 +365,12 @@ export function startHttp(hub: Hub, opts: {
           let key: string;
           try { key = decodeURIComponent(chatMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
-          if (hub.resolvePane(key)?.entry.mux.kind !== 'herdr') return json({ error: 'unsupported' }, 501);
+          const resolved = hub.resolvePane(key);
+          if (resolved?.entry.mux.kind !== 'herdr') return json({ error: 'unsupported' }, 501);
+          // An Agent whose transcript tautan cannot read (gemini, …) has no Chat: 501 sends the
+          // view straight to Screen instead of the 404 wait a fresh Claude gets.
+          const kind = resolved.entry.tree?.panes.find(pane => pane.id === resolved.paneId)?.agent;
+          if (kind && !CHAT_AGENTS.has(kind)) return json({ error: 'unsupported' }, 501);
           const agent = url.searchParams.get('agent') ?? undefined;
           if (agent !== undefined && !agentId.test(agent)) return json({ error: 'no-agent' }, 404);
           if (agent !== undefined) {

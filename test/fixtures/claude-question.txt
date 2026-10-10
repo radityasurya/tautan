@@ -1,0 +1,18 @@
+● I've passed the two layout fixes to the landing page lead. I'm now flagging two lines in your copy that conflict with the agreed scope.
+
+› Message from @orchestrator (ctrl+o to expand)
+› Message from @orchestrator (ctrl+o to expand)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Ranking  ☐ Pricing  ✔ Submit  →
+
+│ The landing card says "advanced tools and smart ranking". Ranking is out of scope for this release, and the product only has search filters. Which wording?
+
+❯ 1. Search filters
+     "Find and compare items with advanced search filters". Matches what the product does.
+  2. Keep smart ranking
+     Keep the copy as given. The card then promises a feature that is out of scope for this release.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

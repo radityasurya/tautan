@@ -204,7 +204,7 @@ requests.
 | `TAUTAN_MAX_ATTACHMENT_MB` | `200` | the cap on one upload |
 | `TAUTAN_SUGGEST` | `off` | Smart replies provider: `off`, `zai` or `anthropic` |
 | `TAUTAN_SUGGEST_KEY` | — | the provider key. Without it, `zai` reads `ZAI_API_KEY` then `~/.config/zai/api-key`, and `anthropic` reads `ANTHROPIC_API_KEY` |
-| `TAUTAN_SUGGEST_MODEL` | `glm-5.2` for `zai`, `claude-haiku-4-5-20251001` for `anthropic` | the model that drafts the replies |
+| `TAUTAN_SUGGEST_MODEL` | `glm-5.3` for `zai`, `claude-haiku-5-5` for `anthropic` | the model that drafts the replies |
 | `HERDR_SOCKET_PATH` | — | one herdr socket to use instead of discovery. Set it, and the Hub skips `herdr session list` and `~/.config/herdr/herdr.sock` |
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#environment) lists `TAUTAN_SUGGEST_BASE` too, for

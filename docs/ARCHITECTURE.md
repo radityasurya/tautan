@@ -310,7 +310,7 @@ is replaced, not reused.
 | `TAUTAN_MAX_FILE_MB` | `5` | the cap on one file the viewer reads through `/api/panes/:key/file` |
 | `TAUTAN_SUGGEST` | `off` | Smart replies provider: `off`, `zai` or `anthropic` |
 | `TAUTAN_SUGGEST_KEY` | — | the provider key. Without it, `zai` reads `ZAI_API_KEY` then `~/.config/zai/api-key`, and `anthropic` reads `ANTHROPIC_API_KEY` |
-| `TAUTAN_SUGGEST_MODEL` | `glm-5.2` for `zai`, `claude-haiku-4-5-20251001` for `anthropic` | the model that drafts the replies |
+| `TAUTAN_SUGGEST_MODEL` | `glm-5.3` for `zai`, `claude-haiku-5-5` for `anthropic` | the model that drafts the replies |
 | `TAUTAN_SUGGEST_BASE` | `https://api.z.ai/api/anthropic`, `https://api.anthropic.com` | the API base, for a proxy or a self-hosted gateway |
 
 ## Smart replies

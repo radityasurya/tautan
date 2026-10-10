@@ -1,0 +1,27 @@
+   Summary of the settings rework: each form field now saves on blur, failures show one toast, and the page keeps       
+   its scroll place after a save. The work splits into five steps:                                                      
+ - S1 — a field registry with labels, hints and per-field validation, one migration that adds the settings table.       
+ - S2 — save on blur for text fields, on change for switches; a failed save rolls the field back.                       
+ - S3 — a toast queue that shows one message at a time and never covers the primary button.                             
+ - S4 — keyboard order fixed on the form, so Tab moves top to bottom and Enter saves the focused field.                 
+ - S5 — an export button that writes the current settings as JSON.                                                      
+ Validation — make check green (41 self-checks incl. four new settings ones), pnpm build green, 64/64 pages             
+    render with no build-time reads. Migration tested on a scratch database from zero. Browser checks at 390 px and     
+ at desktop width: save, roll back, toast order, Tab order, and the export file opening in the browser.                 
+   Deviations you must know                                                                                             
+ 1. The toast queue drops a message older than ten seconds; the old behaviour stacked them without a limit.             
+ 2. The export button is disabled while a save is in flight, so the file never holds a half-saved value.                
+ 3. Two fields kept their old labels, because their help pages still use them; rename them together later.              
+   Remaining for the main session: review the migration, push, and let the deploy run it after the build — then         
+                                                                                                                        
+ tick the last definition-of-done box and archive the step. The import button and the CSV header row                    
+ are recorded in the step file as later follow-ups.                                                                     
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/projects/demo                                                                                       zai/glm-5.3 · high
+○ 🐴 ponytail: ⚡ FULL                                            24%/1.0m · $0.00 · 10 tok/s  ·  main · 2 files changed

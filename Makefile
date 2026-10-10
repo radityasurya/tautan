@@ -13,6 +13,10 @@ UI_PORT  ?= 5173
 HUB_PORT ?= 7700
 TS_PORT  ?= 5173
 TS_HOST  ?= $(shell tailscale status --json 2>/dev/null | jq -r '.Self.DNSName' | sed 's/\.$$//')
+# Smart replies provider: zai (key from ZAI_API_KEY or ~/.config/zai/api-key), anthropic
+# (ANTHROPIC_API_KEY), or off. Every other TAUTAN_* variable in the README passes through
+# from your shell as it is, e.g. `TAUTAN_SUGGEST_MODEL=glm-5.3 make dev`.
+TAUTAN_SUGGEST ?= zai
 
 .PHONY: help install dev stop kill-ports test check build
 
@@ -40,9 +44,10 @@ dev: kill-ports ## Hub + web (Vite HMR) + tailscale serve. Ctrl-C stops both.
 	@echo "  local:    http://127.0.0.1:$(UI_PORT)/"
 	@echo "  tailnet:  https://$(TS_HOST):$(TS_PORT)/   (open this on the phone)"
 	@echo "  hub api:  http://127.0.0.1:$(HUB_PORT)/api/state"
+	@echo "  replies:  $(TAUTAN_SUGGEST)   (turn on Settings → Smart replies; make dev TAUTAN_SUGGEST=off to stop)"
 	@echo ""
 	@trap 'trap - INT TERM EXIT; echo; echo "  stopping dev stack…"; kill 0 2>/dev/null' INT TERM EXIT; \
-		TAUTAN_PORT=$(HUB_PORT) bun --watch server/main.ts & \
+		TAUTAN_PORT=$(HUB_PORT) TAUTAN_SUGGEST=$(TAUTAN_SUGGEST) bun --watch server/main.ts & \
 		$(PNPM) exec vite --port $(UI_PORT) & \
 		wait
 

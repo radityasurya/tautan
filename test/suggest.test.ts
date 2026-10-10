@@ -47,14 +47,14 @@ describe.skipIf(!canListen)('suggest adapter HTTP', () => {
     expect(captured!.headers.get('x-api-key')).toBe('test-key');
     expect(captured!.headers.get('anthropic-version')).toBe('2023-06-01');
     expect(captured!.headers.get('content-type')).toBe('application/json');
-    expect(body).toEqual({ model: 'test-model', max_tokens: 120, system: SUGGEST_SYSTEM, messages: [{ role: 'user', content: 'visible output' }] });
+    expect(body).toEqual({ model: 'test-model', max_tokens: 300, system: SUGGEST_SYSTEM, messages: [{ role: 'user', content: 'visible output' }] });
   });
 
   test('times out without throwing and warns only once', async () => {
     const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: async () => { await new Promise(() => {}); return new Response(); } }); servers.push(server);
     const adapter = configureSuggest({ TAUTAN_SUGGEST: 'anthropic', TAUTAN_SUGGEST_KEY: 'test-key', TAUTAN_SUGGEST_BASE: `http://127.0.0.1:${server.port}` }, { timeoutMs: 20 })!;
     const original = console.warn; const warnings: unknown[][] = []; console.warn = (...args) => { warnings.push(args); };
-    try { expect(await adapter.suggest('one')).toEqual([]); expect(await adapter.suggest('two')).toEqual([]); } finally { console.warn = original; }
+    try { expect(await adapter.suggest('one')).toBeNull(); expect(await adapter.suggest('two')).toBeNull(); } finally { console.warn = original; }
     expect(warnings).toHaveLength(1);
     expect(String(warnings[0]![0])).toMatch(/^tautan: suggest failed \(anthropic\): /);
   });
@@ -73,6 +73,25 @@ describe('Hub suggestion trigger', () => {
       await hub.refreshHost('local'); await Bun.sleep(0);
       expect(requests).toBe(1);
       expect((await hub.state()).panes[0]!.suggestions).toEqual(['Continue']);
+    } finally { hub.close(); if (old === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = old; }
+  });
+
+  test('a failed call caches nothing, and the next refresh asks again', async () => {
+    const pane: Pane = { id: 'p', tabId: 't', workspaceId: 'w', title: 'Agent', agent: 'codex', status: 'working', revision: 7 };
+    let requests = 0, fail = true;
+    const suggest: SuggestAdapter = { provider: 'zai', model: 'fake', suggest: async () => { requests++; return fail ? null : ['Back']; } };
+    const old = process.env.XDG_STATE_HOME; process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), 'tautan-suggest-retry-'));
+    const hub = new Hub({ refreshMs: 0, suggest }); hub.add('local', fakeMux(pane));
+    try {
+      await hub.state(); hub.setSuggestEnabled(true); pane.status = 'blocked';
+      await hub.refreshHost('local'); await Bun.sleep(0);
+      expect(requests).toBe(1);
+      expect((await hub.state()).panes[0]!.suggestions).toBeUndefined(); // the failure cached nothing
+      await Bun.sleep(1_050); // the in-flight key clears on a timer, not on the failure's own recompute
+      fail = false;
+      await hub.refreshHost('local'); await Bun.sleep(0);
+      expect(requests).toBe(2);
+      expect((await hub.state()).panes[0]!.suggestions).toEqual(['Back']);
     } finally { hub.close(); if (old === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = old; }
   });
 

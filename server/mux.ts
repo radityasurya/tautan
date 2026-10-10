@@ -17,6 +17,49 @@ export function mouseBytes(body: MouseBody): string {
   return report(0);
 }
 
+// The chrome an agent Screen ends with, from live Panes (Claude Code and pi, 2026-10-10): the
+// prompt box's rules and input line, Claude's mode footer and background-agent panel, pi's
+// status bar, and the spinner line above it all.
+const isRule = (line: string) => line.includes('───') && /^[\s─━┌┐└┘├┤┬┴┼╭╮╰╯]+$/.test(line);
+const PROMPT_LINE = /^❯/; // the input box's line, typed text included
+const STATUS_LINE = /^(?:⏵⏵|⏸)\s|^[·✢✳✶✻✽○◯⏺◐]\s/; // ● is a content bullet, never skipped
+// Claude right-aligns its notices above the box (`new task? /clear to save …`, `✔ Update
+// installed`): a line indented past half its width is chrome, never content.
+const isNotice = (line: string) => { const indent = line.length - line.trimStart().length; return indent >= 24 && indent * 2 >= line.trimEnd().length; };
+
+/** The last content line of an agent Screen: everything from the prompt box's rule down is
+ *  chrome (the box, Claude's mode footer and background-agent panel, pi's cwd bar and status
+ *  line), and so are the spinner and footer lines left above it. `undefined` when every line
+ *  is chrome (Home falls back to the cwd, a push to the Pane title).
+ *  ponytail: a rule-shaped line inside content (a drawn table's border as the last output,
+ *  box scrolled off) reads as the box and drops the table's last rows — classify borders by
+ *  neighbours if that ever shows up. */
+/**
+ * herdr's `live_blocked_form`, read by the Hub: a question or permission footer after the
+ * Screen's last full-width rule. herdr can take well over a minute to turn a working Claude
+ * blocked (100 s on a question, 2026-10-10), and the Hub re-reads a working Agent's Screen on
+ * every poll anyway, so its Status turns blocked at the next read.
+ */
+export function asksOnScreen(rows: string[]): boolean {
+  const tail = rows.slice(rows.map(row => /^\s*─{20,}\s*$/.test(row)).lastIndexOf(true) + 1).join('\n').toLowerCase();
+  return tail.includes('esc to cancel')
+    && (tail.includes('enter to confirm') || (tail.includes('enter to select') && /(?:arrow keys|arrows|↑\/?↓) to navigate/.test(tail)));
+}
+
+export function previewLine(lines: string[]): string | undefined {
+  // The last rule is the box's own boundary; with no rule anywhere the Screen's own last
+  // lines count, footer chrome aside.
+  let start = lines.length - 1;
+  while (start >= 0 && !isRule(lines[start]!)) start--;
+  if (start < 0) start = lines.length - 1;
+  for (let index = start; index >= 0; index--) {
+    const line = lines[index]!.trim();
+    if (line === '' || isRule(line) || PROMPT_LINE.test(line) || STATUS_LINE.test(line) || isNotice(lines[index]!)) continue;
+    return line;
+  }
+  return undefined;
+}
+
 export interface HubListener {
   onState(s: State): void;
   onScreen?(s: ScreenEvent): void;
@@ -29,7 +72,7 @@ export interface HubListener {
 
 type Entry = { hostId: string; mux: Mux; tree?: Tree; refresh?: Promise<void>; again: boolean; timer?: ReturnType<typeof setTimeout>; interval?: ReturnType<typeof setInterval>; unsubscribe: () => void };
 
-interface StoredState { seen: Record<string, number>; vapid?: VapidKeys; subscriptions?: PushSubscriptionBody[]; suggestEnabled?: boolean; trustedUser?: string }
+interface StoredState { seen: Record<string, number>; statuses?: Record<string, { status: string; at: number }>; vapid?: VapidKeys; subscriptions?: PushSubscriptionBody[]; suggestEnabled?: boolean; trustedUser?: string }
 
 export class Hub {
   private entries = new Map<string, Entry>();
@@ -49,10 +92,13 @@ export class Hub {
   private streamEndCallbacks = new Set<(stream: string) => void>();
   private cached?: State;
   private statuses = new Map<string, { status: string; at: number }>();
-  private lastLines = new Map<string, { revision: number; line?: string; excerpt?: string; command?: string }>();
+  private statusesDirty = false;
+  private lastLines = new Map<string, { revision: number; line?: string; excerpt?: string; command?: string; readAt?: number; asks?: boolean }>();
   private suggestions = new Map<string, { revision: number; values: string[] }>();
   private suggestionTriggers = new Set<string>();
   private suggestionRequests = new Set<string>();
+  /** Pushes queued by a transition, sent once the Screens they quote are fresh (flushPushes). */
+  private pushes: { key: string; agent?: string; label: string; title: string }[] = [];
   private lastLineReads = 0;
   private lastLineWaiters: (() => void)[] = [];
   private seen: Record<string, number> = {};
@@ -74,6 +120,9 @@ export class Hub {
     let stored: StoredState = { seen: {} };
     try { stored = JSON.parse(readFileSync(this.statePath, 'utf8')); } catch {}
     this.seen = stored.seen ?? {};
+    // When each Status last changed, kept across restarts: the Agents list sorts on it, and a
+    // fresh start used to stamp every Pane with the start time.
+    this.statuses = new Map(Object.entries(stored.statuses ?? {}));
     this.subscriptions = stored.subscriptions ?? [];
     this.suggestEnabled = stored.suggestEnabled ?? false;
     this.trustedUser = stored.trustedUser;
@@ -147,13 +196,21 @@ export class Hub {
         await this.fillLastLines(muxKey, entry);
         this.recompute();
         this.emitState();
+        this.flushPushes();
       } while (entry.again);
     })().finally(() => { entry.refresh = undefined; });
     return entry.refresh;
   }
 
   private async fillLastLines(muxKey: string, entry: Entry): Promise<void> {
-    const pending = (entry.tree?.panes ?? []).filter(pane => this.lastLines.get(`${muxKey}/${pane.id}`)?.revision !== pane.revision);
+    // herdr's revision does not move on raw output, so a working Pane is re-read on each poll
+    // (bounded by the refresh interval, not by every event); other Panes re-read only when the
+    // revision moves.
+    const pending = (entry.tree?.panes ?? []).filter(pane => {
+      const cached = this.lastLines.get(`${muxKey}/${pane.id}`);
+      if (cached?.revision !== pane.revision) return true;
+      return Boolean(pane.agent && pane.status === 'working' && Date.now() - (cached.readAt ?? 0) >= Math.max(1, this.refreshMs - 1_000));
+    });
     await Promise.all(pending.map(async pane => {
       const key = `${muxKey}/${pane.id}`;
       await this.acquireLastLineRead();
@@ -163,9 +220,10 @@ export class Hub {
         if (command) pane.command = command;
         if (pane.agent) {
           const screen = await entry.mux.read(pane.id, 'visible');
-          const lines = parseAnsi(screen.text).map(spans => spans.map(span => span.text).join('').trim()).filter(Boolean);
-          const line = lines.at(-1)?.slice(0, 200);
-          this.lastLines.set(key, { revision: pane.revision, line, excerpt: lines.slice(-40).join('\n'), command });
+          const rows = parseAnsi(screen.text).map(spans => spans.map(span => span.text).join('').trimEnd());
+          const lines = rows.map(row => row.trim()).filter(Boolean);
+          const line = previewLine(rows)?.slice(0, 200); // untrimmed: a notice reads by its indent
+          this.lastLines.set(key, { revision: pane.revision, line, excerpt: lines.slice(-40).join('\n'), command, readAt: Date.now(), asks: asksOnScreen(rows) });
         } else this.lastLines.set(key, { revision: pane.revision, command });
       } catch {
         this.lastLines.set(key, { revision: pane.revision });
@@ -173,6 +231,22 @@ export class Hub {
         this.releaseLastLineRead();
       }
     }));
+  }
+
+  /** Send the pushes a transition queued, after fillLastLines made the lines they quote fresh. */
+  private flushPushes(): void {
+    for (const item of this.pushes.splice(0)) {
+      const payload = JSON.stringify({
+        title: `${item.agent?.trim() || 'Agent'} needs you`,
+        body: `${item.label} · ${this.lastLines.get(item.key)?.line || item.title}`,
+        url: `#/pane/${item.key}`, tag: item.key,
+      });
+      // ponytail: independent sends are enough until subscription counts become large.
+      for (const subscription of [...this.subscriptions]) void sendPush(subscription, payload, this.vapid).then(response => {
+        if (response.status === 404 || response.status === 410) this.removeSubscription(subscription.endpoint);
+        else if (!response.ok) console.warn(`tautan: push ${response.status} ${subscription.endpoint}`);
+      }).catch(error => console.warn(`tautan: push failed ${subscription.endpoint}`, error));
+    }
   }
 
   private async acquireLastLineRead(): Promise<void> {
@@ -200,44 +274,56 @@ export class Hub {
       for (const pane of entry.tree.panes) {
         const key = `${muxKey}/${pane.id}`;
         const { agentSession: _agentSession, ...publicPane } = pane;
+        // A working Agent whose last read shows a question box is blocked now, not when herdr
+        // catches up; the next read without the box hands the Status back to herdr.
+        const live = pane.status === 'working' && pane.agent && this.lastLines.get(key)?.asks ? 'blocked' : pane.status;
         const previous = this.statuses.get(key);
         const requestKey = `${key}:${pane.revision}`;
-        if (previous?.status !== pane.status && this.suggestEnabled && this.suggestAdapter && pane.agent && (pane.status === 'blocked' || pane.status === 'done'))
+        if (previous?.status !== live && this.suggestEnabled && this.suggestAdapter && pane.agent && (live === 'blocked' || live === 'done'))
           this.suggestionTriggers.add(requestKey);
-        if (pane.status === 'blocked' && previous?.status !== 'blocked') {
+        if (live === 'blocked' && previous?.status !== 'blocked') {
           console.log(`tautan: ${key} → blocked`);
           const workspace = entry.tree.workspaces.find(item => item.id === pane.workspaceId);
-          const payload = JSON.stringify({
-            title: `${pane.agent?.trim() || 'Agent'} needs you`,
-            body: `${workspace?.label ?? pane.workspaceId} · ${this.lastLines.get(key)?.line || pane.title}`,
-            url: `#/pane/${key}`, tag: key,
-          });
-          // ponytail: independent sends are enough until subscription counts become large.
-          for (const subscription of [...this.subscriptions]) void sendPush(subscription, payload, this.vapid).then(response => {
-            if (response.status === 404 || response.status === 410) this.removeSubscription(subscription.endpoint);
-            else if (!response.ok) console.warn(`tautan: push ${response.status} ${subscription.endpoint}`);
-          }).catch(error => console.warn(`tautan: push failed ${subscription.endpoint}`, error));
+          // Queued, not sent: fillLastLines re-reads this Pane's Screen after recompute, and
+          // the push must quote the fresh line, not the one before the transition.
+          this.pushes.push({ key, agent: pane.agent, label: workspace?.label ?? pane.workspaceId, title: pane.title });
         }
-        const status = previous?.status === pane.status ? previous : { status: pane.status, at: Date.now() };
+        const status = previous?.status === live ? previous : { status: live, at: Date.now() };
+        if (status !== previous) this.statusesDirty = true;
         this.statuses.set(key, status);
-        if (pane.status === 'working' || pane.status === 'idle') this.suggestions.delete(key);
+        if (live === 'working' || live === 'idle') this.suggestions.delete(key);
         const cachedSuggestion = this.suggestions.get(key);
-        state.panes.push({ key, muxKey, ...publicPane, command: pane.command ?? this.lastLines.get(key)?.command, seenRevision: this.seen[key] ?? 0, lastLine: pane.agent ? this.lastLines.get(key)?.line : undefined, statusChangedAt: status.at,
+        state.panes.push({ key, muxKey, ...publicPane, status: live, command: pane.command ?? this.lastLines.get(key)?.command, seenRevision: this.seen[key] ?? 0, lastLine: pane.agent ? this.lastLines.get(key)?.line : undefined, statusChangedAt: status.at,
           suggestions: cachedSuggestion?.revision === pane.revision ? cachedSuggestion.values : undefined });
         const screen = this.lastLines.get(key);
-        if (this.suggestEnabled && this.suggestAdapter && pane.agent && (pane.status === 'blocked' || pane.status === 'done') &&
+        if (this.suggestEnabled && this.suggestAdapter && pane.agent && (live === 'blocked' || live === 'done') &&
           screen?.revision === pane.revision && cachedSuggestion?.revision !== pane.revision && this.suggestionTriggers.has(requestKey) && !this.suggestionRequests.has(requestKey)) {
-          this.suggestionTriggers.delete(requestKey);
           this.suggestionRequests.add(requestKey);
           const revision = pane.revision;
           void this.suggestAdapter.suggest(screen.excerpt ?? '').then(values => {
-            this.suggestions.set(key, { revision, values });
+            // A failed call (null) caches nothing and keeps its trigger: the next refresh asks
+            // again, so one provider blip no longer starves this revision's drafts. The
+            // in-flight key clears on a timer, or this failure's own recompute would refire it.
+            if (values !== null) {
+              this.suggestions.set(key, { revision, values });
+              this.suggestionTriggers.delete(requestKey);
+              this.suggestionRequests.delete(requestKey);
+            } else setTimeout(() => this.suggestionRequests.delete(requestKey), Math.max(1_000, this.refreshMs));
             this.recompute(); this.emitState();
           });
         }
       }
     }
     this.cached = state;
+    if (this.statusesDirty) {
+      this.statusesDirty = false;
+      // Closed Panes drop on the next change; a Mux that is offline now keeps its entries.
+      const live = new Set(state.panes.map(p => p.key));
+      const muxes = new Set(state.panes.map(p => p.muxKey));
+      for (const key of this.statuses.keys()) if (!live.has(key) && [...muxes].some(m => key.startsWith(`${m}/`))) this.statuses.delete(key);
+      clearTimeout(this.seenTimer);
+      this.seenTimer = setTimeout(() => this.save(), 1000);
+    }
     return state;
   }
 
@@ -431,22 +517,28 @@ export class Hub {
     if (!current) throw new Error('pane not found');
     if (!this.suggestEnabled || !this.suggestAdapter) return current;
     const requestKey = `${paneKey}:${current.revision}`;
-    // ponytail: same-revision force is a no-op once a request is in flight or done; a real
-    // re-ask needs a `force` query flag to bypass this later.
-    if (this.suggestionRequests.has(requestKey)) return current;
+    // ponytail: same-revision force is a no-op once a request is in flight or its answers are
+    // cached (request keys now clear when a call settles, so the cache carries the no-op); a
+    // real re-ask needs a `force` query flag to bypass this later.
+    if (this.suggestionRequests.has(requestKey) || this.suggestions.get(paneKey)?.revision === current.revision) return current;
     this.suggestionRequests.add(requestKey);
     const found = this.resolve(paneKey)!;
     const pane = found.entry.tree!.panes.find(item => item.id === found.paneId)!;
-    const screen = await found.entry.mux.read(found.paneId, 'visible');
-    const lines = parseAnsi(screen.text).map(spans => spans.map(span => span.text).join('').trim()).filter(Boolean);
-    const values = await this.suggestAdapter.suggest(lines.slice(-40).join('\n'));
-    this.suggestions.set(paneKey, { revision: pane.revision, values });
+    try {
+      const screen = await found.entry.mux.read(found.paneId, 'visible');
+      const lines = parseAnsi(screen.text).map(spans => spans.map(span => span.text).join('').trim()).filter(Boolean);
+      const values = await this.suggestAdapter.suggest(lines.slice(-40).join('\n'));
+      // A failed call caches nothing: the pane keeps whatever it had, and a later ask retries.
+      if (values !== null) this.suggestions.set(paneKey, { revision: pane.revision, values });
+    } finally {
+      this.suggestionRequests.delete(requestKey);
+    }
     const next = this.recompute(); this.emitState();
     return next.panes.find(item => item.key === paneKey)!;
   }
   private save(): void {
     mkdirSync(dirname(this.statePath), { recursive: true });
-    writeFileSync(this.statePath, `${JSON.stringify({ seen: this.seen, vapid: this.vapid, subscriptions: this.subscriptions, suggestEnabled: this.suggestEnabled, trustedUser: this.trustedUser }, null, 2)}\n`);
+    writeFileSync(this.statePath, `${JSON.stringify({ seen: this.seen, statuses: Object.fromEntries(this.statuses), vapid: this.vapid, subscriptions: this.subscriptions, suggestEnabled: this.suggestEnabled, trustedUser: this.trustedUser }, null, 2)}\n`);
   }
   vapidPublicKey(): string { return this.vapid.publicKey; }
   addSubscription(subscription: PushSubscriptionBody): void {

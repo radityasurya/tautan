@@ -7,7 +7,9 @@ export const SUGGEST_SYSTEM = "You draft replies a developer would send to a cod
 export interface SuggestAdapter {
   provider: 'zai' | 'anthropic';
   model: string;
-  suggest(text: string): Promise<string[]>;
+  /** Draft replies for a Screen's tail. `null` means the call failed: the caller caches
+   *  nothing and may ask again; `[]` means the model answered with nothing usable. */
+  suggest(text: string): Promise<string[] | null>;
 }
 
 const warned = new Set<string>();
@@ -33,17 +35,19 @@ export function configureSuggest(env: Record<string, string | undefined> = proce
     try { fileKey = readFileSync(join(os.homedir(), '.config/zai/api-key'), 'utf8').trim(); } catch {}
   }
   const key = env.TAUTAN_SUGGEST_KEY || (provider === 'zai' ? env.ZAI_API_KEY || fileKey : env.ANTHROPIC_API_KEY);
-  const model = env.TAUTAN_SUGGEST_MODEL || (provider === 'zai' ? 'glm-5.2' : 'claude-haiku-4-5-20251001');
+  const model = env.TAUTAN_SUGGEST_MODEL || (provider === 'zai' ? 'glm-5.3' : 'claude-haiku-5-5');
   const base = env.TAUTAN_SUGGEST_BASE || (provider === 'zai' ? 'https://api.z.ai/api/anthropic' : 'https://api.anthropic.com');
   if (!key) return null;
   return {
     provider, model,
-    async suggest(text: string): Promise<string[]> {
+    async suggest(text: string): Promise<string[] | null> {
       try {
         const response = await fetch(`${base.replace(/\/$/, '')}/v1/messages`, {
           method: 'POST', signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
           headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-          body: JSON.stringify({ model, max_tokens: 120, system: SUGGEST_SYSTEM, messages: [{ role: 'user', content: text }] }),
+          // glm-5.3 spends its budget on a thinking block before the text one; 120 tokens died
+          // inside thinking, answered no text block, and read as "nothing usable".
+          body: JSON.stringify({ model, max_tokens: 300, system: SUGGEST_SYSTEM, messages: [{ role: 'user', content: text }] }),
         });
         if (!response.ok) throw new Error(String(response.status));
         const body = await response.json() as { content?: { type?: string; text?: string }[] };
@@ -55,7 +59,7 @@ export function configureSuggest(env: Record<string, string | undefined> = proce
           const detail = error instanceof Error ? error.name === 'Error' ? error.message : error.name : 'Error';
           console.warn(`tautan: suggest failed (${provider}): ${detail}`);
         }
-        return [];
+        return null;
       }
     },
   };

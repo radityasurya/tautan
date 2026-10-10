@@ -27,7 +27,7 @@ describe.skipIf(!canListen)('web push', () => {
   let hub: Hub;
   let changed: ((ids: string[] | 'all') => void) | undefined;
   let status: Pane['status'] = 'working';
-  const received: { path: string; headers: Headers; body: Uint8Array }[] = [];
+  const received: { path: string; headers: Headers; body: Uint8Array<ArrayBuffer> }[] = [];
 
   beforeAll(async () => {
     process.env.XDG_STATE_HOME = stateHome;
@@ -94,6 +94,55 @@ describe.skipIf(!canListen)('web push', () => {
     status = 'working'; changed?.('all'); await Bun.sleep(250);
     status = 'done'; changed?.('all'); await Bun.sleep(300);
     expect(received).toHaveLength(1);
+  });
+
+  test('a blocked push quotes the Screen line the transition produced', async () => {
+    // RFC 8291, mirrored from server/push.ts: the subscription's keys open the body, so the
+    // payload a transition builds — not just its shape — is what gets asserted.
+    const decrypt = async (body: Uint8Array<ArrayBuffer>, pair: CryptoKeyPair, auth: Uint8Array<ArrayBuffer>, subscriberPublic: Uint8Array<ArrayBuffer>) => {
+      const text = (value: string) => new TextEncoder().encode(value);
+      const idLength = body[20]!;
+      const serverPublicBytes = body.slice(21, 21 + idLength);
+      const serverPublic = await crypto.subtle.importKey('raw', serverPublicBytes, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+      const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: serverPublic }, pair.privateKey, 256));
+      const hkdf = async (key: Uint8Array<ArrayBuffer>, salt: Uint8Array<ArrayBuffer>, info: Uint8Array<ArrayBuffer>, bits: number) =>
+        new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info }, await crypto.subtle.importKey('raw', key, 'HKDF', false, ['deriveBits']), bits));
+      const ikm = await hkdf(shared, auth, new Uint8Array([...text('WebPush: info\0'), ...subscriberPublic, ...serverPublicBytes]), 256);
+      const salt = body.slice(0, 16);
+      const cek = await hkdf(ikm, salt, text('Content-Encoding: aes128gcm\0'), 128);
+      const nonce = await hkdf(ikm, salt, text('Content-Encoding: nonce\0'), 96);
+      const aes = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['decrypt']);
+      const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, aes, body.slice(21 + idLength)));
+      let end = plain.length; while (end > 0 && plain[end - 1] === 0) end--; // strip padding
+      if (plain[end - 1] === 2) end--; // the delimiter before the padding
+      return new TextDecoder().decode(plain.slice(0, end));
+    };
+    const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const subscriberPublic = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
+    const auth = crypto.getRandomValues(new Uint8Array(16));
+    const pane: Pane = { id: 'p', tabId: 't', workspaceId: 'w', title: 'Prompt', agent: 'Claude', status: 'working', revision: 1 };
+    const tree: Tree = { workspaces: [{ id: 'w', label: 'Fix' }], tabs: [{ id: 't', workspaceId: 'w', label: 'T' }], panes: [pane] };
+    const mux: Mux = {
+      kind: 'herdr', id: 'fresh', tree: async () => tree,
+      read: async (_id: string, mode: ScreenMode): Promise<Screen> => ({ text: `${pane.revision === 1 ? 'old output' : 'Run pnpm test?'}\n❯\n`, ansi: false, revision: pane.revision, mode }),
+      sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
+      newTab: async (): Promise<Pane> => pane, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
+      rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+    };
+    const hub = new Hub({ refreshMs: 0 }); hub.add('local', mux);
+    const before = received.length;
+    try {
+      await hub.state(); // the Screen read caches revision 1 with the old output
+      hub.addSubscription({ endpoint: `http://127.0.0.1:${pushServer.port}/fresh`, keys: { p256dh: Buffer.from(subscriberPublic).toString('base64url'), auth: Buffer.from(auth).toString('base64url') } });
+      pane.status = 'blocked'; pane.revision = 2;
+      await hub.refreshHost('local');
+      // The Hub loads the first test's persisted `ok` subscription too, so match by endpoint.
+      await eventually(() => received.length > before && received.some(item => item.path === '/fresh'));
+      const fresh = received.find(item => item.path === '/fresh')!.body;
+      expect(JSON.parse(await decrypt(fresh, pair, auth, subscriberPublic))).toEqual({
+        title: 'Claude needs you', body: 'Fix · Run pnpm test?', url: '#/pane/local/fresh/p', tag: 'local/fresh/p',
+      });
+    } finally { hub.close(); }
   });
 
   test('periodic refresh works without an onChange event', async () => {
