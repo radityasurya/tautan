@@ -1011,7 +1011,8 @@ function SegmentedControl({ options, value, onChange, theme: tp }) {
   return (
     <div ref={containerRef} style={{
       display: "flex", alignItems: "center",
-      background: theme === "dark" ? "rgba(51,51,51,0.5)" : "rgba(238,238,238,0.6)",
+      // tautan edit: the palette's muted fill, so a named palette reaches the track (was a hard-coded light/dark pair)
+      background: pal.bgMuted,
       backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
       borderRadius: tokens.radius.md, padding: 3, position: "relative", transition: `all ${motion.smooth} ${motion.easeInOut}`,
     }}>
@@ -2643,7 +2644,8 @@ function Sheet({ open, onClose, title, children, side = "right", theme: tp }) {
       <div style={{
         position: "fixed", top: 0, bottom: 0, [isRight ? "right" : "left"]: 0,
         width: 320, zIndex: 10001,
-        background: theme === "dark" ? "rgba(26,26,26,0.95)" : "rgba(255,255,255,0.95)",
+        // tautan edit: the palette's sheet colour, so a named palette reaches the panel (was a hard-coded light/dark pair)
+        background: pal.sheetBg,
         backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
         border: `1px solid ${pal.borderSubtle}`, padding: 24,
         transform: open ? "translateX(0)" : `translateX(${isRight ? "100%" : "-100%"})`,
