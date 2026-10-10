@@ -587,7 +587,7 @@ const FILE_TSX = [
   '',
 ].join('\n');
 
-/** Every file the fake Hub can list, read and write, by absolute path. */
+/** The slash commands the fake Hub offers, whatever the Agent. */
 const MOCK_COMMANDS = [
   { value: '/clear', label: '/clear', detail: 'Start a new session with empty context' },
   { value: '/compact', label: '/compact', detail: 'Free up context by summarizing the conversation so far' },
@@ -598,6 +598,7 @@ const MOCK_COMMANDS = [
   { value: '/grill-me', label: '/grill-me', detail: 'Interview the user relentlessly about a plan or design until reaching shared understanding' },
 ];
 
+/** Every file the fake Hub can list, read and write, by absolute path. */
 const MOCK_FILES: Record<string, string> = {
   [`${REPO}/README.md`]: README,
   // Always answers a save with 412: the "changed on disk" banner.
@@ -605,6 +606,7 @@ const MOCK_FILES: Record<string, string> = {
   [`${REPO}/package.json`]: '{\n  "name": "tautan",\n  "version": "0.1.1",\n  "type": "module",\n  "scripts": {\n    "dev": "make dev",\n    "build": "vite build"\n  }\n}\n',
   [`${REPO}/.gitignore`]: 'node_modules\ndist\n',
   [`${REPO}/web/preview.html`]: LANDING,
+  [`${REPO}/docs/handover.html`]: LANDING,
   [`${REPO}/web/file.tsx`]: FILE_TSX,
   [`${WT_FILES}/README.md`]: README.replace('- Files, edit and branches', '- Files, edit and branches\n- Worktrees in the branch sheet'),
   [`${WT_FILES}/web/file.tsx`]: FILE_TSX.replace("useState<'preview' | 'source'>('preview')", "useState<'preview' | 'source'>('source')"),
@@ -1312,12 +1314,16 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
     return listing(s, expand(url.searchParams.get('path') || '~'), url.searchParams.get('hidden') === '1');
   }
 
-  // Slash commands only: a few built-ins, a plugin command and a long skill description.
-  if (method === 'GET' && /^\/api\/panes\/[^/]+\/complete$/.test(url.pathname)) {
-    if (url.searchParams.get('kind') !== 'slash') return json({ items: [] });
+  // Slash commands (a few built-ins, a plugin command, a long skill description) and the
+  // repository's files relative to the Pane cwd, as `git ls-files` would give them.
+  const complete = url.pathname.match(/^\/api\/panes\/([^/]+)\/complete$/);
+  if (method === 'GET' && complete) {
     const q = (url.searchParams.get('q') ?? '').toLowerCase();
-    const items = MOCK_COMMANDS.filter((i) => i.label.toLowerCase().includes(q));
-    return json({ items });
+    if (url.searchParams.get('kind') === 'slash') return json({ items: MOCK_COMMANDS.filter((i) => i.label.toLowerCase().includes(q)) });
+    if (url.searchParams.get('kind') !== 'file') return json({ items: [] });
+    const cwd = expand(s.state.panes.find((p) => p.key === decodeURIComponent(complete[1]!))?.cwd ?? REPO);
+    const files = Object.keys(s.files).filter((f) => f.startsWith(`${cwd}/`)).map((f) => f.slice(cwd.length + 1)).sort();
+    return json({ items: files.map((f) => ({ value: f, label: f })) });
   }
 
   // The file route reads and writes through a Pane: a relative path is under its cwd. A save
@@ -1331,6 +1337,8 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
     const full = expand(asked, pane.cwd);
     if (MOCK_DIRS.includes(full) || Object.keys(s.files).some((f) => f.startsWith(`${full}/`))) return json({ error: 'not a file' }, 415);
     if (!(full in s.files)) return json({ error: 'not found' }, 404);
+    // docs/handover.html stands for a page past the read cap: the raw route still serves it.
+    if (method === 'GET' && full.endsWith('/handover.html')) return json({ error: 'too large' }, 413);
     if (method === 'GET') return new Response(s.files[full], { headers: { 'content-type': 'text/plain; charset=utf-8', etag: etagOf(s, full) } });
     const ifMatch = headers?.get('if-match');
     if (!ifMatch) return json({ error: 'version' }, 428);
