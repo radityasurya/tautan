@@ -786,7 +786,8 @@ export function startHttp(hub: Hub, opts: {
             if (typeof body !== 'object' || body === null || Array.isArray(body) || body.text !== undefined && typeof body.text !== 'string' ||
               body.keys !== undefined && (!Array.isArray(body.keys) || body.keys.some(key => typeof key !== 'string')) ||
               body.raw !== undefined && typeof body.raw !== 'string' ||
-              body.promptId !== undefined && typeof body.promptId !== 'string') return json({ error: 'body' }, 400);
+              body.promptId !== undefined && typeof body.promptId !== 'string' ||
+              body.held !== undefined && body.held !== true) return json({ error: 'body' }, 400);
             // The card draws from one prompt; an id it carried must still name the prompt on
             // screen, or the answer lands in whatever moved on. No id: the key bar and the
             // quick replies, unchanged.
@@ -821,6 +822,8 @@ export function startHttp(hub: Hub, opts: {
         const message = errorMessage(error);
         if (message === 'pane not found' || message === 'mux not found' || message === 'workspace not found' || message === 'tab not found') return json({ error: message }, 404);
         if (message === 'unsupported') return json({ error: message }, 501);
+        // Wave 20: a held reply met a draft (or bash mode) in Claude's box; the Hub typed nothing.
+        if (message === 'draft') return json({ error: message }, 409);
         return json({ error: message.split(': ')[0] || message }, 502);
       }
     },

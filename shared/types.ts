@@ -112,7 +112,7 @@ export interface ScreenEvent extends Screen { key: string }
 /** POST /api/panes/:key/input — text is sent first, then keys, then raw (bytes written to the pty untouched).
  *  An optional `promptId` (from GET …/explain) makes the Hub refuse with 409 when the prompt
  *  on screen moved on; the key bar and quick replies send none and keep the old behaviour. */
-export interface InputBody { text?: string; keys?: string[]; raw?: string; promptId?: string }
+export interface InputBody { text?: string; keys?: string[]; raw?: string; promptId?: string; /** a Chat-view reply that can wait: the Hub answers 409 draft when Claude's own box holds text or is in bash mode */ held?: true }
 /** POST /api/panes/:key/mouse — the Hub builds the SGR bytes; `allow` must be true (profile or per-Pane switch) or the Hub answers 409 */
 export interface MouseBody { kind: 'click' | 'right' | 'double' | 'wheelUp' | 'wheelDown'; col: number; row: number; allow: boolean }
 /** what tapping an Affordance does: keys → send_keys names; text → sendText; command → text + enter; copy → clipboard */

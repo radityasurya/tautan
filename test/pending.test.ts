@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { autoDeliver, dropPending, flushHeld, heldOf, pendingSnapshot, runsOutside, settled, trackPending, type Pending } from '../web/pending.ts';
+import { autoDeliver, DRAFT_RETRY_MS, deliver, dropPending, flushHeld, heldOf, pendingSnapshot, runsOutside, settled, trackPending, type Pending } from '../web/pending.ts';
 import type { Turn } from '../shared/chat.ts';
 import type { Status } from '../shared/types.ts';
 
@@ -36,12 +36,19 @@ test('held and failed replies wait; a turn without a time still counts', () => {
 describe('held replies', () => {
   const posted: string[] = [];
   let up = true;
+  let refuse: { status: number; error: string } | undefined;
+  const bodies: { held?: true }[] = [];
   const real = globalThis.fetch;
   beforeEach(() => {
     posted.length = 0;
     up = true;
+    refuse = undefined;
+    bodies.length = 0;
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
-      posted.push((JSON.parse(String(init?.body)) as { text: string }).text);
+      const body = JSON.parse(String(init?.body)) as { text: string; held?: true };
+      posted.push(body.text);
+      bodies.push(body);
+      if (refuse) return Response.json({ error: refuse.error }, { status: refuse.status });
       return new Response(null, { status: up ? 204 : 502 });
     }) as typeof fetch;
   });
@@ -89,6 +96,67 @@ describe('held replies', () => {
     up = true;
     expect(await flushHeld('h')).toBe(true); // Send now
     expect(posted).toEqual(['a', 'a', 'b']);
+  });
+
+  test('409 draft keeps the reply held with the reason, retries on the timer, and clears on success', async () => {
+    refuse = { status: 409, error: 'draft' };
+    autoDeliver(pane('idle', 10));
+    trackPending('h', 'late', true);
+    await settle();
+    await settle();
+    expect(posted).toEqual(['late']);
+    expect(bodies[0]?.held).toBe(true);
+    expect(pendingSnapshot().map((p) => [p.state, p.reason])).toEqual([['held', 'draft']]);
+    autoDeliver(pane('idle', 10)); // inside the throttle: no retry
+    await settle();
+    expect(posted).toEqual(['late']);
+    refuse = undefined;
+    await new Promise((r) => setTimeout(r, DRAFT_RETRY_MS + 300)); // the box cleared; the timer retries
+
+    expect(posted).toEqual(['late', 'late']);
+    expect(pendingSnapshot().map((p) => [p.state, p.reason])).toEqual([['sent', undefined]]);
+  });
+
+  test('a draft-held reply retries on time at an unchanged revision; a non-draft hold still waits', async () => {
+    refuse = { status: 409, error: 'draft' };
+    autoDeliver(pane('idle', 40));
+    trackPending('h', 'box', true);
+    await settle();
+    await settle();
+    expect(posted).toEqual(['box']);
+    refuse = undefined;
+    await new Promise((r) => setTimeout(r, DRAFT_RETRY_MS + 300));
+    expect(posted).toEqual(['box', 'box']);
+    expect(pendingSnapshot()[0]).toMatchObject({ state: 'sent' });
+    dropPending(pendingSnapshot().map((p) => p.id));
+    // held for another reason: the revision gate stays
+    up = false;
+    trackPending('h', 'x', true);
+    await settle();
+    await settle();
+    autoDeliver(pane('idle', 40));
+    await settle();
+    expect(posted).toEqual(['box', 'box', 'x']);
+    up = true;
+    await new Promise((r) => setTimeout(r, DRAFT_RETRY_MS + 300));
+    expect(posted).toEqual(['box', 'box', 'x']);
+  }, 10_000);
+
+  test('a first delivery refused for a draft becomes held, not failed', async () => {
+    autoDeliver(pane('working', 20));
+    const id = trackPending('h', 'now');
+    refuse = { status: 409, error: 'draft' };
+    expect(await deliver(id)).toBe(false);
+    expect(pendingSnapshot()[0]).toMatchObject({ state: 'held', reason: 'draft' });
+  });
+
+  test('another 409 fails the reply as before', async () => {
+    autoDeliver(pane('working', 30));
+    const id = trackPending('h', 'x');
+    refuse = { status: 409, error: 'prompt_changed' };
+    expect(await deliver(id)).toBe(false);
+    expect(pendingSnapshot()[0]).toMatchObject({ state: 'failed' });
+    expect(pendingSnapshot()[0]?.reason).toBeUndefined();
   });
 });
 

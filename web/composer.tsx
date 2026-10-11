@@ -1333,9 +1333,9 @@ export function Composer({
           <section aria-label="Held messages" className={`overflow-hidden rounded-composer border border-border bg-bg ${desktop ? '' : 'mx-4'}`}>
             <div className={`flex min-h-9 items-center gap-3 px-3 ${heldFolded ? '' : 'border-b border-border'}`}>
               <span aria-live="polite" className="min-w-0 flex-1 truncate text-caption text-muted">
-                <span className="font-medium text-fg">{heldMessages.length} held</span> · sends when {Agent || 'the Agent'} is idle
+                <span className="font-medium text-fg">{heldMessages.length} held</span> · {heldMessages.some((m) => m.reason === 'draft') ? "waiting: the terminal's box has text" : `sends when ${Agent || 'the Agent'} is idle`}
               </span>
-              {status !== 'working' && (
+              {status !== 'working' && !heldMessages.some((m) => m.reason === 'draft') && (
                 <button
                   type="button"
                   disabled={sendingHeld}

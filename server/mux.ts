@@ -3,6 +3,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseAnsi } from '../shared/ansi.ts';
+import { inputBox, stripInvisible } from '../shared/inputbox.ts';
 import type { Explain, HostConfig, InputBody, MouseBody, MoveBody, Mux, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PushSubscriptionBody, RenameBody, Screen, ScreenEvent, ScreenMode, Settings, SplitBody, State, StateHost, StatePane, Tree } from '../shared/types.ts';
 import { sendPush, type VapidKeys } from './push.ts';
 import { configureSuggest, type SuggestAdapter } from './suggest.ts';
@@ -491,7 +492,16 @@ export class Hub {
   async input(paneKey: string, body: InputBody): Promise<void> {
     await this.state(); const found = this.resolve(paneKey);
     if (!found) throw new Error('pane not found');
-    if (body.text !== undefined) await found.entry.mux.sendText(found.paneId, body.text);
+    const claude = found.entry.tree!.panes.find(pane => pane.id === found.paneId)!.agent?.startsWith('claude') ?? false;
+    // Wave 20: a held reply can wait — refuse instead of typing over a draft or bash mode in
+    // Claude's box; and Claude holds a message that carries invisible characters, so strip them.
+    if (claude && body.held) {
+      const screen = await found.entry.mux.read(found.paneId, 'visible');
+      const box = inputBox(screen.text, screen.ansi);
+      if (box === 'draft' || box === 'bash') throw new Error('draft');
+    }
+    const text = claude && body.text !== undefined ? stripInvisible(body.text) : body.text;
+    if (text !== undefined) await found.entry.mux.sendText(found.paneId, text);
     if (body.keys?.length) await found.entry.mux.sendKeys(found.paneId, body.keys);
     if (body.raw !== undefined) await found.entry.mux.sendRaw(found.paneId, body.raw);
   }

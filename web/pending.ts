@@ -15,6 +15,8 @@ export interface Pending {
   state: PendingState;
   /** When the send landed; the transcript match ignores user turns older than this. */
   at: number;
+  /** Why a held reply waits beyond the Agent working: the terminal's own box has text. */
+  reason?: 'draft';
 }
 
 /** How long a sent reply waits for its turn before it says so. */
@@ -72,15 +74,24 @@ export async function deliver(id: number): Promise<boolean> {
   const entry = pending.find((p) => p.id === id);
   if (!entry) return false;
   set(id, { state: 'sending' });
-  const ok = await fetch(`/api/panes/${encodeURIComponent(entry.paneKey)}/input`, {
+  // `held` asks the Hub to refuse (409 draft) when Claude's own box holds text; it ignores it elsewhere.
+  const res = await fetch(`/api/panes/${encodeURIComponent(entry.paneKey)}/input`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text: entry.text, keys: ['enter'] } satisfies InputBody),
-  }).then((r) => r.ok, () => false);
+    body: JSON.stringify({ text: entry.text, keys: ['enter'], held: true } satisfies InputBody),
+  }).catch(() => undefined);
+  const ok = !!res?.ok;
   if (!pending.some((p) => p.id === id)) return ok; // the transcript caught up first
+  if (res?.status === 409 && (await res.json().catch(() => undefined) as { error?: string } | undefined)?.error === 'draft') {
+    // Not a failure: the reply waits, and the flush retries once the Pane's revision moves.
+    if (!pending.some((p) => p.id === id)) return false;
+    set(id, { state: 'held', reason: 'draft' });
+    ensureDraftTimer();
+    return false;
+  }
   // A slash command (`/name args`) and a shell line (`!cmd`) are user turns too, so they
   // settle against the transcript like any other text.
-  set(id, ok ? { state: 'sent', at: Date.now() } : { state: 'failed' });
+  set(id, ok ? { state: 'sent', at: Date.now(), reason: undefined } : { state: 'failed', reason: undefined });
   if (ok) setTimeout(() => { if (pending.find((p) => p.id === id)?.state === 'sent') set(id, { state: 'late' }); }, LATE_MS);
   return ok;
 }
@@ -119,6 +130,23 @@ let panes = new Map<string, { status: Status; revision: number }>();
 /** The revision a Pane's flush failed at: no retry until the Pane moves again. */
 const stuck = new Map<string, number>();
 
+/** A draft-held reply retries this often: `state` events do not come while a Pane is quiet. */
+export const DRAFT_RETRY_MS = 3_000;
+const lastTry = new Map<string, number>();
+let draftTimer: ReturnType<typeof setInterval> | undefined;
+/** Runs only while a draft-held reply exists. */
+function ensureDraftTimer() {
+  if (draftTimer) return;
+  draftTimer = setInterval(() => {
+    if (!pending.some((p) => p.state === 'held' && p.reason === 'draft')) {
+      clearInterval(draftTimer);
+      draftTimer = undefined;
+      return;
+    }
+    autoDeliver();
+  }, DRAFT_RETRY_MS);
+}
+
 /**
  * Held replies go out on their own, in order, once their Pane is back at a prompt (`idle` or
  * `done`). Never while `blocked`: text plus Enter could answer a permission box. The App
@@ -129,7 +157,11 @@ export function autoDeliver(list?: { key: string; status: Status; revision: numb
   if (list) panes = new Map(list.map((p) => [p.key, p]));
   for (const key of new Set(pending.filter((p) => p.state === 'held').map((p) => p.paneKey))) {
     const pane = panes.get(key);
-    if (!pane || (pane.status !== 'idle' && pane.status !== 'done') || stuck.get(key) === pane.revision) continue;
+    if (!pane || (pane.status !== 'idle' && pane.status !== 'done')) continue;
+    // A draft in the terminal's box clears without moving the revision, so those retry on time.
+    const draft = pending.some((p) => p.paneKey === key && p.state === 'held' && p.reason === 'draft');
+    if (draft ? Date.now() - (lastTry.get(key) ?? 0) < DRAFT_RETRY_MS / 2 : stuck.get(key) === pane.revision) continue;
+    lastTry.set(key, Date.now());
     void flushHeld(key).then((ok) => {
       if (ok) stuck.delete(key);
       else stuck.set(key, pane.revision);

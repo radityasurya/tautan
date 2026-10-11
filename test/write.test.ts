@@ -14,6 +14,8 @@ describe('write routes', () => {
   let tree: Tree;
   let failure: string | undefined;
   let explainResponse: Explain | null = null;
+  let visible: { text: string; ansi: boolean } = { text: '', ansi: false };
+  let sent: string[] = [];
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'tautan-write-'));
@@ -26,8 +28,8 @@ describe('write routes', () => {
     const fail = () => { if (failure) throw new Error(failure); };
     const mux: Mux & { version(): Promise<string> } = {
       kind: 'herdr', id: 'fake', version: async () => '9.9.9', tree: async () => structuredClone(tree),
-      read: async (_id, mode): Promise<Screen> => ({ text: '', ansi: false, revision: 0, mode }),
-      sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {}, explain: async (): Promise<Explain | null> => explainResponse,
+      read: async (_id, mode): Promise<Screen> => ({ ...structuredClone(visible), revision: 0, mode }),
+      sendText: async (_id, text) => { sent.push(text); }, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {}, explain: async (): Promise<Explain | null> => explainResponse,
       newTab: async (workspaceId, body): Promise<Pane> => { fail(); const pane = { id: 'p2', tabId: 't2', workspaceId, title: body.label!, cwd: body.cwd, status: 'unknown' as const, revision: 0 }; tree.tabs.push({ id: 't2', workspaceId, label: body.label! }); tree.panes.push(pane); return pane; },
       newWorkspace: async (body): Promise<Workspace> => { fail(); const workspace = { id: 'w2', label: body.label!, cwd: body.cwd }; tree.workspaces.push(workspace); return workspace; },
       rename: async (target, label) => { fail(); if ('workspaceId' in target) tree.workspaces.find(x => x.id === target.workspaceId)!.label = label; else if ('tabId' in target) tree.tabs.find(x => x.id === target.tabId)!.label = label; else tree.panes.find(x => x.id === target.paneId)!.title = label; },
@@ -325,6 +327,32 @@ describe('write routes', () => {
     explainResponse = null;
     expect((await request(path, { keys: ['enter'], promptId: explain.promptId })).status).toBe(409);
     explainResponse = null;
+  });
+
+  test('a held reply to a Claude Pane waits for an empty box and arrives stripped', async () => {
+    const fixtures = join(import.meta.dir, 'fixtures/claude-2.1.296');
+    const fixture = (name: string) => readFileSync(join(fixtures, name), 'utf8');
+    const emoji = '\u{1F468}‍\u{1F469}';
+    tree.panes[0]!.agent = 'claude'; await hub.refreshHost('local');
+    const path = `/api/panes/${encodeURIComponent('local/fake/p1')}/input`;
+    // The box holds a draft: the reply must not type over it.
+    visible = { text: fixture('inputbox-draft-oneline.ansi.txt'), ansi: true };
+    const refused = await request(path, { text: 'reply', keys: ['enter'], held: true });
+    expect(refused.status).toBe(409); expect(await refused.json()).toEqual({ error: 'draft' });
+    expect(sent).toEqual([]);
+    // The dim placeholder reads as empty, so the reply goes through — stripped of what Claude holds.
+    visible = { text: fixture('inputbox-empty.ansi.txt'), ansi: true };
+    expect((await request(path, { text: `a​b${emoji}`, keys: ['enter'], held: true })).status).toBe(204);
+    expect(sent).toEqual([`ab${emoji}`]);
+    // Without `held` the reply types over a bash-mode box regardless, still stripped; `held` must be true or absent.
+    visible = { text: fixture('inputbox-bash-mode.ansi.txt'), ansi: true };
+    expect((await request(path, { text: 'x​y' })).status).toBe(204);
+    expect(sent).toEqual([`ab${emoji}`, 'xy']);
+    expect((await request(path, { held: false })).status).toBe(400);
+    // A non-Claude Pane keeps today's behaviour: no refusal, no strip.
+    tree.panes[0]!.agent = undefined; await hub.refreshHost('local');
+    expect((await request(path, { text: 'x​y', held: true })).status).toBe(204);
+    expect(sent.at(-1)).toBe('x​y');
   });
 
   test('validates body, label, cwd, and origin', async () => {
