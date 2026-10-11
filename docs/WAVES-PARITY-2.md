@@ -12,8 +12,9 @@ does, on a real device.
 
 **Source.** A comparison of tautan (HEAD `98108a7`, 2026-10-11) with `devswha/herdr-web-ui`
 v0.4.0–v0.4.6 (released 2026-10-08 to 2026-10-10), made from those releases' full changelogs,
-plus the API schema of herdr 0.9.2 (`herdr api schema --json`) on this machine. Most of
-herdr-web-ui's new features rest on herdr 0.9.2 API methods that tautan does not call yet.
+plus the API schema of herdr 0.9.2 (`herdr api schema --json`) on this machine. herdr 0.9.3's
+schema is identical. Most of herdr-web-ui's new features rest on herdr API methods that tautan
+does not call yet.
 
 **Scope.** Every item the user chose from that comparison:
 
@@ -35,17 +36,19 @@ herdr-web-ui's new features rest on herdr 0.9.2 API methods that tautan does not
 The user weighed a density setting on 2026-10-11 and kept the
 [WAVES.md rejection](./WAVES.md#what-this-plan-does-not-do): one scale, and if desktop feels
 loose, tune that scale. The other rejections stand too: no command palette (plugin actions go
-in the ⋯ menus), no token gate, no xterm.js. Out of scope: patch notes in the app, anonymous telemetry, Windows and
-macOS path fixes, and Chat for Devin, OpenCode 2 and Gajae (add them when the user runs those
-agents).
+in the ⋯ menus), no token gate, no xterm.js. Out of scope: patch notes in the app, anonymous
+telemetry, Windows and macOS path fixes, and Chat for Devin, OpenCode 2 and Gajae (add them
+when the user runs those agents).
 
 ## Facts the waves depend on
 
-- The live herdr server on this machine reports version 0.9.0, protocol 22 (read with a
-  read-only `ping` on 2026-10-11); the installed herdr binary and client are 0.9.2, and the
-  server has not restarted since the upgrade. A method new in 0.9.1 or 0.9.2 answers
-  `unknown variant` on the live server until herdr restarts. The 0.9.2 schema has these
-  methods that tautan does not call: `workspace.move {workspace_id, insert_index}`, `workspace.move_block`,
+- The live herdr on this machine is 0.9.3, protocol 22: the user moved the server from 0.9.0
+  with `herdr update --handoff` on 2026-10-11, and every Pane survived. Batch 1 probed
+  throwaway servers on 0.9.2; the 0.9.3 API schema is identical to 0.9.2's (no method, event
+  or field added or removed), so its findings hold. The live server answers
+  `pane.selection.read` (a read-only call on a missing Pane returns `pane_not_found`, not
+  `unknown variant`). The schema has these methods that tautan does not call:
+  `workspace.move {workspace_id, insert_index}`, `workspace.move_block`,
   `tab.move {tab_id, insert_index}`, `agent.rename {target, name|null}`, `integration.list`,
   `plugin.list`, `plugin.action.list`, `plugin.action.invoke`, `pane.copy_search`, and
   `pane.scroll {pane_id, offset_from_bottom}`. Its events include `workspace.reordered`,
@@ -71,7 +74,7 @@ agents).
   Vim navigation (`global`).
 - `pane.read` sources are `visible | recent | recent_unwrapped | detection`. On herdr 0.8.0, a
   `recent` read costs about 30 ms per line past the Pane's height on a Claude Pane
-  (`server/herdr.ts:109`). Nobody has measured 0.9.2.
+  (`server/herdr.ts:109`). Wave 22.1 measured 0.9.2; see its table under Wave 22.
 - Held replies go out when the Pane turns `idle` or `done` (`web/pending.ts`,
   `autoDeliver`). Nothing reads Claude's input box first. `InputBody` already carries
   `promptId` for the blocked card's 409 (`shared/types.ts:110`).
@@ -339,7 +342,7 @@ with its line number and a few lines of context, from one read searched in the H
 reads `pane.get` for `scroll`, then `pane.selection.read` over the whole ring at column 0
 (ADR 0010); tmux reads `capture-pane -p -J -S -10000`. Context lines come from the same text;
 no second read. Literal, case-insensitive search. If `pane.selection.read` answers
-`unknown variant` (the live server reports 0.9.0), the route answers 501. Tests: a match past
+`unknown variant` (a herdr server older than the method), the route answers 501. Tests: a match past
 the visible screen, no match, the cap, a tmux Pane.
 
 **22.3 brief.** **Find in terminal** in the Pane ⋯ menu, and ⌘⇧F on desktop, opens a search
