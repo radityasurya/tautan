@@ -122,7 +122,7 @@ once; GLM lanes are not capped.
 | 2 | 19 build · 23 | 19 owns the order path; 23 owns the composer and Markdown |
 | 3 | 20 build | 20 owns the input path |
 | 4 | 21 | It edits `server/herdr.ts` and the ⋯ menus after 19 |
-| 5 | 22 build · 25.1 | 22 edits `server/herdr.ts` and the ⋯ menus after 21; 25.1 is a probe and an ADR |
+| 5 | 22 build · 21.4 · 25.1 | 22 edits `server/herdr.ts` and the ⋯ menus after 21; 21.4 closes Wave 21's gaps and waits for 22.2 where both edit `server/herdr.ts`; 25.1 is a probe and an ADR |
 | 6 | 25 build · final qa | 25 edits `server/herdr.ts`, the Chat and completion reads, and Settings after 22 |
 
 | Wave | Owns (do not edit from a parallel wave) |
@@ -487,6 +487,26 @@ two low-severity issues (the empty `pluginId`, the push title), both fixed in `c
 7. Tap **Copy** on an Outdated row (droid or hermes on this machine). The clipboard holds
    `herdr integration install <target>`.
 8. Let a named Agent ask for input while the phone is locked. The push names the Agent.
+
+## 21.4 — Close Wave 21's gaps (Batch 5)
+
+The user asked for the Batch 4 gaps to be fixed (2026-10-12). One lane per item; each ends by
+updating its line in the Gaps list above, as fixed or as a recorded limit.
+
+| # | Gap | Fix | Specialist |
+|---|---|---|---|
+| 21.4.1 | A plugin command that fails after it starts is not reported | After a 204, read `plugin.log.list {plugin_id, limit}` for the entry with the same `action_id` that started after the invoke (the log carries no invocation id). Poll until its `status` is `succeeded` or `failed`, for at most 10 s. On `failed`, show the exit code and the last line of `stderr` in the sheet, or as a notice when the sheet has closed. | `glm-run`, then `frontend` |
+| 21.4.2 | A newly linked plugin takes up to 30 s to show, and each Pane view costs one GET | Ask for the actions when **Plugin actions…** opens, not when a Pane opens, and bypass the Hub's cache for that read. Show the menu entry on every herdr Pane, with an empty state when no action fits. | `frontend`, with a Hub flag from `glm-run` |
+| 21.4.3 | A rename made in herdr's own window shows only on the next tree read | Probe on a throwaway herdr which event `agent.rename` fires (`pane.updated`, `pane.agent_detected`, or none). If one fires, re-read the tree on it. If none fires, record it as a herdr limit. | `glm-run` |
+| 21.4.4 | Focus does not return to the ⋯ button on iOS Safari | Keep the opener element when a sheet opens and call `focus()` on it when the sheet closes. Check it in WebKit. If iOS still refuses, record it as a platform limit. | `frontend` |
+| 21.4.5 | Copy is hidden over plain HTTP | `CopyButton` falls back to a hidden `textarea` and `document.execCommand('copy')` when the Clipboard API is missing, and hides only when both fail. | `frontend` |
+| 21.4.6 | `test/blocked.contract.test.ts`, "a stale prompt id is refused", fails on timing now and then | Find the race and fix it at its root, not with a longer timeout or a retry. | `glm-run` |
+| 21.4.7 | `macos` and `windows` platform names not probed | Resolved without a probe: herdr 0.9.3's schema lists `PluginPlatform` as `linux`, `macos`, `windows`. Add a unit test for the filter on each name. | `glm-run` |
+
+**Verify:** after `herdr plugin link` of a new plugin, its actions show the next time
+**Plugin actions…** opens. A test action that exits non-zero shows its exit code and last
+error line. A rename in herdr's own window shows in tautan within a second, or the limit is
+recorded. **Copy** works on a plain-HTTP LAN address.
 
 ---
 
