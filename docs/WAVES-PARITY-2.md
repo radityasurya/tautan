@@ -48,8 +48,7 @@ when the user runs those agents).
   or field added or removed), so its findings hold. The live server answers
   `pane.selection.read` (a read-only call on a missing Pane returns `pane_not_found`, not
   `unknown variant`). The schema has these methods that tautan does not call:
-  `workspace.move {workspace_id, insert_index}`, `workspace.move_block`,
-  `tab.move {tab_id, insert_index}`, `agent.rename {target, name|null}`, `integration.list`,
+  `workspace.move_block`, `agent.rename {target, name|null}`, `integration.list`,
   `plugin.list`, `plugin.action.list`, `plugin.action.invoke`, `pane.copy_search`, and
   `pane.scroll {pane_id, offset_from_bottom}`. Its events include `workspace.reordered`,
   `workspace.moved`, `tab.moved` and `pane.moved`. Wave 19 subscribes to all four
