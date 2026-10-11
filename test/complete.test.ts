@@ -117,13 +117,93 @@ describe('completion route', () => {
     writeFileSync(join(repo, '.claude', 'skills', 'internal', 'SKILL.md'), '---\nname: internal\nuser-invocable: false\n---\nHidden\n');
     const list = await items('kind=slash&q=dep&limit=200');
     expect(list[0]).toEqual({ value: '/deploy', label: '/deploy', detail: 'Deploy the app' });
-    expect(list.some(item => item.value === '/frontend:component')).toBe(true);
-    expect(list.find(item => item.value === '/ship')).toEqual({ value: '/ship', label: '/ship', detail: 'Ship the branch' });
-    expect(list.some(item => item.value === '/internal')).toBe(false);
+    // Discovery is checked on the empty query: a query that matches nothing no longer
+    // fills the list with the rest (the drop rule above).
+    const all = await items('kind=slash&q=&limit=200');
+    expect(all.some(item => item.value === '/frontend:component')).toBe(true);
+    expect(all.find(item => item.value === '/ship')).toEqual({ value: '/ship', label: '/ship', detail: 'Ship the branch' });
+    expect(all.some(item => item.value === '/internal')).toBe(false);
     // Built-ins stay available and head the empty query.
     const top = await items('kind=slash&q=&limit=20');
     expect(top[0]!.value).toBe('/clear');
     expect(top.some(item => item.value === '/model')).toBe(true);
+  });
+
+  test('slash ranking: a match in no tier is dropped, and the empty query keeps list order', async () => {
+    const command = (name: string, body = 'Body\n') => {
+      mkdirSync(join(repo, '.claude', 'commands'), { recursive: true });
+      writeFileSync(join(repo, '.claude', 'commands', `${name}.md`), body);
+    };
+    command('deploy');
+    command('my-tool');
+    expect(await items('kind=slash&q=zqq&limit=50')).toEqual([]);   // nothing matches, nothing fills
+    const head = await items('kind=slash&q=&limit=3');
+    expect(head.map(item => item.value)).toEqual(['/clear', '/compact', '/model']);
+  });
+
+  test('slash tier 1: label prefix, case-insensitive', async () => {
+    mkdirSync(join(repo, '.claude', 'commands'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'commands', 'deploy.md'), 'Body\n');
+    writeFileSync(join(repo, '.claude', 'commands', 'redeploy.md'), 'Body\n');
+    for (const q of ['dep', 'DEP', '/dep']) {
+      const list = await items(`kind=slash&q=${encodeURIComponent(q)}&limit=200`);
+      expect(list[0]!.value).toBe('/deploy');                 // prefix…
+      expect(list.find(item => item.value === '/redeploy')!.value).toBe('/redeploy'); // …above substring
+    }
+  });
+
+  test('slash tier 2: a word start in the label, after - _ : / space or a camelCase boundary', async () => {
+    mkdirSync(join(repo, '.claude', 'commands'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'commands', 'my-tool.md'), 'Body\n');    // word start after `-`
+    writeFileSync(join(repo, '.claude', 'commands', 'mytools.md'), 'Body\n');    // substring only
+    writeFileSync(join(repo, '.claude', 'commands', 'checkHealth.md'), 'Body\n'); // word start at the camelCase H
+    writeFileSync(join(repo, '.claude', 'commands', 'x-my-y.md'), 'Body\n');
+    // Built-in /permissions carries `tool` in its detail: tier 4, below the substring.
+    const tool = await items('kind=slash&q=tool&limit=200');
+    expect(tool.slice(0, 3).map(item => item.value)).toEqual(['/my-tool', '/mytools', '/permissions']);
+    const camel = await items('kind=slash&q=health&limit=200');
+    expect(camel[0]!.value).toBe('/checkHealth');
+    const word = await items('kind=slash&q=my&limit=200');
+    expect(word.slice(0, 3).map(item => item.value)).toEqual(['/my-tool', '/mytools', '/x-my-y']); // prefix above word start
+  });
+
+  test('slash tier 3: label substring, under the word-start tier', async () => {
+    mkdirSync(join(repo, '.claude', 'commands'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'commands', 'my-tool.md'), 'Body\n');
+    writeFileSync(join(repo, '.claude', 'commands', 'mytools.md'), 'Body\n');
+    const list = await items('kind=slash&q=tool&limit=200');
+    expect(list.indexOf(list.find(item => item.value === '/mytools')!))
+      .toBeGreaterThan(list.indexOf(list.find(item => item.value === '/my-tool')!));
+  });
+
+  test('slash tier 4: a description substring, above letters in order', async () => {
+    mkdirSync(join(repo, '.claude', 'commands'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'commands', 'thing.md'), '---\ndescription: stw things\n---\n');
+    writeFileSync(join(repo, '.claude', 'commands', 's-t-w.md'), 'Body\n'); // s…t…w in order, no separators match
+    const list = (await items('kind=slash&q=stw&limit=200')).map(item => item.value);
+    expect(list).toContain('/thing');
+    expect(list.indexOf('/thing')).toBeLessThan(list.indexOf('/s-t-w'));
+  });
+
+  test('slash tier 5: label letters in order — /rvw finds /review, with or without the slash', async () => {
+    mkdirSync(join(repo, '.claude', 'commands'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'commands', 'review.md'), '---\ndescription: Challenge the change\n---\n');
+    for (const q of ['rvw', '/rvw']) {
+      const list = await items(`kind=slash&q=${encodeURIComponent(q)}&limit=200`);
+      expect(list[0]!.value).toBe('/review');
+    }
+  });
+
+  test('effort kind: Claude levels ranked, other Agents none, and the route accepts it', async () => {
+    const all = await items('kind=effort&q=&limit=50');
+    expect(all.map(item => item.value)).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'auto']);
+    expect(all.find(item => item.value === 'max')?.detail).toContain('sparingly');
+    expect(all.find(item => item.value === 'auto')?.detail).toBe('Can think for more complex tasks');
+    const ranked = await items('kind=effort&q=hi&limit=50');
+    expect(ranked.slice(0, 2).map(item => item.value)).toEqual(['high', 'xhigh']); // prefix above substring
+    expect((await items('kind=effort&q=%2Flow&limit=50'))[0]!.value).toBe('low'); // leading / ignored
+    expect(await items('kind=effort&q=', 'local/fake/p3')).toEqual([]);           // pi Pane
+    expect(await items('kind=effort&q=', 'local/fake/p2')).toEqual([]);           // shell Pane
   });
 
   test('user skills through symlinks, folded descriptions, enabled plugins, and pi skills', async () => {

@@ -103,17 +103,57 @@ const CLAUDE_MODELS: CompleteItem[] = [
   { value: 'fable[1m]', label: 'fable[1m]', detail: 'Fable with a 1M context window' },
 ];
 
+// Claude Code 2.1.296's own /effort list, read from the installed bundle: the argument
+// hint is ["low","medium","high","xhigh","max"] (each model may cap the top) plus "auto";
+// the aliases med→medium and ultracode→xhigh normalize to these. Details are the bundle's
+// own strings — the model table's tooltip for max, its "auto" thinking entry; the other
+// levels carry no per-level description there.
+const CLAUDE_EFFORTS: CompleteItem[] = [
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max', detail: 'May use excessive tokens resulting in long response times and may hit token limits. Use sparingly for the hardest tasks.' },
+  { value: 'auto', label: 'auto', detail: 'Can think for more complex tasks' },
+];
+
 const PI_MODELS_TTL = 5 * 60_000;
 const PI_MODELS_RETRY = 30_000;
 let piModelsCache: { items: CompleteItem[]; expires: number } | undefined;
 
-/** Contract ranking: prefix matches on the label first, then substring matches, then the
- *  rest; case-insensitive. Original order is kept inside a tier; the caller slices. */
-function rank(items: CompleteItem[], q: string): CompleteItem[] {
-  const needle = q.toLowerCase();
+const WORD_BOUNDARY = /^[-_:/ ]$/;
+const isWordStart = (label: string, i: number) =>
+  i === 0 || WORD_BOUNDARY.test(label[i - 1]!) || (/[a-z]/.test(label[i - 1]!) && /[A-Z]/.test(label[i]!));
+
+/** Best tier an item reaches for `needle` (already lowercased): 0 label prefix, 1 word
+ *  start in the label (after - _ : / space, or a camelCase boundary — read on the raw
+ *  label, where case survives), 2 label substring, 3 detail substring, 4 label letters
+ *  in order. -1: no tier. */
+function tierOf(item: CompleteItem, needle: string): number {
+  if (!needle) return 0;
+  const label = item.label.toLowerCase();
+  if (label.startsWith(needle)) return 0;
+  for (let i = 1; i + needle.length <= label.length; i++) {
+    if (isWordStart(item.label, i) && label.startsWith(needle, i)) return 1;
+  }
+  if (label.includes(needle)) return 2;
+  if (item.detail?.toLowerCase().includes(needle)) return 3;
+  let at = 0;
+  for (const ch of label) if (at < needle.length && ch === needle[at]) at++;
+  return at === needle.length ? 4 : -1;
+}
+
+/** Contract ranking: the five tiers above, best first; case-insensitive, and a leading
+ *  `/` in `q` is ignored so `/rvw` and `rvw` rank the same. Original order is kept
+ *  inside a tier; the caller slices. With `drop` an item in no tier is left out — the
+ *  command list never shows a non-match; files keep the rest as fallback. */
+function rank(items: CompleteItem[], q: string, drop = false): CompleteItem[] {
+  const needle = q.replace(/^\//, '').toLowerCase();
+  const NO_TIER = 5;
   return items
-    .map((item, index) => ({ item, index, tier: needle && item.label.toLowerCase().startsWith(needle) ? 0 : needle && item.label.toLowerCase().includes(needle) ? 1 : 2 }))
-    .sort((a, b) => a.tier - b.tier || a.index - b.index)
+    .map((item, index) => ({ item, index, tier: tierOf(item, needle) }))
+    .filter(entry => entry.tier >= 0 || !drop)
+    .sort((a, b) => (a.tier < 0 ? NO_TIER : a.tier) - (b.tier < 0 ? NO_TIER : b.tier) || a.index - b.index)
     .map(entry => entry.item);
 }
 
@@ -334,9 +374,13 @@ async function modelItems(agent: string, remote: boolean, spawn: typeof Bun.spaw
   return [];
 }
 
+function effortItems(agent: string): CompleteItem[] {
+  return agent.startsWith('claude') ? CLAUDE_EFFORTS : [];
+}
+
 const agentOf = (pane: StatePane) => pane.agent?.toLowerCase() ?? '';
 
-export async function paneCompletion(hub: Hub, paneKey: string, kind: 'slash' | 'file' | 'model', q: string, limit: number,
+export async function paneCompletion(hub: Hub, paneKey: string, kind: 'slash' | 'file' | 'model' | 'effort', q: string, limit: number,
   opts: { runGit?: GitRunner; spawn?: typeof Bun.spawn; home?: string } = {}): Promise<CompleteItem[]> {
   const pane = (await hub.state()).panes.find(item => item.key === paneKey);
   if (!pane) throw new CompleteError(404, 'pane not found');
@@ -348,5 +392,6 @@ export async function paneCompletion(hub: Hub, paneKey: string, kind: 'slash' | 
     return rank(await fileItems(pane.cwd, target, opts.runGit), q).slice(0, limit);
   }
   if (kind === 'model') return rank(await modelItems(agent, remote, opts.spawn ?? Bun.spawn), q).slice(0, limit);
-  return rank(await slashItems(agent, pane.cwd, remote, opts.home ?? os.homedir()), q).slice(0, limit);
+  if (kind === 'effort') return rank(effortItems(agent), q).slice(0, limit);
+  return rank(await slashItems(agent, pane.cwd, remote, opts.home ?? os.homedir()), q, true).slice(0, limit);
 }

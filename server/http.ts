@@ -642,7 +642,7 @@ export function startHttp(hub: Hub, opts: {
           let key: string;
           try { key = decodeURIComponent(completeMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           const kind = url.searchParams.get('kind') ?? '';
-          if (kind !== 'slash' && kind !== 'file' && kind !== 'model') return json({ error: 'kind' }, 400);
+          if (kind !== 'slash' && kind !== 'file' && kind !== 'model' && kind !== 'effort') return json({ error: 'kind' }, 400);
           const limitRaw = url.searchParams.get('limit');
           const parsedLimit = Number(limitRaw);
           if (limitRaw !== null && (!Number.isInteger(parsedLimit) || parsedLimit < 1)) return json({ error: 'limit' }, 400);
