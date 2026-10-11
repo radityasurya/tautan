@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import type { State, StatePane } from '../shared/types.ts';
 import { FLUSH_BODY, Sheet } from './sheets.tsx';
 import { GroupHeader, matchPane, PinnedHeader, placeOf, Row, unseen } from './home.tsx';
-import { orderWorkspaces, readOrder } from './order.ts';
+import { dropMuxOrders, orderWorkspaces, readOrder } from './order.ts';
 import { agentRows, getAgentSort, getSpaceSort, sortSpaces, tildePath, usePref } from './spaces.ts';
 import { Chip, SearchInput } from './halaska-kit';
 
@@ -71,7 +71,7 @@ export function SwitchDrawer({
     .sort((a, b) => (b.statusChangedAt ?? 0) - (a.statusChangedAt ?? 0));
   const pinned = new Set([...needsYou, ...running]);
   const groups = sortSpaces(
-    orderWorkspaces(state?.workspaces ?? [], readOrder())
+    orderWorkspaces(state?.workspaces ?? [], dropMuxOrders(readOrder(), state?.muxes ?? []))
       .filter((w) => !host || hostOf(w.muxKey) === host)
       .map((w) => ({ w, all: (state?.panes ?? []).filter((p) => p.muxKey === w.muxKey && p.workspaceId === w.id) })),
     { sort: spaceSort, unseen },

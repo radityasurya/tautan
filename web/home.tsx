@@ -5,7 +5,7 @@ import type {
   NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
 import { api, haptic, Link, navigate, opensWith, reducedMotion, useDesktop } from './app.tsx';
-import { moveWorkspace, orderWorkspaces, readOrder, writeOrder, type WorkspaceOrder } from './order.ts';
+import { dropMuxOrders, moveWorkspace, muxOrders, orderWorkspaces, readOrder, spliceIndex, writeOrder, type WorkspaceOrder } from './order.ts';
 import { Check, ChevronDown, ChevronRight, CollapseAll, ExpandAll, ListHerdr, ListTautan, More, Plus, Sliders } from './icons.tsx';
 import { Chip, EmptyState, IconButton, SearchInput, Skeleton, usePal } from './halaska-kit';
 import {
@@ -13,7 +13,7 @@ import {
   rollup, setAgentGroup, setAgentSort, setPaneList, setShowShells, setSpaceAgentsOnly, setSpaceSort, sortSpaces, tildePath,
   usePref, type AgentGroup, type AgentSort, type PaneList, type SpaceSort,
 } from './spaces.ts';
-import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet } from './sheets.tsx';
+import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet, why } from './sheets.tsx';
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
 import { fetchExplain, ON_WARN, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
@@ -951,10 +951,12 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   // The Workspace this screen just created: it stays listed until State fills it with a
   // Pane, and scrolls itself into view the first time State carries it.
   const [created, setCreated] = useState<string | null>(null);
-  // The Workspace order (ADR 0008): this device's own, never sent to a Mux.
+  // The Workspace order (ADR 0009): herdr's own, moved through the Hub; a tmux Workspace's is
+  // this device's, never sent to a Mux. A failed move says why under the search for 4 s.
   const desktop = useDesktop();
   const [order, setOrder] = useState<WorkspaceOrder>(readOrder);
   const [drag, setDrag] = useState<{ key: string; over: string | null } | null>(null);
+  const [moveFailed, setMoveFailed] = useState('');
   const sections = useRef(new Map<string, HTMLElement>());
   const scrolled = useRef(false);
   const pal = usePal();
@@ -973,14 +975,32 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
     el.scrollIntoView({ block: 'center', behavior: reducedMotion() ? 'auto' : 'smooth' });
   }, [state, created]);
 
-  const ordered = orderWorkspaces(state?.workspaces ?? [], order);
-  const reorder = (w: StateWorkspace, to: Parameters<typeof moveWorkspace>[3]) => {
-    const next = moveWorkspace(ordered, order, w, to);
-    if (next === order) return;
-    setOrder(next);
-    writeOrder(next);
-  };
+  // A herdr Mux's stored order goes once it is seen, so its Workspaces list as herdr has them.
+  const local = state ? dropMuxOrders(order, state.muxes) : order;
+  useEffect(() => {
+    if (local === order) return;
+    setOrder(local);
+    writeOrder(local);
+  }, [local, order]);
+  const ordered = orderWorkspaces(state?.workspaces ?? [], local);
   const slot = (w: StateWorkspace) => ordered.filter((x) => x.muxKey === w.muxKey);
+  const place = (w: StateWorkspace) => slot(w).findIndex((x) => x.id === w.id);
+  /** Move `w` to slot `at` of its Mux's list. herdr: the Hub writes and refreshes before it
+   *  replies, so the list changes with the next `state` event, never here first. */
+  const reorder = (w: StateWorkspace, at: number) => {
+    const from = place(w);
+    if (from < 0 || at < 0 || at >= slot(w).length || at === from) return;
+    if (!muxOrders(state?.muxes.find((m) => m.key === w.muxKey)?.kind)) {
+      const next = moveWorkspace(ordered, local, w, at);
+      setOrder(next);
+      writeOrder(next);
+      return;
+    }
+    api<void>(`/api/workspaces/${encodeURIComponent(w.key)}/move`, { index: spliceIndex(from, at) }).catch((e: unknown) => {
+      setMoveFailed(why((e instanceof Error && e.message) || 'network'));
+      setTimeout(() => setMoveFailed(''), 4000);
+    });
+  };
   // ponytail: native drag and drop on the row, desktop only; a button inside a draggable row
   // does not start a drag in every browser. Pointer-driven drag if that ever bites.
   const dragging = ordered.find((w) => w.key === drag?.key);
@@ -1000,7 +1020,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
           },
           onDrop: (e: DragEvent) => {
             e.preventDefault();
-            if (dragging && dragging.muxKey === w.muxKey && dragging.key !== w.key) reorder(dragging, { before: w.id });
+            if (dragging && dragging.muxKey === w.muxKey && dragging.key !== w.key) reorder(dragging, place(w));
             setDrag(null);
           },
           onDragEnd: () => setDrag(null),
@@ -1123,24 +1143,33 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
         }
         below={
           state ? (
-            compact ? (
-              // The sidebar's band is the field: flat, edge to edge, on the Tab strip's surface so
-              // it reads as the same second layer; the band's hairline is its bottom edge, and it
-              // shows an accent line like the open Tab's when it has focus.
-              <div className="relative bg-surface after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-accent after:opacity-0 after:transition-opacity focus-within:after:opacity-100">
-                <SearchInput
-                  value={q}
-                  onChange={setQ}
-                  placeholder="Search panes"
-                  shortcut={null}
-                  style={{ width: '100%', height: 46, padding: '0 16px', gap: 10, border: 'none', borderRadius: 0, background: 'transparent' }}
-                />
-              </div>
-            ) : (
-              <div className="px-4 pb-2">
-                <SearchInput value={q} onChange={setQ} placeholder="Search panes" shortcut={null} style={{ width: '100%', height: 40 }} />
-              </div>
-            )
+            <>
+              {compact ? (
+                // The sidebar's band is the field: flat, edge to edge, on the Tab strip's surface so
+                // it reads as the same second layer; the band's hairline is its bottom edge, and it
+                // shows an accent line like the open Tab's when it has focus.
+                <div className="relative bg-surface after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-accent after:opacity-0 after:transition-opacity focus-within:after:opacity-100">
+                  <SearchInput
+                    value={q}
+                    onChange={setQ}
+                    placeholder="Search panes"
+                    shortcut={null}
+                    style={{ width: '100%', height: 46, padding: '0 16px', gap: 10, border: 'none', borderRadius: 0, background: 'transparent' }}
+                  />
+                </div>
+              ) : (
+                <div className="px-4 pb-2">
+                  <SearchInput value={q} onChange={setQ} placeholder="Search panes" shortcut={null} style={{ width: '100%', height: 40 }} />
+                </div>
+              )}
+              {/* The Pane strip's `<verb> failed` line, here because the sticky top is the one place
+                  a phone always shows; the menu that asked has closed by the time the Hub answers. */}
+              {moveFailed && (
+                <p role="status" title={moveFailed} className={`truncate px-4 text-[12px] text-danger ${compact ? 'py-2' : 'pb-2'}`}>
+                  Move failed · {moveFailed}
+                </p>
+              )}
+            </>
           ) : undefined
         }
       />
@@ -1457,12 +1486,12 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
           ...(menu && panesOf(menu)[0] ? [{ label: 'Files', onClick: () => navigate(filesHash(panesOf(menu)[0]!.key)) }] : []),
           { label: 'Diff', onClick: () => menu && navigate(`#/diff/${encodeURIComponent(menu.key)}`) },
           { label: collapsed.includes(menu?.key ?? '') ? 'Expand' : 'Collapse', onClick: () => menu && toggle(menu.key) },
-          // The order is tautan's own, so tmux Workspaces move too. This is the phone's way to
-          // reorder; a drag fights scrolling on touch (ADR 0008).
+          // herdr moves it in herdr; a tmux Workspace moves in this device's order (ADR 0009).
+          // This is the phone's way to reorder; a drag fights scrolling on touch (ADR 0008).
           ...(menu && slot(menu).length > 1
             ? [
-                { label: 'Move up', hint: 'earlier in the list', disabled: slot(menu)[0]?.id === menu.id, onClick: () => reorder(menu, { delta: -1 }) },
-                { label: 'Move down', hint: 'later in the list', disabled: slot(menu).at(-1)?.id === menu.id, onClick: () => reorder(menu, { delta: 1 }) },
+                { label: 'Move up', hint: 'earlier in the list', disabled: place(menu) === 0, onClick: () => reorder(menu, place(menu) - 1) },
+                { label: 'Move down', hint: 'later in the list', disabled: place(menu) === slot(menu).length - 1, onClick: () => reorder(menu, place(menu) + 1) },
               ]
             : []),
           ...(writable(menu?.muxKey) ? [{ label: 'Close Workspace', danger: true, onClick: () => menu && setClose(menu) }] : []),

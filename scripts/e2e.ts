@@ -556,7 +556,7 @@ try {
       await wide.close().catch(() => {});
     }
   });
-  await flow('layout (ADR 0008): phone ⋯ Split right adds a shell and opens it; a Workspace menu Move up writes tautan.workspaceOrder and no Mux', async () => {
+  await flow('layout (ADR 0008/0009): phone ⋯ Split right adds a shell and opens it; a Workspace menu Move up moves it in herdr and drops the stored herdr order', async () => {
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-layout' });
     const only = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
     const key = `HireOpz/default/${only}`;
@@ -579,16 +579,48 @@ try {
       await page.getByRole('button', { name: /^Unzoom\s*show/ }).waitFor({ timeout: 8_000 });
       assert(await page.getByRole('button', { name: 'Split right' }).count() === 0, 'no Split on a zoomed Tab');
       await page.getByRole('button', { name: /^Unzoom\s*show/ }).click();
-      // Reorder: one step from the Workspace menu (Move down when it already leads), stored here, never in the Mux.
+      // Reorder (ADR 0009): one step from the Workspace menu (Move down when it already leads)
+      // moves it in herdr; an order this device stored for the herdr Mux is dropped on sight.
+      await page.evaluate(() => localStorage.setItem('tautan.workspaceOrder', JSON.stringify({ 'HireOpz/default': ['stale'] })));
       await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+      const before = (await mux.tree()).workspaces.map(w => w.id);
       await page.getByRole('button', { name: 'e2e-layout actions' }).click();
       const up = page.getByRole('button', { name: /^Move up/ });
       await (await up.isEnabled() ? up : page.getByRole('button', { name: /^Move down/ })).click();
+      let after = before;
+      for (let i = 0; i < 20 && after.join() === before.join(); i++) { await Bun.sleep(250); after = (await mux.tree()).workspaces.map(w => w.id); }
       const stored = await page.evaluate(() => localStorage.getItem('tautan.workspaceOrder'));
-      return assert(!!stored && Object.values(JSON.parse(stored) as Record<string, string[]>)[0]!.includes(workspace.id), `order=${stored}`);
+      const moved = Math.abs(after.indexOf(workspace.id) - before.indexOf(workspace.id)) === 1;
+      return assert(moved && !(JSON.parse(stored ?? '{}') as Record<string, string[]>)['HireOpz/default'], `herdr ${before.join()} → ${after.join()}, order=${stored}`);
     } finally {
       await page.close().catch(() => {});
     }
+  });
+  await flow('order (ADR 0009): desktop drags a Tab to the first slot, then the Tab menu moves it right; herdr follows both', async () => {
+    const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-order' });
+    const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
+    await mux.newTab(workspace.id, { cwd: fixture.dir, label: 'e2e-t2' });
+    await mux.newTab(workspace.id, { cwd: fixture.dir, label: 'e2e-t3' });
+    const ids = async () => (await mux.tree()).tabs.filter(t => t.workspaceId === workspace.id).map(t => t.id);
+    const settle = async (was: string[]) => {
+      let now = await ids();
+      for (let i = 0; i < 20 && now.join() === was.join(); i++) { await Bun.sleep(250); now = await ids(); }
+      return now;
+    };
+    const t3 = (await mux.tree()).tabs.find(t => t.workspaceId === workspace.id && t.label === 'e2e-t3')!.id;
+    await desktop.goto(`${BASE}/#/pane/${encodeURIComponent(`HireOpz/default/${first}`)}`, { waitUntil: 'networkidle' });
+    const strip = desktop.getByRole('tablist', { name: 'Tabs' });
+    const before = await ids();
+    await strip.getByRole('tab', { name: /e2e-t3/ }).dragTo(strip.getByRole('tab').first());
+    const dragged = await settle(before);
+    assert(dragged[0] === t3, `drag: ${before.join()} → ${dragged.join()}`);
+    // The strip follows the `state` event, not a local reorder.
+    await strip.getByRole('tab').first().filter({ hasText: 'e2e-t3' }).waitFor({ timeout: 8_000 });
+    await strip.getByRole('tab', { name: /e2e-t3/ }).click({ button: 'right' });
+    assert(await desktop.getByRole('button', { name: 'Move left' }).isDisabled(), 'Move left is off on the first Tab');
+    await desktop.getByRole('button', { name: 'Move right' }).click();
+    const right = await settle(dragged);
+    return assert(right[1] === t3 && right.length === 3, `Move right: ${dragged.join()} → ${right.join()}`);
   });
 } finally {
   await browser.close().catch(() => {});

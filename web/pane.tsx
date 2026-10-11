@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
+import type { CSSProperties, DragEvent, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
 import { parseAnsi } from '../shared/ansi.ts';
 import { boxInner, caretAt, classify, continues, fillOf, fullScreen, hangOf, linksIn, splitAt, type LineKind } from '../shared/layout.ts';
@@ -23,6 +23,7 @@ import { ThemePicker } from './settings.tsx';
 import { SWITCH_HEADING, SWITCH_ROW, SwitchDrawer } from './switch.tsx';
 import { splitFloor } from './split-floor.ts';
 import { store } from './store.tsx';
+import { spliceIndex } from './order.ts';
 import { filesHash } from './folders-logic.ts';
 
 // ---- themed terminal colours ----
@@ -401,6 +402,7 @@ function TabStripButton({
 /**
  * The desktop browser Tab (variant A): the open Tab takes the Pane's background and a 2 px
  * accent top edge; close shows on hover and always on the open Tab. Right-click is the menu.
+ * A dragged Tab drops where the accent bar shows, on the edge of the Tab it would pass.
  */
 function DesktopTab({
   label,
@@ -411,6 +413,8 @@ function DesktopTab({
   onOpen,
   onClose,
   onMenu,
+  drag,
+  drop,
 }: {
   label: string;
   status: Status;
@@ -421,12 +425,16 @@ function DesktopTab({
   onOpen: () => void;
   onClose?: () => void;
   onMenu?: () => void;
+  /** the drag handlers that reorder this Tab, and the edge a drop would land on */
+  drag?: HTMLAttributes<HTMLElement>;
+  drop?: 'before' | 'after';
 }) {
   return (
     <div
+      {...drag}
       role="presentation"
       onContextMenu={onMenu ? (e) => { e.preventDefault(); onMenu(); } : undefined}
-      className={`group flex h-[38px] max-w-[200px] shrink-0 items-center rounded-t-[10px] ${
+      className={`group relative flex h-[38px] max-w-[200px] shrink-0 items-center rounded-t-[10px] ${
         selected ? 'bg-bg text-fg shadow-[0_1px_0_var(--bg),inset_0_2px_0_var(--accent)]' : 'text-muted hover:bg-bg/50'
       }`}
     >
@@ -462,6 +470,7 @@ function DesktopTab({
           ×
         </button>
       )}
+      {drop && <span aria-hidden className={`pointer-events-none absolute inset-y-2 w-0.5 rounded-full bg-accent ${drop === 'before' ? 'left-0' : 'right-0'}`} />}
     </div>
   );
 }
@@ -1273,6 +1282,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const [rename, setRename] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [tabMenu, setTabMenu] = useState<string | null>(null);
+  /** A desktop Tab drag: the Tab in hand and the one under the pointer. */
+  const [tabDrag, setTabDrag] = useState<{ id: string; over: string | null } | null>(null);
   const [tabRename, setTabRename] = useState<string | null>(null);
   const [tabClose, setTabClose] = useState<string | null>(null);
   /** A zoom write in flight, and the last one that failed (shown for 4 s). */
@@ -1536,6 +1547,14 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const move = (to: Pick<MoveBody, 'tab' | 'newTab' | 'newWorkspace'>) =>
     edit('Move', () => api<{ paneKey: string }>(`${base}/move`, { ...to, ...(to.tab ? { split: 'down' } : {}) } satisfies MoveBody), follow);
   const swap = (target: string) => edit('Swap', () => api<void>(`${base}/swap`, { target } satisfies SwapBody));
+  /** Move Tab `id` to slot `at` of the strip (ADR 0009, both Muxes). The Hub refreshes before it
+   *  replies, so the strip follows the next `state` event; nothing reorders here first. */
+  const moveTab = (id: string, at: number) => {
+    const from = tabs.findIndex((t) => t.id === id);
+    const key = tabsOfMux.find((t) => t.id === id)?.key;
+    if (!key || from < 0 || at < 0 || at >= tabs.length || at === from) return;
+    void edit('Move', () => api<void>(`/api/tabs/${encodeURIComponent(key)}/move`, { index: spliceIndex(from, at) }));
+  };
 
   const menuTab = tabs.find((t) => t.id === tabMenu);
   const renameTab = tabs.find((t) => t.id === tabRename);
@@ -1594,10 +1613,38 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const activeIndex = active ? tabs.indexOf(active) : -1;
   // Past five Tabs the phone strip turns into a picker. Desktop tabs scroll instead.
   const manyTabs = !desktop && tabs.length > 5 && !!active;
-  const tabMenuFor = (id: string) => (writable ? () => {
+  // A tmux Tab has no Rename or Close, but it moves, so its menu opens once there are two.
+  const tabMenuFor = (id: string) => (writable || tabs.length > 1 ? () => {
     haptic();
     setTabMenu(id);
   } : undefined);
+  // ponytail: native drag and drop, desktop and mouse only — a touch drag scrolls the strip
+  // (ADR 0008), and a button inside a draggable Tab does not start a drag in every browser, as
+  // on Home's rows. Pointer-driven drag if that ever bites.
+  const dragFrom = tabs.findIndex((t) => t.id === tabDrag?.id);
+  const tabDragProps = (i: number): HTMLAttributes<HTMLElement> | undefined =>
+    tabs.length > 1
+      ? {
+          draggable: true,
+          onDragStart: (e: DragEvent) => {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', tabs[i]!.label);
+            setTabDrag({ id: tabs[i]!.id, over: null });
+          },
+          onDragOver: (e: DragEvent) => {
+            if (!tabDrag || dragFrom < 0 || dragFrom === i) return;
+            e.preventDefault();
+            if (tabDrag.over !== tabs[i]!.id) setTabDrag({ id: tabDrag.id, over: tabs[i]!.id });
+          },
+          onDrop: (e: DragEvent) => {
+            e.preventDefault();
+            if (tabDrag) moveTab(tabDrag.id, i);
+            setTabDrag(null);
+          },
+          onDragEnd: () => setTabDrag(null),
+        }
+      : undefined;
+  const tabDropAt = (i: number) => (dragFrom >= 0 && tabDrag?.over === tabs[i]!.id ? (dragFrom > i ? 'before' : 'after') : undefined);
   const stale = !!explain && stalePrompt === (explain.promptId ?? '');
   // In the Chat view the prompt is answered in the transcript, so the dock drops its card,
   // through the card's 150 ms exit too, so the dock never flashes it after an answer.
@@ -1674,7 +1721,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         <div className="shrink-0">
           <div className="flex items-end gap-1 border-b border-border bg-surface px-3 pt-2">
             <div role="tablist" aria-label="Tabs" className="hscroll -mb-px flex min-w-0 items-end gap-0.5 pb-px">
-              {tabs.map((t) => (
+              {tabs.map((t, i) => (
                 <DesktopTab
                   key={t.id}
                   label={t.label}
@@ -1685,6 +1732,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                   onOpen={() => openTab(t.id)}
                   onClose={writable ? () => requestCloseTab(t) : undefined}
                   onMenu={tabMenuFor(t.id)}
+                  drag={tabDragProps(i)}
+                  drop={tabDropAt(i)}
                 />
               ))}
             </div>
@@ -1901,8 +1950,15 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                 },
               }))
             : []),
-          { label: 'Rename tab', onClick: () => menuTab && setTabRename(menuTab.id) },
-          { label: 'Close tab', danger: true, onClick: () => menuTab && requestCloseTab(menuTab) },
+          ...(writable ? [{ label: 'Rename tab', onClick: () => menuTab && setTabRename(menuTab.id) }] : []),
+          // Both Muxes move Tabs (ADR 0009). Every width has these; the desktop strip also drags.
+          ...(menuTab && tabs.length > 1
+            ? [
+                { label: 'Move left', disabled: editing || tabs[0] === menuTab, onClick: () => moveTab(menuTab.id, tabs.indexOf(menuTab) - 1) },
+                { label: 'Move right', disabled: editing || tabs.at(-1) === menuTab, onClick: () => moveTab(menuTab.id, tabs.indexOf(menuTab) + 1) },
+              ]
+            : []),
+          ...(writable ? [{ label: 'Close tab', danger: true, onClick: () => menuTab && requestCloseTab(menuTab) }] : []),
         ]}
       />
       <RenameSheet
