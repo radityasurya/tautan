@@ -2,6 +2,8 @@
 
 **Status (2026-09-12):** every phase through 23 is built; 0.1.1 is released. Phases 24–30,
 the [parity waves](./WAVES-PARITY.md), are built and await verification on a real device.
+Phases 32–35, from the [second parity round](./WAVES-PARITY-2.md) (2026-10-11), are built and
+await verification too.
 `[~]` marks work that is built and verified in an emulated phone but not yet on a real
 device.
 
@@ -603,6 +605,82 @@ file in the Pane and save again to see the amber banner, copy the text, reload; 
 branch with a dirty tree and read git's refusal; open a worktree an Agent made and see its
 diff. On desktop, the same pass, plus `⌘S`. After an app update, the first **Edit** tap
 still opens the editor.
+
+## Phase 32 — Workspace and Tab order in herdr
+
+Wave 19 ([WAVES-PARITY-2](./WAVES-PARITY-2.md#wave-19--order-workspaces-and-tabs-in-herdr)),
+[ADR 0009](./adr/0009-reordering-workspaces-and-tabs.md).
+
+- [ ] `POST /api/workspaces/:key/move {index}` and `POST /api/tabs/:key/move {index}` on
+      herdr's `workspace.move` and `tab.move`; tmux moves a Tab with `move-window -b`; the
+      Hub follows `workspace.moved`, `workspace.reordered`, `tab.moved` and `pane.moved` —
+      `server/`
+- [ ] herdr Workspaces move through the Hub (Move up, Move down, a desktop drop), and the
+      list changes only on the next `state`; tmux Workspaces keep the `localStorage` order,
+      and Home deletes a herdr Mux's stored entry — `web/order.ts`, `web/home.tsx`,
+      `web/switch.tsx`
+- [ ] Tabs drag in the strip on desktop; **Move left** and **Move right** in the Tab menu at
+      every width, on herdr and tmux — `web/pane.tsx`, `web/sheets.tsx`
+
+Verify: on the phone, move a herdr Workspace up from its ⋯ menu; the desktop sidebar and
+herdr's own window show the same order. On desktop, drag a Tab to the first slot; herdr's
+window follows. Move a herdr Tab and a tmux Tab with **Move left** or **Move right**
+(`tmux list-windows` shows the tmux one). Move a tmux Workspace and reload; the order stays,
+and tmux itself does not change. After Home loads once, `localStorage['tautan.workspaceOrder']`
+holds no herdr key.
+
+## Phase 33 — held replies and invisible characters
+
+Wave 20 ([WAVES-PARITY-2](./WAVES-PARITY-2.md#wave-20--held-replies-and-invisible-characters)).
+
+- [ ] Every Chat-view reply carries `held: true`; on a Claude Pane the Hub reads the box first
+      and answers `409 {error: 'draft'}` for a draft or bash mode, treating Claude's dim text
+      as empty — `shared/inputbox.ts`, `server/mux.ts`, `server/http.ts`
+- [ ] Text to a Claude Pane loses U+200B, U+200C, U+2060, U+FEFF, and U+200D outside an
+      emoji — `shared/inputbox.ts`
+- [ ] A reply refused for a draft waits, held, with "Waiting: the terminal's box has text"
+      and no **Send now**, and retries every 3 s while its Pane is idle or done —
+      `web/pending.ts`, `web/chat.tsx`, `web/composer.tsx`
+
+Verify: while Claude works, type a word in its box in herdr's own window, then send a reply
+from the phone; its row says "Waiting: the terminal's box has text" and **Send now** is
+hidden. Let the turn end: the reply stays held. Clear the box: within about 3 s the reply goes
+out. With Claude idle and the box in bash mode (`!`), a reply is held the same way. With an
+empty box, a reply goes out at once; the dim `Try "…"` text does not hold it. Text with a
+zero-width space reaches Claude on the first try, and 👨‍👩‍👧 arrives whole.
+
+## Phase 34 — highlighted code, slash matching and the effort card
+
+Wave 23 ([WAVES-PARITY-2](./WAVES-PARITY-2.md#wave-23--chat-and-composer-small-items)).
+
+- [ ] Fenced code in the Chat view highlighted with the editor's parsers, from a
+      `lazy-highlight-*` chunk outside the precache; other labels and blocks over 100,000
+      characters stay plain — `web/highlight.ts`, `web/markdown.tsx`, `web/theme.css`,
+      `vite.config.ts`
+- [ ] Slash commands ranked in five tiers (prefix, word start, substring, description,
+      letters in order) — `server/complete.ts`
+- [ ] An `/effort` card like the `/model` card, with Claude Code's own levels —
+      `server/complete.ts`, `web/complete.tsx`, `web/composer.tsx`
+
+Verify: on the phone, ask Claude for a TypeScript block; it shows colours in light and dark,
+and Copy copies the exact source; a `rust` block stays plain. If your Claude Code has
+`/review`, type `/rvw` and see it in the list. Type `/effort`, pick a level, and see Claude's
+footer show it.
+
+## Phase 35 — hardening tests
+
+Wave 24 ([WAVES-PARITY-2](./WAVES-PARITY-2.md#wave-24--hardening-tests)).
+
+- [ ] The Markdown parser reads pathological input (1 MB of brackets or underscores, an open
+      formula, a 10,000-item list) in under 100 ms — `web/markdown.tsx`,
+      `test/markdown-pathological.test.ts`
+- [ ] Claude Code 2.1.296's approval and question screens as fixtures; `readBox` joins a
+      label that wraps at the box width — `shared/blocked.ts`, `test/blocked-2.1.296.test.ts`
+- [ ] `pnpm e2e` green, 19 of 19 flows — `scripts/e2e.ts`
+
+Verify: on the phone, an approval from Claude Code 2.1.296 with a long option label shows
+that label whole on its card, and a reply holding a long minified log keeps the Chat view
+responsive.
 
 ## Later (explicitly out of v1)
 
