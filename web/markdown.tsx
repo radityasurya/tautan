@@ -23,15 +23,31 @@ type Block =
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^`\s]*)/;
 const HEADING = /^ {0,3}(#{1,6})(?:\s+(.*?))?(?:\s+#+)?\s*$/;
-const RULE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
 const QUOTE = /^ {0,3}> ?/;
 const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])(\s+|$)/;
 const DELIM = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
+// A rule is three or more of one marker, spaced or not. The run is matched flat and
+// validated in a loop: the old single regex, (^ {0,3}([-*_])(?:\s*\1){2,}\s*$), backtracked
+// through the nested \s* on long marker runs, and 1 MB of '_' cost half a second.
+const RULE_RUN = /^ {0,3}([-*_\s]+)$/;
+const isRule = (line: string) => {
+  const run = line.match(RULE_RUN)?.[1];
+  if (run === undefined) return false;
+  let n = 0;
+  for (let i = 0; i < run.length; i++) {
+    const ch = run[i]!;
+    if (ch === ' ' || ch === '\t') continue;
+    if (ch !== run[0]) return false;
+    n++;
+  }
+  return n >= 3;
+};
+
 const indent = (line: string) => line.match(/^\s*/)![0].replace(/\t/g, '    ').length;
 const isTable = (lines: string[], i: number) => lines[i]!.includes('|') && DELIM.test(lines[i + 1] ?? '') && lines[i + 1]!.includes('-');
 const starts = (lines: string[], i: number) =>
-  FENCE.test(lines[i]!) || HEADING.test(lines[i]!) || RULE.test(lines[i]!) || QUOTE.test(lines[i]!) || ITEM.test(lines[i]!) || isTable(lines, i);
+  FENCE.test(lines[i]!) || HEADING.test(lines[i]!) || isRule(lines[i]!) || QUOTE.test(lines[i]!) || ITEM.test(lines[i]!) || isTable(lines, i);
 
 // The regex that closes a fence opened by an opening-line match.
 const closer = (open: RegExpMatchArray) => new RegExp(`^ {0,3}${open[1]![0]}{${open[1]!.length},}\\s*$`);
@@ -72,7 +88,12 @@ function cells(line: string): string[] {
   return row.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, '|'));
 }
 
-export function parseBlocks(source: string): Block[] {
+// ponytail: block nesting caps at 50 levels. A bare list marker's content is the rest of
+// its line, so a line of N '+' nests N deep and overflows the stack at some length. Raise
+// the cap, or make the block walk iterative, if real transcripts ever nest deeper.
+const MAX_DEPTH = 50;
+
+export function parseBlocks(source: string, depth = 0): Block[] {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
   const blocks: Block[] = [];
   let i = 0;
@@ -89,14 +110,14 @@ export function parseBlocks(source: string): Block[] {
     } else if ((m = line.match(HEADING))) {
       blocks.push({ kind: 'heading', level: m[1]!.length, text: m[2] ?? '' });
       i++;
-    } else if (RULE.test(line)) {
+    } else if (isRule(line)) {
       blocks.push({ kind: 'rule' });
       i++;
-    } else if (QUOTE.test(line)) {
+    } else if (depth < MAX_DEPTH && QUOTE.test(line)) {
       const body: string[] = [];
       for (; i < lines.length && QUOTE.test(lines[i]!); i++) body.push(lines[i]!.replace(QUOTE, ''));
-      blocks.push({ kind: 'quote', blocks: parseBlocks(body.join('\n')) });
-    } else if ((m = line.match(ITEM))) {
+      blocks.push({ kind: 'quote', blocks: parseBlocks(body.join('\n'), depth + 1) });
+    } else if ((m = line.match(ITEM)) && depth < MAX_DEPTH) {
       const base = indent(m[1]!);
       const ordered = /\d/.test(m[2]!);
       const items: string[][] = [];
@@ -117,7 +138,7 @@ export function parseBlocks(source: string): Block[] {
           i++;
         } else break;
       }
-      blocks.push({ kind: 'list', ordered, start: ordered ? parseInt(m[2]!, 10) : 1, items: items.map((item) => parseBlocks(item.join('\n'))) });
+      blocks.push({ kind: 'list', ordered, start: ordered ? parseInt(m[2]!, 10) : 1, items: items.map((item) => parseBlocks(item.join('\n'), depth + 1)) });
     } else if (isTable(lines, i)) {
       const head = cells(line);
       const align = cells(lines[i + 1]!).map((d): Align => d.startsWith(':') && d.endsWith(':') ? 'center' : d.endsWith(':') ? 'right' : d.startsWith(':') ? 'left' : undefined);
@@ -133,7 +154,8 @@ export function parseBlocks(source: string): Block[] {
   return blocks;
 }
 
-// One pass, leftmost match wins; at the same spot the earlier alternative wins.
+// One pass, leftmost match wins; at the same spot the earlier alternative wins. It is
+// sticky (y) and only ever applied at a TRIGGER position found by the scan in inline().
 const INLINE = new RegExp([
   /\\([\\`*_{}[\]()#+\-.!~|<>])/.source, // 1 escape
   /(`+)([^`]|[^`][\s\S]*?[^`])\2(?!`)/.source, // 2,3 code
@@ -153,7 +175,22 @@ const INLINE = new RegExp([
   // 18 an image reference stays literal; it swallows the whole span so the reference inside
   // never half-parses into ! plus a link
   /(!\[[^\]\n]*\]\[[^\]\n]*\])/.source,
-].join('|'), 'g');
+].join('|'), 'y');
+
+// Every INLINE alternative starts with one of these, so inline() only tries a match where
+// one can begin. A plain matchAll instead retries the whole alternation at every index,
+// and from every '[' the bracket alternatives rescan to end of line hunting a ']' —
+// 1 MB of '[' or '(' turned that into minutes.
+const TRIGGER = /[\\`[!*~_]|https?:\/\//g;
+// The trigger set minus brackets, for once no ']' remains ahead: brackets can never close
+// again, so the scan can skip their positions wholesale.
+const TRIGGER_LIVE = /[\\`*_~]|https?:\/\//g;
+
+// ponytail: one inline() call renders at most 1,000 spans; the rest of its text stays
+// plain. Element creation is O(spans), so unbounded spans are an unbounded parse — 1 MB
+// of '_*[' holds 200,000 legitimate emphases and rendered for seconds, and even a plain
+// paragraph never comes near a thousand. Raise the cap when a real transcript needs more.
+const MAX_SPANS = 1_000;
 
 const SAFE_URL = /^(https?:|mailto:)/i;
 const LINK = 'text-accent underline decoration-accent/40 underline-offset-2 [overflow-wrap:anywhere]';
@@ -170,9 +207,41 @@ export function inline(text: string, refs?: Record<string, string>): ReactNode[]
     s.split('\n').forEach((part, n) => { if (n) out.push(<br key={`br${out.length}`} />); if (part) out.push(part); });
   };
   const ref = (label: string) => refs?.[label.trim().toLowerCase()];
-  for (const m of text.matchAll(INLINE)) {
-    push(text.slice(last, m.index));
-    last = m.index + m[0].length;
+  // Forward-lookahead caches: the scan only moves forward, so a hit holds until the index
+  // passes it, and a miss (-1) holds for the rest of the string.
+  let close = -2, eol = -2;
+  const nextClose = (p: number) => (close === -1 || close < p ? (close = text.indexOf(']', p)) : close);
+  const nextEol = (p: number) => (eol === -1 || eol < p ? (eol = text.indexOf('\n', p)) : eol);
+  let spans = 0;
+  TRIGGER.lastIndex = 0;
+  const SPACE = /\s/, WORD = /\w/;
+  for (let t: RegExpExecArray | null; (t = TRIGGER.exec(text)); ) {
+    const p = t.index;
+    // Certain-fail fast path for the emphasis openers: '_' cannot open when a word char
+    // precedes it or a space (or nothing) follows; '*' and '~' cannot open before a space.
+    // Checking the edges in JS skips the interpreted regex — a formula with 10,000
+    // subscripts paid ~1 µs per '_'.
+    const ch = text[p]!, nx = text[p + 1];
+    if (ch === '_' && nx !== '_' && ((nx === undefined || SPACE.test(nx)) || (p > 0 && WORD.test(text[p - 1]!)))) continue;
+    if ((ch === '*' || ch === '~') && (nx === undefined || SPACE.test(nx))) continue;
+    if (text[p] === '[' || (text[p] === '!' && text[p + 1] === '[')) {
+      // Every bracket alternative needs a ']' on this line, so without one ahead nothing
+      // starting at this '[' can match — do not let the regex rescan the line for it.
+      const c = nextClose(p);
+      if (c === -1) {
+        TRIGGER_LIVE.lastIndex = p;
+        const live = TRIGGER_LIVE.exec(text);
+        TRIGGER.lastIndex = live ? live.index : text.length;
+        continue;
+      }
+      const nl = nextEol(p);
+      if (nl !== -1 && c > nl) continue;
+    }
+    INLINE.lastIndex = p;
+    const m = INLINE.exec(text);
+    if (!m) continue;
+    push(text.slice(last, p));
+    last = p + m[0].length;
     const k = out.length;
     if (m[1] !== undefined) push(m[1]);
     else if (m[3] !== undefined) out.push(<code key={k} className="rounded-chip bg-bg px-1 py-px font-mono text-[0.86em] [overflow-wrap:anywhere]">{m[3].replace(/\n/g, ' ')}</code>);
@@ -195,6 +264,8 @@ export function inline(text: string, refs?: Record<string, string>): ReactNode[]
     }
     else if (m[18] !== undefined) push(m[18]!);
     else out.push(<em key={k}>{inline((m[11] ?? m[12])!, refs)}</em>);
+    TRIGGER.lastIndex = last; // the dispatch recursed into inline() and moved it
+    if (++spans >= MAX_SPANS) break; // the ceiling above: the tail stays plain text
   }
   push(text.slice(last));
   return out;
