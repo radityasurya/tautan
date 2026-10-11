@@ -23,6 +23,14 @@ test('/model followed by a space is the model card', () => {
   expect(tokenAt('/model', 6)?.kind).toBe('slash');
 });
 
+test('/effort followed by a space is the effort card', () => {
+  expect(tokenAt('/effort ', 8)).toEqual({ kind: 'effort', q: '', start: 8, end: 8 });
+  expect(tokenAt('/effort h', 9)).toEqual({ kind: 'effort', q: 'h', start: 8, end: 9 });
+  expect(tokenAt('/effort', 7)).toEqual({ kind: 'slash', q: 'effort', start: 0, end: 7 });
+  expect(tokenAt('/effort high now', 16)).toBeNull();
+  expect(tokenAt('say /effort h', 13)).toBeNull();
+});
+
 test('a pick replaces the token; a folder keeps the picker open and keeps the @', () => {
   const t = tokenAt('see @sr', 7)!;
   expect(applyPick('see @sr', t, { value: 'src/', label: 'src/', dir: true })).toEqual({ text: 'see @src/', caret: 9 });

@@ -45,7 +45,7 @@ const writeDraft = (paneKey: string, text: string) => {
 /** Slash commands that open a menu or a prompt on the Screen and write nothing to the
  *  transcript until they finish, so the Chat view would show nothing while they wait.
  *  ponytail: a fixed list of Claude's and pi's; extend it when another one turns up. */
-const SCREEN_COMMAND = /^\/(login|logout|model|config|settings|permissions|resume|agents|mcp|hooks|status|theme|tree|fork|hotkeys|plugin|help|usage|cost|context|skills|tasks|export|effort|memory|ide|add-dir|rewind|workflows)$/;
+const SCREEN_COMMAND = /^\/(login|logout|model|config|settings|permissions|resume|agents|mcp|hooks|status|theme|tree|fork|hotkeys|plugin|help|usage|cost|context|skills|tasks|export|memory|ide|add-dir|rewind|workflows)$/;
 
 /** The Pane the Composer types straight into, whether its field has focus, and how to give it
  *  focus: the Screen draws its caret from this, and a tap on the Screen focuses the field. */
@@ -427,7 +427,7 @@ export function Composer({
   const pick = (item: Item) => {
     if (!token) return;
     haptic();
-    if (token.kind === 'model') return send(`/model ${item.value}`);
+    if (token.kind === 'model' || token.kind === 'effort') return send(`/${token.kind} ${item.value}`);
     const next = applyPick(text, token, item);
     place.current = next.caret;
     setText(next.text);
@@ -455,7 +455,12 @@ export function Composer({
     const sent = raw.trim();
     if (!sent) return;
     // A bare `/model` opens the card first; the same text with a space sends it as typed.
-    if (override === undefined && agent && raw === '/model') return setText('/model ');
+    // `/effort` does the same on Claude, the one Agent the Hub lists effort levels for. The
+    // caret goes after the space, or the token under it is still the command.
+    if (override === undefined && agent && (raw === '/model' || (raw === '/effort' && /^claude/i.test(agent)))) {
+      place.current = raw.length + 1;
+      return setText(`${raw} `);
+    }
     // A stray Return at the end (the phone's Return breaks the line) does not go out.
     const body = raw.replace(/\n+$/, '');
     haptic();

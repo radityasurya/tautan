@@ -2,21 +2,21 @@ import { useEffect, useRef, useState } from 'react';
 
 /** One row the Hub offers. `value` is the exact text to insert. */
 export interface Item { value: string; label: string; detail?: string; dir?: boolean }
-export type Kind = 'slash' | 'file' | 'model';
+export type Kind = 'slash' | 'file' | 'model' | 'effort';
 
 /** The span of the text a picker would replace: `[start, end)`, and what was typed in it. */
 export interface Token { kind: Kind; q: string; start: number; end: number }
 
 /**
- * What the caret is completing, or null. `/model ` followed by a word is the model card;
- * `/word` at the very start is a command (a `/` with a second slash is a path, not a
+ * What the caret is completing, or null. `/model ` or `/effort ` followed by a word is that
+ * card; `/word` at the very start is a command (a `/` with a second slash is a path, not a
  * command); `@word` after a space or the start is a file. Pure, so it is tested alone.
  */
 export function tokenAt(text: string, caret: number): Token | null {
   const at = Math.min(Math.max(caret, 0), text.length);
-  const model = /^\/model[ \t]+(\S*)$/.exec(text);
-  if (model && at >= text.length - model[1]!.length) {
-    return { kind: 'model', q: model[1]!, start: text.length - model[1]!.length, end: text.length };
+  const card = /^\/(model|effort)[ \t]+(\S*)$/.exec(text);
+  if (card && at >= text.length - card[2]!.length) {
+    return { kind: card[1] as 'model' | 'effort', q: card[2]!, start: text.length - card[2]!.length, end: text.length };
   }
   const before = text.slice(0, at);
   const tail = /^\S*/.exec(text.slice(at))![0]; // the rest of the word under the caret
@@ -34,8 +34,8 @@ export function tokenAt(text: string, caret: number): Token | null {
 
 /**
  * The text after a pick. A command or a file gets a trailing space unless one follows; a
- * folder keeps the picker open to drill in. A file keeps its `@`. A model is not inserted:
- * the Composer sends it.
+ * folder keeps the picker open to drill in. A file keeps its `@`. A model or an effort level
+ * is not inserted: the Composer sends it.
  */
 export function applyPick(text: string, token: Token, item: Item): { text: string; caret: number } {
   const lead = token.kind === 'file' ? '@' : '';
@@ -84,7 +84,7 @@ export function useComplete(paneKey: string, token: Token | null): Item[] {
   return kind ? items : [];
 }
 
-const TITLE: Record<Kind, string> = { slash: 'Commands', file: 'Files', model: 'Models' };
+const TITLE: Record<Kind, string> = { slash: 'Commands', file: 'Files', model: 'Models', effort: 'Effort' };
 
 /**
  * The list under the field. Phone: a docked sheet in the flow, above the field and the
