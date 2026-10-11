@@ -397,6 +397,7 @@ describe('write routes', () => {
     // The invoke body is `{pluginId?}` only; the action id rides the path.
     expect((await request(`/api/panes/${key}/actions/mark`, null)).status).toBe(400);
     expect((await request(`/api/panes/${key}/actions/mark`, { pluginId: 5 })).status).toBe(400);
+    expect((await request(`/api/panes/${key}/actions/mark`, { pluginId: '' })).status).toBe(400);
     expect((await request(`/api/panes/${key}/actions/mark`, {})).status).toBe(204);
     expect((await request(`/api/panes/${key}/actions/mark`, { pluginId: 'tautan.test' })).status).toBe(204);
     expect(invoked).toEqual([{ paneId: 'p1', actionId: 'mark', pluginId: undefined }, { paneId: 'p1', actionId: 'mark', pluginId: 'tautan.test' }]);

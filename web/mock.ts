@@ -605,9 +605,9 @@ const MOCK_INTEGRATIONS: HostIntegrations[] = [
   {
     muxKey: 'mbp/herdr', label: 'default',
     integrations: [
-      { target: 'claude', label: 'Claude Code', command: 'claude --version', available: true, state: 'current' },
-      { target: 'codex', label: 'Codex', command: 'codex --version', available: true, state: 'outdated' },
-      { target: 'crush', label: 'Crush', command: 'crush --version', available: false, state: 'not_installed' },
+      { target: 'claude', label: 'Claude Code', command: 'claude', available: true, state: 'current' },
+      { target: 'codex', label: 'Codex', command: 'codex', available: true, state: 'outdated' },
+      { target: 'antigravity_cli', label: 'Antigravity CLI', command: 'antigravity', available: false, state: 'not_installed' },
     ],
   },
   { muxKey: 'vps/herdr', label: 'default', error: 'ssh: connect to host vps.example.ts.net port 22: Connection timed out' },

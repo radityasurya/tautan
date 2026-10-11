@@ -99,7 +99,7 @@ export class Hub {
   private suggestionTriggers = new Set<string>();
   private suggestionRequests = new Set<string>();
   /** Pushes queued by a transition, sent once the Screens they quote are fresh (flushPushes). */
-  private pushes: { key: string; agent?: string; label: string; title: string }[] = [];
+  private pushes: { key: string; agent?: string; agentName?: string; label: string; title: string }[] = [];
   private lastLineReads = 0;
   private lastLineWaiters: (() => void)[] = [];
   private seen: Record<string, number> = {};
@@ -238,7 +238,7 @@ export class Hub {
   private flushPushes(): void {
     for (const item of this.pushes.splice(0)) {
       const payload = JSON.stringify({
-        title: `${item.agent?.trim() || 'Agent'} needs you`,
+        title: `${item.agentName?.trim() || item.agent?.trim() || 'Agent'} needs you`,
         body: `${item.label} · ${this.lastLines.get(item.key)?.line || item.title}`,
         url: `#/pane/${item.key}`, tag: item.key,
       });
@@ -287,7 +287,7 @@ export class Hub {
           const workspace = entry.tree.workspaces.find(item => item.id === pane.workspaceId);
           // Queued, not sent: fillLastLines re-reads this Pane's Screen after recompute, and
           // the push must quote the fresh line, not the one before the transition.
-          this.pushes.push({ key, agent: pane.agent, label: workspace?.label ?? pane.workspaceId, title: pane.title });
+          this.pushes.push({ key, agent: pane.agent, agentName: pane.agentName, label: workspace?.label ?? pane.workspaceId, title: pane.title });
         }
         const status = previous?.status === live ? previous : { status: live, at: Date.now() };
         if (status !== previous) this.statusesDirty = true;

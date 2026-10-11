@@ -33,6 +33,7 @@ test('integrationOrder: Agents found on the Host first, each half in the Hub ord
   expect(list[0]!.target).toBe('crush'); // the input is left as it was
   // herdr's `command` is the Agent's executable; the line to copy is herdr's own installer.
   expect(installCommand(i('codex', true))).toBe('herdr integration install codex');
+  expect(installCommand(i('antigravity_cli', false))).toBe('herdr integration install antigravity-cli');
 });
 
 test('appeared: a Pane new to the watched Workspace opens within NEW_PANE_MS, nothing else does', () => {

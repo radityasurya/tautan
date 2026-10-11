@@ -142,6 +142,12 @@ describe.skipIf(!canListen)('web push', () => {
       expect(JSON.parse(await decrypt(fresh, pair, auth, subscriberPublic))).toEqual({
         title: 'Claude needs you', body: 'Fix · Run pnpm test?', url: '#/pane/local/fresh/p', tag: 'local/fresh/p',
       });
+      // A named Agent leads the title; the Agent type stays the fallback.
+      pane.status = 'working'; pane.revision = 3; await hub.refreshHost('local');
+      pane.agentName = 'Reviewer'; pane.status = 'blocked'; pane.revision = 4; await hub.refreshHost('local');
+      await eventually(() => received.filter(item => item.path === '/fresh').length === 2);
+      const named = received.filter(item => item.path === '/fresh')[1]!.body;
+      expect(JSON.parse(await decrypt(named, pair, auth, subscriberPublic)).title).toBe('Reviewer needs you');
     } finally { hub.close(); }
   });
 

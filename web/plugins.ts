@@ -21,8 +21,9 @@ export function byPlugin(actions: PluginAction[]): { pluginId: string; plugin: s
 
 /** What installs or updates one integration. herdr's own `command` field is the Agent's
  *  executable (`pi`, `claude`: what `available` looks for on PATH, probed on 0.9.3), so the
- *  line to copy is herdr's CLI with the target. */
-export const installCommand = (i: Pick<Integration, 'target'>) => `herdr integration install ${i.target}`;
+ *  line to copy is herdr's CLI with the target (herdr lists `antigravity_cli`, its CLI takes
+ *  `antigravity-cli`). */
+export const installCommand = (i: Pick<Integration, 'target'>) => `herdr integration install ${i.target.replaceAll('_', '-')}`;
 
 /** The Agents found on the Host first, then the rest; each half keeps the Hub's order. */
 export const integrationOrder = (list: Integration[]) => [...list.filter((i) => i.available), ...list.filter((i) => !i.available)];

@@ -722,8 +722,8 @@ export function startHttp(hub: Hub, opts: {
           if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
           let body: { pluginId?: unknown };
           try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
-          if (!plainObject(body) || body.pluginId !== undefined && typeof body.pluginId !== 'string') return json({ error: 'body' }, 400);
-          try { await hub.invokePluginAction(key, actionId, body.pluginId || undefined); }
+          if (!plainObject(body) || body.pluginId !== undefined && (typeof body.pluginId !== 'string' || !body.pluginId)) return json({ error: 'body' }, 400);
+          try { await hub.invokePluginAction(key, actionId, body.pluginId); }
           catch (error) {
             const message = errorMessage(error);
             // the outer catch owns these two: 404 for the pane, 501 for tmux.
