@@ -383,7 +383,7 @@ export class TmuxMux implements Mux {
   async resize(paneId: string, direction: 'left' | 'right' | 'up' | 'down', cells: number): Promise<void> {
     await this.run(['resize-pane', '-t', paneId, { left: '-L', right: '-R', up: '-U', down: '-D' }[direction]!, String(cells)]);
   }
-  // tmux sessions have no order (ADR 0009): a Workspace keeps the UI's local order.
+  // tmux Workspaces have no order (ADR 0009): the UI keeps its own local order.
   async moveWorkspace(_workspaceId: string, _index: number): Promise<void> { throw new Error('unsupported'); }
   async moveTab(tabId: string, index: number): Promise<void> {
     // herdr's index is a pre-move splice index within the Workspace (probed: per-Workspace,

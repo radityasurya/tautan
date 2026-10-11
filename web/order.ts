@@ -1,7 +1,7 @@
 /**
  * The Workspace and Tab order (ADR 0009). herdr keeps its own order: tautan lists its
- * Workspaces and Tabs as the snapshot does and asks the Hub to move them. tmux sessions have
- * no order, so a tmux Workspace keeps this device's own (ADR 0008): one localStorage key holds
+ * Workspaces and Tabs as the snapshot does and asks the Hub to move them. tmux Workspaces
+ * have no order, so each keeps this device's own (ADR 0008): one localStorage key holds
  * `{ [muxKey]: [workspaceId, …] }`. Pure helpers first, then the storage, so a test can run the
  * order without a DOM.
  */
