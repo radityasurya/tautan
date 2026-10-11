@@ -8,8 +8,9 @@
 // reference only matches a label without emphasis characters. No setext headings, footnotes,
 // HTML, linked images, or image references. Add a real parser (micromark) when a transcript
 // needs one of those.
-import { useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Picture, safeImage } from './image.tsx';
+import type { Lang } from './highlight.ts';
 
 type Align = 'left' | 'center' | 'right' | undefined;
 type Block =
@@ -293,6 +294,53 @@ export function CopyButton({ text, className }: { text: string; className: strin
   );
 }
 
+// ---- fenced code colours ----
+// The highlighter is a `lazy-*` chunk (web/highlight.ts), fetched on the first fenced block
+// with a known label. It runs per rendered block, after the parse, never inside it.
+
+const LANGS: Record<string, Lang> = {
+  js: 'js', javascript: 'js', mjs: 'js', cjs: 'js', jsx: 'jsx',
+  ts: 'ts', typescript: 'ts', mts: 'ts', cts: 'ts', tsx: 'tsx',
+  json: 'json', jsonc: 'json', css: 'css', html: 'html', htm: 'html',
+  md: 'md', markdown: 'md', py: 'py', python: 'py', yaml: 'yaml', yml: 'yaml',
+};
+
+// ponytail: 100,000 characters, about 100 KB of code. Parsing and spans grow with it; a
+// bigger block stays plain. Raise it if long blocks come back plain on a phone that copes.
+const MAX_HIGHLIGHT = 100_000;
+
+/** The highlighter's language for a fence label. Unknown labels and blocks over the cap get
+ *  undefined, and render plain. */
+export function codeLang(label: string, text: string): Lang | undefined {
+  const key = label.toLowerCase();
+  return text.length <= MAX_HIGHLIGHT && Object.hasOwn(LANGS, key) ? LANGS[key] : undefined;
+}
+
+let highlighter: typeof import('./highlight.ts') | undefined;
+
+/** A block's text: plain until the highlighter and its language are in, then the same text
+ *  in coloured spans. Colour only, so nothing moves. Offline the lazy chunk is not cached
+ *  and the block stays plain. */
+function CodeText({ lang, text }: { lang: string; text: string }) {
+  const known = codeLang(lang, text);
+  const [loads, setLoads] = useState(0);
+  // `loads` re-runs this once the chunk arrives: the highlighter is module state, not React's.
+  const runs = useMemo(() => (known ? highlighter?.highlight(known, text) : undefined), [known, text, loads]);
+  const waiting = runs ? undefined : known;
+  useEffect(() => {
+    if (!waiting) return;
+    let live = true;
+    import('./highlight.ts')
+      .then((m) => {
+        highlighter = m;
+        return m.load(waiting);
+      })
+      .then(() => live && setLoads((n) => n + 1), () => {});
+    return () => { live = false; };
+  }, [waiting]);
+  return <code>{runs ? runs.map(([s, cls], n) => (cls ? <span key={n} className={cls}>{s}</span> : s)) : text}</code>;
+}
+
 const HEADING_CLASS = ['', 'text-title', 'text-title', 'text-body font-semibold', 'text-body font-semibold', 'text-body font-semibold text-muted', 'text-body font-semibold text-muted'];
 const CELL = 'border-border px-2 py-1.5 align-top [&+*]:border-l';
 
@@ -319,7 +367,7 @@ function BlockView({ block, refs }: { block: Block; refs?: Record<string, string
             <CopyButton text={block.text} className="min-h-8 rounded-chip px-2 text-caption text-muted hover:text-fg active:text-fg lg:min-h-6" />
           </div>
         )}
-        <pre className="max-h-96 overflow-auto overscroll-contain px-3 py-2 font-mono text-caption"><code>{block.text}</code></pre>
+        <pre className="max-h-96 overflow-auto overscroll-contain px-3 py-2 font-mono text-caption"><CodeText lang={block.lang} text={block.text} /></pre>
       </div>
     );
     case 'list': {

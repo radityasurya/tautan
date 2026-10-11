@@ -15,6 +15,15 @@
   --color-warn: var(--warn);
   --color-danger: var(--danger);
 
+  /* Fenced code in the Chat view (web/highlight.ts): the palette's ANSI hue, 40 % of the way
+     to the text colour. 12 px code then reads at 4.5:1 or better on the light background,
+     and the dark one stays calm. Comments use `text-muted`. */
+  --color-code-keyword: color-mix(in srgb, var(--ansi-5) 60%, var(--fg));
+  --color-code-string: color-mix(in srgb, var(--ansi-2) 60%, var(--fg));
+  --color-code-number: color-mix(in srgb, var(--ansi-3) 60%, var(--fg));
+  --color-code-type: color-mix(in srgb, var(--ansi-6) 60%, var(--fg));
+  --color-code-function: color-mix(in srgb, var(--ansi-4) 60%, var(--fg));
+
   /* One raised-surface shadow for every `bg-elevated` thing: drawer, dialog, tab bar,
      blocked card. Direction-neutral, so it reads the same rising from the bottom or
      floating in the middle. In the light themes it carries a hairline ring, because

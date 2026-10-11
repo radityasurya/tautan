@@ -25,8 +25,8 @@ export function swPrecache(): Plugin {
       if (!existsSync(sw)) return;
       // Sorted, so the version hash is stable across rebuilds; readdirSync order is not.
       const assets = (existsSync(join(outDir, 'assets')) ? readdirSync(join(outDir, 'assets')) : []).sort();
-      // `mock-<hash>.js` is fetched only behind the ?mock gate, and `lazy-*` (the editor and
-      // CodeMirror) only on the first Edit tap: neither is precached for everyone.
+      // `mock-<hash>.js` is fetched only behind the ?mock gate, and `lazy-*` (the editor, the
+      // Chat's code highlighter and CodeMirror) only on first use: neither is precached.
       const files = [
         '/index.html',
         '/manifest.webmanifest',
@@ -41,8 +41,9 @@ export function swPrecache(): Plugin {
   };
 }
 
-/** A module that loads only when Edit is tapped: the editor itself, and CodeMirror under it. */
-const LAZY = /[\\/]node_modules[\\/](?:@codemirror|@lezer|@marijn|crelt|style-mod|w3c-keyname)[\\/]|[\\/]web[\\/]editor\.tsx$/;
+/** A module that loads on demand: the editor on the first Edit tap, the Chat's code highlighter
+ *  on the first fenced block with a known label, and CodeMirror under both. */
+export const LAZY = /[\\/]node_modules[\\/](?:@codemirror|@lezer|@marijn|crelt|style-mod|w3c-keyname)[\\/]|[\\/]web[\\/](?:editor\.tsx|highlight\.ts)$/;
 
 export default defineConfig({
   root: 'web',
@@ -53,8 +54,8 @@ export default defineConfig({
     target: 'es2022',
     outDir: '../dist/web',
     emptyOutDir: true,
-    // Any chunk holding the editor or CodeMirror is `lazy-*`, which swPrecache leaves out, so
-    // the shell and an app update stay the size they were before the editor existed.
+    // Any chunk holding the editor, the highlighter or CodeMirror is `lazy-*`, which swPrecache
+    // leaves out, so the shell and an app update stay the size they were before the editor existed.
     rollupOptions: {
       output: { chunkFileNames: (chunk) => (chunk.moduleIds.some((id) => LAZY.test(id)) ? 'assets/lazy-[name]-[hash].js' : 'assets/[name]-[hash].js') },
     },

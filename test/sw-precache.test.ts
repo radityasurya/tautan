@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { swPrecache } from '../vite.config';
+import { LAZY, swPrecache } from '../vite.config';
 
 /** The two hooks the test drives; everything else on the plugin is Vite's business. */
 type Stamp = { configResolved(c: { root: string; build: { outDir: string } }): void; closeBundle(): void };
@@ -56,6 +56,13 @@ describe('swPrecache plugin', () => {
     const sw = readFileSync(join(out, 'sw.js'), 'utf8');
     expect(sw).toContain('"/assets/index-A.js"');
     expect(sw).not.toContain('lazy-');
+  });
+
+  test('the editor, the Chat code highlighter and CodeMirror name lazy-* chunks; the Chat does not', () => {
+    for (const id of ['/r/web/editor.tsx', '/r/web/highlight.ts', '/r/node_modules/@lezer/highlight/dist/index.js', '/r/node_modules/@codemirror/lang-yaml/dist/index.js']) {
+      expect([id, LAZY.test(id)]).toEqual([id, true]);
+    }
+    for (const id of ['/r/web/markdown.tsx', '/r/web/chat.tsx', '/r/node_modules/react/index.js']) expect([id, LAZY.test(id)]).toEqual([id, false]);
   });
 
   test('stamps the configured outDir only', () => {
