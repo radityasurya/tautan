@@ -81,7 +81,8 @@ const TINT: Record<Status, string> = {
 
 /**
  * The Pane's header, one component at both widths (docs/WAVES.md 10.2, variants A and C).
- * Phone: back · title over `● status · agent · host / workspace / tab ⌄` (one Switch trigger;
+ * Phone: back · title (the Agent's name first, when it has one) over
+ * `● status · agent · host / workspace / tab ⌄` (one Switch trigger;
  * the path gives way first) · lens icons · ⋯. At `lg`: the title over the small muted path,
  * the Status chip, the labelled lens, then ⋯. Read aloud lives in ⋯ at both widths. Blocked
  * draws a 2 px warn line under the bar and says "needs you"; the answer lives in the
@@ -90,6 +91,7 @@ const TINT: Record<Status, string> = {
 export function PaneHeader({
   desktop,
   title,
+  name,
   path,
   status,
   agent,
@@ -100,6 +102,8 @@ export function PaneHeader({
 }: {
   desktop: boolean;
   title: string;
+  /** The Agent's own name (herdr agent.rename): it leads the title, which turns secondary. */
+  name?: string;
   path: (string | undefined)[];
   status: Status;
   agent?: string;
@@ -130,6 +134,15 @@ export function PaneHeader({
     </button>
   );
   const parts = path.filter(Boolean);
+  // One line that truncates at its end, so the name always shows and the title gives way.
+  const heading = name ? (
+    <>
+      {name}
+      <span className="font-normal text-muted"> · {title}</span>
+    </>
+  ) : (
+    title
+  );
   const statusWord = (
     <span aria-live="polite" className={`shrink-0 font-medium ${statusText[status]}`}>
       {word(status)}
@@ -146,7 +159,7 @@ export function PaneHeader({
         <div className="flex h-16 items-center gap-3 pr-4 pl-2">
           {back}
           <div className="flex min-w-0 flex-1 flex-col">
-            <h1 className="truncate text-[17px] leading-[22px] font-semibold tracking-tight">{title}</h1>
+            <h1 className="truncate text-[17px] leading-[22px] font-semibold tracking-tight">{heading}</h1>
             <p className="truncate text-[11px] leading-4 text-muted">
               {parts.map((part, i) => (
                 <span key={i}>
@@ -184,7 +197,7 @@ export function PaneHeader({
               onClick={onSwitch}
               className="press flex w-full min-w-0 flex-col items-start gap-px text-left"
             >
-              <span className="w-full truncate text-[16px] font-semibold tracking-tight">{title}</span>
+              <span className="w-full truncate text-[16px] font-semibold tracking-tight">{heading}</span>
               <span className="flex w-full min-w-0 items-center gap-1.5 text-[12px] font-normal text-muted">
                 <Dot status={status} size={7} />
                 {statusWord}

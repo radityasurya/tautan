@@ -8,9 +8,11 @@ import { GROUP, InstallHint, SectionTitle, Toggle, useHubSettings } from './host
 import { UsageMeters } from './usage.tsx';
 import { PALETTES } from './palettes.ts';
 import { disablePush, enablePush, pushOn } from './push.ts';
+import { CopyButton } from './markdown.tsx';
+import { installCommand, integrationOrder } from './plugins.ts';
 
 import type { ReactNode } from 'react';
-import type { Settings as HubSettings, SuggestSettingBody } from '../shared/types.ts';
+import type { HostIntegrations, Integration, Settings as HubSettings, SuggestSettingBody } from '../shared/types.ts';
 import { store } from './store.tsx';
 
 const LABELS: Record<Theme, string> = {
@@ -249,6 +251,8 @@ export function Settings({ section }: { section?: string }) {
           <div className="ml-4 border-t border-border/60" />
           <UsageMeters />
         </div>
+        {/* herdr Hosts only; none, and the list is not drawn. */}
+        {prefs.integrations?.length ? <Integrations list={prefs.integrations} /> : null}
       </Section>
     </div>
   );
@@ -260,6 +264,62 @@ function Section({ id, title, children }: { id: string; title: string; children:
     <section id={`settings-${id}`} aria-labelledby={`settings-${id}-title`} className="scroll-mt-16 pt-6 lg:pt-10 lg:first:pt-0">
       <SectionTitle id={`settings-${id}-title`}>{title}</SectionTitle>
       {children}
+    </section>
+  );
+}
+
+const INTEGRATION_STATE: Record<Integration['state'], [string, string]> = {
+  current: ['Current', 'text-ok'],
+  outdated: ['Outdated', 'text-warn'],
+  not_installed: ['Not installed', 'text-muted'],
+};
+
+/**
+ * Settings › About: each herdr Host's Agent integrations, read-only (Wave 21). tautan never
+ * runs an install; an Outdated or Not installed Agent the Host has carries herdr's install
+ * command to copy instead. An Agent the Host lacks keeps one line: nothing to hook into yet.
+ */
+function Integrations({ list }: { list: HostIntegrations[] }) {
+  const host = (e: HostIntegrations) => e.muxKey.split('/')[0]!;
+  // The Mux label only when two herdr Muxes share a Host.
+  const name = (e: HostIntegrations) => (list.filter((o) => host(o) === host(e)).length > 1 ? `${host(e)} · ${e.label}` : host(e));
+  return (
+    <section aria-labelledby="settings-integrations" className="pt-5">
+      <h3 id="settings-integrations" className="px-5 text-[13px] font-semibold lg:px-1">
+        Agent integrations
+      </h3>
+      <p className="px-5 pt-0.5 text-caption text-muted lg:px-1">To install or update one, run its command on that Host.</p>
+      {list.map((e) => (
+        <section key={e.muxKey} aria-label={`Agent integrations on ${name(e)}`} className="flex flex-col gap-1.5 pt-3">
+          <p className="px-5 text-caption font-medium text-muted lg:px-1">{name(e)}</p>
+          {e.error ? (
+            <p className="px-5 text-caption text-muted lg:px-1">Not available · {e.error}</p>
+          ) : (
+            <ul className={`${GROUP} divide-y divide-border`}>
+              {integrationOrder(e.integrations ?? []).map((i) => {
+                const [word, tone] = INTEGRATION_STATE[i.state];
+                return (
+                  <li key={i.target} className="flex min-h-12 flex-col justify-center gap-1 px-4 py-2">
+                    <span className="flex items-baseline gap-3">
+                      <span className={`min-w-0 flex-1 truncate text-body ${i.available ? '' : 'text-muted'}`}>
+                        {i.label}
+                        {!i.available && <span className="text-caption"> · not found</span>}
+                      </span>
+                      <span className={`shrink-0 text-caption ${tone}`}>{word}</span>
+                    </span>
+                    {i.available && i.state !== 'current' && (
+                      <span className="flex items-center gap-2">
+                        <code className="min-w-0 flex-1 font-mono text-caption break-all text-muted select-all">{installCommand(i)}</code>
+                        <CopyButton text={installCommand(i)} label={`Copy the ${i.label} install command`} className={accessAction} />
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      ))}
     </section>
   );
 }

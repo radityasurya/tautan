@@ -275,12 +275,13 @@ export function inline(text: string, refs?: Record<string, string>): ReactNode[]
 // Clipboard needs a secure context; over plain http the button is left out, not broken.
 const canCopy = () => typeof navigator !== 'undefined' && Boolean(navigator.clipboard);
 
-export function CopyButton({ text, className }: { text: string; className: string }) {
+export function CopyButton({ text, className, label }: { text: string; className: string; /** names what it copies, where several sit together */ label?: string }) {
   const [copied, setCopied] = useState(false);
   if (!canCopy()) return null;
   return (
     <button
       type="button"
+      aria-label={label}
       onClick={() => {
         navigator.clipboard.writeText(text).then(() => {
           setCopied(true);

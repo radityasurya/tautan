@@ -13,7 +13,8 @@ import {
   rollup, setAgentGroup, setAgentSort, setPaneList, setShowShells, setSpaceAgentsOnly, setSpaceSort, sortSpaces, tildePath,
   usePref, type AgentGroup, type AgentSort, type PaneList, type SpaceSort,
 } from './spaces.ts';
-import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, RenameSheet, why } from './sheets.tsx';
+import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, PluginActionsSheet, RenameSheet, useOpener, usePluginActions, why } from './sheets.tsx';
+import { actionsFor } from './plugins.ts';
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
 import { fetchExplain, ON_WARN, promptLine, sendBlocked, type ExplainResponse } from './blocked.tsx';
@@ -118,12 +119,12 @@ export function placeOf(pane: StatePane, state: State | null): string | undefine
   return [workspace, host].filter(Boolean).join(' · ') || undefined;
 }
 
-/** Does a row's own text — agent, title, Workspace label — carry the needle? Shared with
- *  the Switch drawer, so one search means one match everywhere. */
+/** Does a row's own text — the Agent's name and type, title, Workspace label — carry the
+ *  needle? Shared with the Switch drawer, so one search means one match everywhere. */
 export function matchPane(pane: StatePane, needle: string, state?: State | null): boolean {
   if (!needle) return true;
   const workspace = state?.workspaces.find((w) => w.muxKey === pane.muxKey && w.id === pane.workspaceId);
-  return `${pane.agent ?? 'shell'} ${pane.title} ${workspace?.label ?? ''}`.toLowerCase().includes(needle);
+  return `${pane.agentName ?? ''} ${pane.agent ?? 'shell'} ${pane.title} ${workspace?.label ?? ''}`.toLowerCase().includes(needle);
 }
 
 /** A group's Status counts, most urgent first, as `[Status, n]`. `limit` keeps the top ones. */
@@ -159,6 +160,14 @@ const RING = 'outline-none focus-visible:outline-2 focus-visible:-outline-offset
 const INSET = 'px-[var(--row-inset,1rem)]';
 
 // ---- rows ----
+
+/** The Agent's own name in front of a title on one line: `auditor · seo audit`. */
+const Named = ({ name }: { name: string }) => (
+  <>
+    <span className="font-medium text-fg">{name}</span>
+    <span className="font-normal text-muted"> · </span>
+  </>
+);
 
 /** The two revealed actions, in px: Rename and Close, 72 each. */
 const REVEAL = 144;
@@ -198,7 +207,7 @@ export function Row({ pane, first, actions, context, compact, current }: {
   const body = (
     <Link
       to={`#/pane/${encodeURIComponent(pane.key)}`}
-      aria-label={[pane.agent ?? 'shell', pane.title, pane.status, fresh ? 'unseen' : 'seen', when]
+      aria-label={[pane.agentName, pane.agent ?? 'shell', pane.title, pane.status, fresh ? 'unseen' : 'seen', when]
         .filter(Boolean)
         .join(', ')}
       onClick={(e) => {
@@ -217,7 +226,10 @@ export function Row({ pane, first, actions, context, compact, current }: {
       <Dot status={pane.status} seen={!fresh} />
       {compact ? (
         <span aria-hidden className="flex min-w-0 flex-1 flex-col">
-          <span className={`truncate text-[13px] ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
+          <span className={`truncate text-[13px] ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>
+            {pane.agentName && <Named name={pane.agentName} />}
+            {pane.title}
+          </span>
           <span className="truncate text-caption text-muted">
             {agentName(pane.agent)}
             {context && <span className="text-muted/70"> · {context}</span>}
@@ -226,6 +238,7 @@ export function Row({ pane, first, actions, context, compact, current }: {
       ) : (
         <span aria-hidden className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-baseline gap-2">
+            {pane.agentName && <span className="max-w-[45%] shrink-0 truncate text-body font-medium text-fg">{pane.agentName}</span>}
             <span className="shrink-0 text-body text-muted">{pane.agent ?? 'shell'}</span>
             <span className={`truncate text-body ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
           </span>
@@ -385,7 +398,7 @@ function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: strin
   const agent = pane.agent ?? 'shell';
   const command = explain ? promptLine(explain) : pane.lastLine;
   const when = timeAgo(pane.statusChangedAt);
-  const label = [agent, pane.title, 'needs you', where, command, when].filter(Boolean).join(', ');
+  const label = [pane.agentName, agent, pane.title, 'needs you', where, command, when].filter(Boolean).join(', ');
   const frame = 'rounded-card border border-warn/35 bg-warn/8';
 
   if (compact) {
@@ -395,7 +408,10 @@ function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: strin
           <Link to={to} aria-label={label} title={command} className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch py-1 pl-2">
             <Dot status="blocked" />
             <span aria-hidden className="flex min-w-0 flex-col">
-              <span className="truncate text-[13px] font-medium text-fg">{pane.title}</span>
+              <span className="truncate text-[13px] font-medium text-fg">
+                {pane.agentName && <Named name={pane.agentName} />}
+                {pane.title}
+              </span>
               <span className="truncate text-caption text-warn">
                 {changed ? 'prompt changed' : agentName(pane.agent)}
                 {where && <span className="text-muted"> · {where}</span>}
@@ -439,7 +455,10 @@ function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: strin
             <span className="truncate">Needs you · {agent}{where && <span className="font-normal text-muted"> · {where}</span>}</span>
             <span className="ml-auto shrink-0 font-mono font-normal tabular-nums text-muted">{when}</span>
           </span>
-          <span aria-hidden className="truncate text-[15px] font-medium text-fg">{pane.title}</span>
+          <span aria-hidden className="truncate text-[15px] font-medium text-fg">
+            {pane.agentName && <Named name={pane.agentName} />}
+            {pane.title}
+          </span>
           {command && (
             <code aria-hidden className="truncate font-mono text-caption text-muted">
               {command}
@@ -947,6 +966,9 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const [paneMenu, setPaneMenu] = useState<StatePane | null>(null);
   const [paneRename, setPaneRename] = useState<StatePane | null>(null);
   const [paneClose, setPaneClose] = useState<StatePane | null>(null);
+  /** The Workspace whose plugin actions sheet is open (Wave 21). */
+  const [actionsIn, setActionsIn] = useState<StateWorkspace | null>(null);
+  const menuOpener = useOpener(menu !== null);
   const [q, setQ] = useState('');
   // The Workspace this screen just created: it stays listed until State fills it with a
   // Pane, and scrolls itself into view the first time State carries it.
@@ -1100,6 +1122,12 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   // list folds nothing.
   const keys = layout === 'herdr' ? [] : [...groups.map((g) => g.w.key), ...(needsYou.length ? [NEEDS] : []), ...(running.length ? [RUNNING] : [])];
   const allShut = keys.length > 0 && keys.every((k) => collapsed.includes(k));
+  // A Workspace action runs through one of its Panes: the first in herdr's own order (the
+  // tree carries no active Tab). The list is asked for when the menu opens and held while
+  // its sheet is open.
+  const actionsWs = actionsIn ?? menu;
+  const actionsPane = actionsWs && state?.panes.find((p) => p.muxKey === actionsWs.muxKey && p.workspaceId === actionsWs.id);
+  const wsActions = actionsFor(usePluginActions(writable(actionsWs?.muxKey) ? actionsPane?.key : undefined, menu !== null), 'workspace');
   const rowActions = (p: StatePane): RowActions | undefined =>
     writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
@@ -1494,8 +1522,19 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                 { label: 'Move down', hint: 'later in the list', disabled: place(menu) === slot(menu).length - 1, onClick: () => reorder(menu, place(menu) + 1) },
               ]
             : []),
+          // Last, so it can arrive after the menu opens without moving a row under a finger.
+          ...(wsActions.length ? [{ label: 'Plugin actions…', onClick: () => setActionsIn(menu) }] : []),
           ...(writable(menu?.muxKey) ? [{ label: 'Close Workspace', danger: true, onClick: () => menu && setClose(menu) }] : []),
         ]}
+      />
+      <PluginActionsSheet
+        open={actionsIn !== null}
+        onClose={() => setActionsIn(null)}
+        meta={actionsIn?.label}
+        actions={wsActions}
+        paneKey={actionsPane?.key}
+        state={state}
+        opener={menuOpener}
       />
       <RenameSheet
         open={rename !== null}

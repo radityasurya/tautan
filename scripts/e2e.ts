@@ -10,6 +10,8 @@
 import { access, mkdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { splitFloor } from '../web/split-floor.ts';
+import { installCommand, integrationOrder } from '../web/plugins.ts';
+import type { HostIntegrations } from '../shared/types.ts';
 
 const exists = (p: string) => access(p).then(() => true, () => false);
 
@@ -655,6 +657,111 @@ try {
     await desktop.getByRole('button', { name: 'Move right' }).click();
     const right = await settle(dragged);
     return assert(right[1] === t3 && right.length === 3, `Move right: ${dragged.join()} → ${right.join()}`);
+  });
+  await flow('plugins (Wave 21): Pane ⋯ Plugin actions… groups two plugins, hides Global only, gives focus back, and Open a scratch Tab opens the new Pane; the Workspace menu has none', async () => {
+    const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-plugins' });
+    const only = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
+    const key = `HireOpz/default/${only}`;
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    try {
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      const open = async () => {
+        await page.getByRole('button', { name: 'More' }).click();
+        await page.getByRole('button', { name: 'Plugin actions…' }).click();
+        await page.getByRole('heading', { name: 'Tautan Second Plugin' }).waitFor({ timeout: 8_000 });
+      };
+      await open();
+      assert(await page.getByRole('heading', { name: 'Tautan Test Plugin' }).count() === 1, 'two groups');
+      for (const title of ['Mark the pane', 'No contexts', 'Open a scratch Tab', 'Fail on purpose']) {
+        assert(await page.getByRole('button', { name: new RegExp(`^${title}`) }).count() === 1, `row ${title}`);
+      }
+      assert(await page.getByText('Global only').count() === 0, 'no Global only');
+      await page.waitForTimeout(500); // the slide-in
+      await page.screenshot({ path: '/tmp/tautan-plugins/actions-light.png' });
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: '/tmp/tautan-plugins/actions-dark.png' });
+      await page.emulateMedia({ colorScheme: 'light' });
+      // Closing the sheet gives focus back to the ⋯ button that opened the menu.
+      await page.getByRole('button', { name: '✕' }).click();
+      await page.waitForTimeout(500);
+      assert(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')) === 'More', 'focus back on More');
+      await open();
+      await page.getByRole('button', { name: /^Open a scratch Tab/ }).click();
+      for (let i = 0; i < 40 && decodeURIComponent(page.url()).endsWith(key); i++) await Bun.sleep(250);
+      const opened = decodeURIComponent(page.url()).split('/').pop()!;
+      const panes = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id).map(p => p.id);
+      assert(opened !== only && panes.includes(opened), `opened ${opened}, Workspace has ${panes.join()}`);
+      // The test plugins offer no workspace action, so the Workspace menu lists none.
+      await page.goto(`${BASE}/`, { waitUntil: 'networkidle' });
+      await page.getByRole('button', { name: 'e2e-plugins actions' }).click();
+      await page.getByRole('button', { name: 'Diff' }).waitFor({ timeout: 8_000 });
+      await page.waitForTimeout(1000);
+      return assert(await page.getByRole('button', { name: 'Plugin actions…' }).count() === 0, 'grouped, focus back, new Pane opened, no Workspace item');
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+  await flow('Rename Agent (Wave 21): ⋯ names the Agent, the header leads with the name, an empty name clears it', async () => {
+    const id = await pane('e2e-agent-name');
+    const key = `HireOpz/default/${id}`;
+    await report(id, 'idle');
+    const hubPane = async () => ((await (await fetch(`${BASE}/api/state`)).json()) as { panes: { key: string; agent?: string; agentName?: string }[] }).panes.find(p => p.key === key);
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    try {
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      const banner = page.getByRole('banner');
+      await page.getByRole('button', { name: 'More' }).click();
+      await page.getByRole('button', { name: /^Rename Agent/ }).click();
+      await page.getByPlaceholder('No name').fill('e2e-namer');
+      await page.getByRole('button', { name: 'Rename', exact: true }).click();
+      await banner.getByText('e2e-namer').waitFor({ timeout: 8_000 });
+      const named = await hubPane();
+      assert(named?.agentName === 'e2e-namer' && named.agent === 'claude', `named=${JSON.stringify(named)}`);
+      await page.getByRole('button', { name: 'More' }).click();
+      await page.getByRole('button', { name: /^Rename Agent/ }).click();
+      const field = page.getByPlaceholder('No name');
+      assert(await field.inputValue() === 'e2e-namer', 'prefilled with the name');
+      await field.fill('');
+      await page.getByRole('button', { name: 'Clear name' }).click();
+      for (let i = 0; i < 20 && (await banner.textContent() ?? '').includes('e2e-namer'); i++) await Bun.sleep(250);
+      const cleared = await hubPane();
+      return assert(!(await banner.textContent() ?? '').includes('e2e-namer') && cleared?.agentName === undefined && cleared?.agent === 'claude', `named, shown, cleared (${JSON.stringify(cleared)})`);
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+  await flow('Settings › About (Wave 21): the Agent integrations list, found Agents first, each with its state, Copy for the rest', async () => {
+    const { integrations } = await (await fetch(`${BASE}/api/settings`)).json() as { integrations?: HostIntegrations[] };
+    const entry = integrations?.find(e => e.muxKey === 'HireOpz/default');
+    const expected = integrationOrder(entry?.integrations ?? []);
+    assert(expected.length > 0, `integrations=${JSON.stringify(integrations).slice(0, 120)}`);
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block', permissions: ['clipboard-read', 'clipboard-write'] });
+    try {
+      await page.goto(`${BASE}/#/settings/about`, { waitUntil: 'networkidle' });
+      const list = page.getByRole('region', { name: 'Agent integrations on HireOpz' });
+      await list.waitFor({ timeout: 8_000 });
+      const rows = await list.getByRole('listitem').allTextContents();
+      const words = { current: 'Current', outdated: 'Outdated', not_installed: 'Not installed' } as const;
+      assert(rows.length === expected.length && expected.every((i, n) => rows[n]!.startsWith(i.label) && rows[n]!.includes(words[i.state])), `rows=${rows.join('|').slice(0, 160)}`);
+      await page.getByRole('heading', { name: 'Agent integrations' }).scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: '/tmp/tautan-plugins/integrations-light.png' });
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: '/tmp/tautan-plugins/integrations-dark.png' });
+      // Copy is offered for an Outdated or Not installed Agent the Host has, and only there.
+      const copies = expected.filter(i => i.available && i.state !== 'current');
+      assert(await list.getByRole('button', { name: /^Copy the / }).count() === copies.length, `copy buttons for ${copies.map(i => i.target).join()}`);
+      const toCopy = copies[0];
+      if (!toCopy) return 'ordered and stated; no found Agent needs an install on the throwaway Host';
+      await list.getByRole('button', { name: `Copy the ${toCopy.label} install command` }).click();
+      await list.getByText('Copied').waitFor({ timeout: 4_000 });
+      const copied = await page.evaluate(() => navigator.clipboard.readText());
+      return assert(copied === installCommand(toCopy), `ordered, stated, copied ${copied}`);
+    } finally {
+      await page.close().catch(() => {});
+    }
   });
 } finally {
   await browser.close().catch(() => {});

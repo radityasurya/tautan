@@ -16,7 +16,8 @@ import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, unseen } from './home.tsx';
 import { ChevronDown, Down, Plus, ZoomIn, ZoomOut } from './icons.tsx';
-import { ConfirmCloseSheet, MenuSheet, NewTabSheet, RenameSheet, why } from './sheets.tsx';
+import { ConfirmCloseSheet, MenuSheet, NewTabSheet, PluginActionsSheet, RenameSheet, useOpener, usePluginActions, why } from './sheets.tsx';
+import { actionsFor } from './plugins.ts';
 import { MoveSheet, RESIZE_STEP, ResizeSheet, SwapSheet } from './layout.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
@@ -1280,6 +1281,11 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   // Off means the agent's own 256-colour and truecolour values render as sent.
   const [themedOn, setThemedOn] = useState(themedColors);
   const [rename, setRename] = useState(false);
+  /** Wave 21: the Agent's own name, and the plugin actions sheet, both from ⋯. */
+  const [agentRename, setAgentRename] = useState(false);
+  const [showActions, setShowActions] = useState(false);
+  const moreOpener = useOpener(showMore);
+  const actions = actionsFor(usePluginActions(writable ? paneKey : undefined, showMore), 'pane');
   const [confirmClose, setConfirmClose] = useState(false);
   const [tabMenu, setTabMenu] = useState<string | null>(null);
   /** A desktop Tab drag: the Tab in hand and the one under the pointer. */
@@ -1325,6 +1331,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     setExplain(null);
     setStalePrompt(null);
     setRename(false);
+    setAgentRename(false);
+    setShowActions(false);
     setConfirmClose(false);
   }, [paneKey]);
 
@@ -1703,6 +1711,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
       <PaneHeader
         desktop={desktop}
         title={pane?.title ?? '…'}
+        name={pane?.agentName}
         path={[host?.label, ws?.label, active?.label]}
         status={status}
         agent={agent}
@@ -1988,6 +1997,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
           { label: 'Files', sub: 'Browse, read and edit this Workspace', onClick: () => navigate(filesHash(paneKey), { transition: false }) },
           ...(ws ? [{ label: 'Diff', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }] : []),
           ...(agent ? [{ label: 'Read aloud', onClick: speak }] : []),
+          // herdr's plugins (Wave 21): listed only when one offers a Pane or Tab action.
+          ...(actions.length ? [{ label: 'Plugin actions…', onClick: () => setShowActions(true) }] : []),
           kind === 'shell'
             ? {
                 // Three states for a shell: auto, then the two explicit choices.
@@ -2045,6 +2056,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
           ...(writable
             ? [
                 { label: 'Rename', onClick: () => setRename(true) },
+                ...(agent ? [{ label: 'Rename Agent', sub: pane?.agentName, onClick: () => setAgentRename(true) }] : []),
                 { label: 'Close Pane', danger: true, onClick: () => setConfirmClose(true) },
               ]
             : []),
@@ -2098,6 +2110,24 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         onSubmit={(label) =>
           api<void>('/api/rename', { muxKey: pane!.muxKey, paneId: pane!.id, label } satisfies RenameBody)
         }
+      />
+      <RenameSheet
+        open={agentRename}
+        kind="Agent"
+        current={pane?.agentName ?? ''}
+        onClose={() => setAgentRename(false)}
+        onSubmit={(label) =>
+          api<void>('/api/rename', { muxKey: pane!.muxKey, paneId: pane!.id, label, agent: true } satisfies RenameBody)
+        }
+      />
+      <PluginActionsSheet
+        open={showActions}
+        onClose={() => setShowActions(false)}
+        meta={pane?.title}
+        actions={actions}
+        paneKey={paneKey}
+        state={state}
+        opener={moreOpener}
       />
       <ConfirmCloseSheet
         open={confirmClose}

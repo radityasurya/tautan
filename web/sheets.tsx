@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type { FocusEvent, ReactNode } from 'react';
+import type { FocusEvent, ReactNode, RefObject } from 'react';
 
-import type { BranchList, Worktree } from '../shared/types.ts';
+import type { BranchList, PluginAction, State, Worktree } from '../shared/types.ts';
+import { api, navigate } from './app.tsx';
 import { Toggle } from './hosts.tsx';
+import { appeared, byPlugin, keysIn, NEW_PANE_MS, type PaneWatch } from './plugins.ts';
 import { FolderBrowser } from './folders.tsx';
 import { basename } from './folders-logic.ts';
 import { Check } from './icons.tsx';
@@ -300,6 +302,162 @@ export function MenuSheet({
               ))}
             </ul>
           )}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/** The element that had focus when `open` turned true: the ⋯ button a follow-up sheet gives focus back to. */
+export function useOpener(open: boolean) {
+  const opener = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (open) opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, [open]);
+  return opener;
+}
+
+/**
+ * herdr's plugin actions for a herdr Pane (Wave 21): asked once for the Pane and again each
+ * time `open` turns true, so the ⋯ item is there before the menu is. Empty until the Hub
+ * answers, and when it refuses (tmux answers 501).
+ */
+export function usePluginActions(paneKey: string | undefined, open: boolean): PluginAction[] {
+  const [got, setGot] = useState<{ key: string; actions: PluginAction[] } | null>(null);
+  const asked = useRef('');
+  useEffect(() => {
+    if (!paneKey || (!open && asked.current === paneKey)) return;
+    asked.current = paneKey;
+    let live = true;
+    api<{ actions: PluginAction[] }>(`/api/panes/${encodeURIComponent(paneKey)}/actions`, undefined, 'GET').then(
+      (r) => live && setGot({ key: paneKey, actions: r.actions }),
+      () => live && setGot({ key: paneKey, actions: [] }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [paneKey, open]);
+  return got && got.key === paneKey ? got.actions : [];
+}
+
+const actionKey = (a: PluginAction) => `${a.pluginId}/${a.actionId}`;
+
+/**
+ * Plugin actions, grouped under each plugin's name. One runs at a time: its row says so and
+ * the rest wait. herdr's refusal shows above the list, which stays open. A 204 means herdr
+ * started the action, so the sheet closes; a Pane that then appears in the Workspace within
+ * NEW_PANE_MS opens. Focus goes back to the ⋯ button that opened the menu.
+ */
+export function PluginActionsSheet({
+  open,
+  onClose,
+  meta,
+  actions,
+  paneKey,
+  state,
+  opener,
+}: {
+  open: boolean;
+  onClose: () => void;
+  meta?: string;
+  /** Already filtered for the menu that opened it (`actionsFor`). */
+  actions: PluginAction[];
+  /** The Pane an action runs from: the Pane itself, or one of the Workspace's. */
+  paneKey?: string;
+  state: State | null;
+  opener: RefObject<HTMLElement | null>;
+}) {
+  const latest = useRef(state);
+  latest.current = state;
+  const watch = useRef<PaneWatch | null>(null);
+  const follow = () => {
+    const w = watch.current;
+    if (!w) return;
+    const key = appeared(w, latest.current?.panes ?? [], Date.now());
+    if (key || Date.now() > w.until) watch.current = null;
+    if (key) navigate(`#/pane/${encodeURIComponent(key)}`);
+  };
+  useEffect(follow, [state]);
+
+  const [pick, setPick] = useState('');
+  const run = async (a: PluginAction) => {
+    const panes = latest.current?.panes ?? [];
+    const pane = panes.find((p) => p.key === paneKey);
+    if (!pane) throw new Error('pane not found');
+    // The Workspace's Panes before the action, so a Pane it opens stands out after.
+    const before = keysIn(panes, pane.muxKey, pane.workspaceId);
+    await api<void>(`/api/panes/${encodeURIComponent(pane.key)}/actions/${encodeURIComponent(a.actionId)}`, { pluginId: a.pluginId });
+    watch.current = { muxKey: pane.muxKey, workspaceId: pane.workspaceId, before, until: Date.now() + NEW_PANE_MS };
+    follow(); // the Hub refreshes before it replies, so the new Pane may already be here
+  };
+  const { busy, error, submit } = useWrite(open, run, onClose);
+
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (wasOpen.current && !open) opener.current?.focus();
+    wasOpen.current = open;
+  }, [open]);
+
+  // A known code reads as a sentence; anything else is herdr's own message.
+  const refused = Boolean(error) && !(error in WHY) && !/^http \d+$/.test(error);
+  const groups = byPlugin(actions);
+  return (
+    <Sheet open={open} title="Plugin actions" onClose={onClose} flush>
+      <div className="flex flex-col" style={FLUSH_BODY}>
+        <div className="shrink-0 border-b border-border px-6 pb-3">
+          <div className="-mt-3.5 truncate">
+            <Caption>{meta}</Caption>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pt-1.5 pb-6" style={{ scrollbarGutter: 'stable' }}>
+          {error &&
+            (refused ? (
+              <div role="alert" className="mx-6 mt-1.5 mb-1 flex flex-col gap-1.5 rounded-chip bg-danger/10 p-3">
+                <p className="text-[13px] font-semibold text-danger">herdr refused the action</p>
+                <pre className="font-mono text-[11.5px] leading-normal whitespace-pre-wrap text-danger [overflow-wrap:anywhere]">{error}</pre>
+              </div>
+            ) : (
+              <p role="alert" className="px-6 pt-1.5 pb-1 text-caption text-danger">
+                {why(error)}
+              </p>
+            ))}
+          {groups.length === 0 && <p className="px-6 pt-3 text-caption text-muted">No plugin actions here</p>}
+          {groups.map((g, i) => (
+            <section key={g.pluginId} className={i > 0 ? 'mt-1.5 border-t border-border/60 pt-1.5' : ''}>
+              <h3 className={MENU_HEADING}>{g.plugin}</h3>
+              <ul>
+                {g.actions.map((a) => {
+                  // The running row stays focusable (aria-disabled, not disabled), so focus
+                  // does not drop to the page while herdr starts it.
+                  const running = busy && pick === actionKey(a);
+                  return (
+                    <li key={actionKey(a)}>
+                      <button
+                        type="button"
+                        disabled={busy && !running}
+                        aria-disabled={running || undefined}
+                        aria-busy={running || undefined}
+                        onClick={() => {
+                          if (busy) return;
+                          setPick(actionKey(a));
+                          submit(a);
+                        }}
+                        className={`${MENU_ROW} text-body text-fg outline-none focus-visible:bg-bg focus-visible:shadow-[inset_2px_0_0_var(--accent)] disabled:cursor-default disabled:opacity-40 ${
+                          running ? 'cursor-default bg-bg' : busy ? '' : 'hover:bg-bg active:bg-bg'
+                        }`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate">{a.title}</span>
+                          {a.description && <span className="mt-0.5 block text-caption text-muted">{a.description}</span>}
+                        </span>
+                        {running && <span className="shrink-0 text-caption text-muted">Starting…</span>}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
         </div>
       </div>
     </Sheet>
@@ -648,20 +806,28 @@ export function RenameSheet({
   onClose: () => void;
   onSubmit: Submit<string>;
   current: string;
-  kind: 'Workspace' | 'Tab' | 'Pane';
+  /** `Agent` names the Pane's Agent, and an empty name clears it (Wave 21). */
+  kind: 'Workspace' | 'Tab' | 'Pane' | 'Agent';
 }) {
   const { busy, error, submit, retry } = useWrite(open, onSubmit, onClose);
   const [name, setName] = useState('');
   useEffect(() => {
     if (open) setName(current);
   }, [open]); // current as it was when the sheet opened; typing is never clobbered
+  const clears = kind === 'Agent' && !name.trim();
   return (
     <Sheet open={open} title={`Rename ${kind}`} onClose={onClose}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <TextInput value={name} onChange={setName} label="Name" placeholder="Name" />
+        <TextInput
+          value={name}
+          onChange={setName}
+          label="Name"
+          placeholder={kind === 'Agent' ? 'No name' : 'Name'}
+          caption={kind === 'Agent' ? 'Leave it empty to clear the name.' : undefined}
+        />
         {error && <ErrorLine error={error} busy={busy} onRetry={retry} />}
-        <Button variant="primary" size="lg" fullWidth loading={busy} disabled={!name.trim()} onClick={() => submit(name.trim())}>
-          {busy ? 'Renaming…' : 'Rename'}
+        <Button variant="primary" size="lg" fullWidth loading={busy} disabled={!name.trim() && (kind !== 'Agent' || !current)} onClick={() => submit(name.trim())}>
+          {clears ? (busy ? 'Clearing…' : 'Clear name') : busy ? 'Renaming…' : 'Rename'}
         </Button>
       </div>
     </Sheet>
