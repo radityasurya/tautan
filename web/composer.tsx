@@ -45,7 +45,7 @@ const writeDraft = (paneKey: string, text: string) => {
 /** Slash commands that open a menu or a prompt on the Screen and write nothing to the
  *  transcript until they finish, so the Chat view would show nothing while they wait.
  *  ponytail: a fixed list of Claude's and pi's; extend it when another one turns up. */
-const SCREEN_COMMAND = /^\/(login|logout|model|config|settings|permissions|resume|agents|mcp|hooks|status|theme|tree|fork|hotkeys|plugin|help|usage|cost|context|skills|tasks|export|memory|ide|add-dir|rewind|workflows)$/;
+const SCREEN_COMMAND = /^\/(login|logout|model|config|settings|permissions|resume|agents|mcp|hooks|status|theme|tree|fork|hotkeys|plugin|help|usage|cost|context|skills|tasks|export|effort|memory|ide|add-dir|rewind|workflows)$/;
 
 /** The Pane the Composer types straight into, whether its field has focus, and how to give it
  *  focus: the Screen draws its caret from this, and a tap on the Screen focuses the field. */

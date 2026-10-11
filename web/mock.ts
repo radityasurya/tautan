@@ -598,6 +598,17 @@ const MOCK_COMMANDS = [
   { value: '/grill-me', label: '/grill-me', detail: 'Interview the user relentlessly about a plan or design until reaching shared understanding' },
 ];
 
+/** Claude Code's own /effort levels, copied from CLAUDE_EFFORTS in server/complete.ts; the mock
+ *  imports no server code. */
+const MOCK_EFFORTS = [
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max', detail: 'May use excessive tokens resulting in long response times and may hit token limits. Use sparingly for the hardest tasks.' },
+  { value: 'auto', label: 'auto', detail: 'Can think for more complex tasks' },
+];
+
 /** Every file the fake Hub can list, read and write, by absolute path. */
 const MOCK_FILES: Record<string, string> = {
   [`${REPO}/README.md`]: README,
@@ -1358,6 +1369,12 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
   if (method === 'GET' && complete) {
     const q = (url.searchParams.get('q') ?? '').toLowerCase();
     if (url.searchParams.get('kind') === 'slash') return json({ items: MOCK_COMMANDS.filter((i) => i.label.toLowerCase().includes(q)) });
+    // Claude Panes only, as the Hub serves it; other Agents fall through to [], like kind=model.
+    if (url.searchParams.get('kind') === 'effort') {
+      const pane = s.state.panes.find((p) => p.key === decodeURIComponent(complete[1]!));
+      const items = pane?.agent === 'claude' ? MOCK_EFFORTS.filter((i) => i.label.toLowerCase().includes(q)) : [];
+      return json({ items });
+    }
     if (url.searchParams.get('kind') !== 'file') return json({ items: [] });
     const cwd = expand(s.state.panes.find((p) => p.key === decodeURIComponent(complete[1]!))?.cwd ?? REPO);
     const files = Object.keys(s.files).filter((f) => f.startsWith(`${cwd}/`)).map((f) => f.slice(cwd.length + 1)).sort();
