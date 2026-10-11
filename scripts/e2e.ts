@@ -62,10 +62,10 @@ await Bun.sleep(1500);
 
 const q = (v: string) => `'${v.replaceAll("'", `'\\''`)}'`;
 let seq = 0;
-const report = async (pane: string, state: string) => {
+const report = async (pane: string, state: string, agent = 'claude') => {
   // herdr 0.9.2 quirks, probed: fresh source per report; the first refresh reads one
   // report behind, so settle-and-retry until the Hub actually shows the state.
-  await herdrRpc(fixture.sock, 'pane.report_agent', { pane_id: pane, source: `e2e-${++seq}`, agent: 'claude', state });
+  await herdrRpc(fixture.sock, 'pane.report_agent', { pane_id: pane, source: `e2e-${++seq}`, agent, state });
   for (let attempt = 0; attempt < 4; attempt++) {
     await Bun.sleep(700);
     // The Hub 403s a POST without an Origin header (CSRF guard) and Bun's fetch sends none,
@@ -114,19 +114,27 @@ try {
   await flow('wrap guard: phone wraps a wide grid, desktop does not', async () => {
     await report(main, 'idle'); // an agent Pane: wrap is the agent default
     await print(main, ['B'.repeat(100)]);
+    // Agent Panes open in the Chat lens (7fc2cf9), and only the Screen has a grid to wrap:
+    // pin this Pane to Screen first. The lens store is localStorage (web/store.tsx).
+    await phone.evaluate((k: string) => localStorage.setItem(`tautan.lens.${k}`, 'screen'), KEY);
     await phone.reload({ waitUntil: 'networkidle' });
-    await phone.waitForTimeout(900);
-    const phoneWrapped = await phone.evaluate(() => document.querySelector('pre')?.className.includes('pre-wrap') ?? false);
-    await desktop.goto(`${BASE}/#/pane/${encodeURIComponent(KEY)}`, { waitUntil: 'networkidle' });
     // The first Screen fetch plus the font swap settle late: poll until the pre reports a
     // real layout mode (w-max when the grid fits, pre-wrap when it does not).
+    let phoneClasses = '';
+    for (let i = 0; i < 20; i++) {
+      await phone.waitForTimeout(300);
+      phoneClasses = await phone.evaluate(() => document.querySelector('pre')?.className ?? '');
+      if (phoneClasses.includes('w-max') || phoneClasses.includes('pre-wrap')) break;
+    }
+    await desktop.addInitScript((k: string) => localStorage.setItem(`tautan.lens.${k}`, 'screen'), KEY);
+    await desktop.goto(`${BASE}/#/pane/${encodeURIComponent(KEY)}`, { waitUntil: 'networkidle' });
     let deskClasses = '';
     for (let i = 0; i < 20; i++) {
       await desktop.waitForTimeout(300);
       deskClasses = await desktop.evaluate(() => document.querySelector('pre')?.className ?? '');
       if (deskClasses.includes('w-max') || deskClasses.includes('pre-wrap')) break;
     }
-    return assert(phoneWrapped && deskClasses.includes('w-max'), `phone=${phoneWrapped} desk=${deskClasses.slice(0, 44)}`);
+    return assert(phoneClasses.includes('pre-wrap') && deskClasses.includes('w-max'), `phone=${phoneClasses.slice(0, 44)} desk=${deskClasses.slice(0, 44)}`);
   });
 
   await flow('blocked card: rows, refusal, re-read', async () => {
@@ -167,17 +175,26 @@ try {
 
   await flow('held messages queue and flush', async () => {
     const worker = await pane('e2e-held');
-    await report(worker, 'working');
+    // Claude now takes a reply typed while it works straight away (QUEUES, 5a6502a); Codex is
+    // the Agent whose replies queue as held, so report this Pane as Codex.
+    await report(worker, 'working', 'codex');
     await phone.goto(`${BASE}/#/pane/${encodeURIComponent(`HireOpz/default/${worker}`)}`, { waitUntil: 'networkidle' });
     await phone.waitForTimeout(1600);
     await phone.getByRole('textbox', { name: /Reply to/i }).fill('e2e held message');
-    await phone.getByRole('button', { name: 'Send' }).click();
+    // While the Agent works, the suggestion pills read "<label>, sends when … is idle", so the
+    // composer's own Send needs an exact name (5a6502a).
+    await phone.getByRole('button', { name: 'Send', exact: true }).first().click();
     await phone.waitForTimeout(500);
     assert(await phone.getByText('1 held').count() > 0, 'held row');
+    // Held replies go out on their own once the Pane is idle again (autoDeliver on every
+    // `state`, 6e91daf). A manual "Send now" click after the idle report races that flush, so
+    // drive the designed path: turn the Pane idle and watch the message land.
     await report(worker, 'idle');
-    await phone.getByRole('button', { name: 'Send now' }).click();
-    await phone.waitForTimeout(1500);
-    const screen = String((await mux.read(worker, 'visible')).text);
+    let screen = '';
+    for (let i = 0; i < 20 && !screen.includes('e2e held message'); i++) {
+      await Bun.sleep(500);
+      screen = String((await mux.read(worker, 'visible')).text);
+    }
     return assert(screen.includes('e2e held message'), 'flushed to pane');
   });
 
@@ -229,8 +246,9 @@ try {
     const switchButton = phone.getByRole('button', { name: 'Chat', exact: true }).first();
     if (await switchButton.count()) {
       await switchButton.click();
-      await phone.waitForTimeout(1000);
-      assert(await phone.getByText('plain shell for the lens test').first().isVisible().catch(() => false), 'screen still shown');
+      // A fresh Agent gets a 5 s Chat grace with 1 s retries before the lens falls back to
+      // the Screen (5a6502a): wait for the text, not a fixed tick.
+      await phone.getByText('plain shell for the lens test').first().waitFor({ timeout: 12_000 });
       return 'switch fell back to Screen';
     }
     return 'no switch offered (agent pane without lens support) — Screen only';
@@ -238,8 +256,11 @@ try {
 
   await flow('file viewer folder view lists the folder and opens a sibling', async () => {
     await desktop.goto(`${BASE}/#/file/${encodeURIComponent(KEY)}?path=${encodeURIComponent(`${fixture.dir}/chart.png`)}`, { waitUntil: 'networkidle' });
-    await desktop.getByRole('button', { name: 'Folder', exact: true }).click();
-    const row = desktop.getByRole('button', { name: /chart\.png/ }).first();
+    // Desktop navigates with Crumbs (c575455); the Folder button is the phone's. The file is
+    // the last step, so every folder step above it is a link into Files.
+    const crumbs = desktop.getByRole('navigation', { name: 'Path' });
+    await crumbs.getByRole('link', { name: fixture.dir.split('/').pop()!, exact: true }).click();
+    const row = desktop.getByRole('link', { name: /chart\.png/ }).first();
     await row.waitFor({ timeout: 8_000 });
     await row.click();
     await desktop.waitForTimeout(600);
@@ -376,7 +397,7 @@ try {
     await desktop.getByRole('region', { name: /^herdr / }).getByText('e2e-main', { exact: true }).waitFor({ timeout: 8_000 });
     return 'three tabs, Hosts apart from Settings, Host detail at both widths';
   });
-  await flow('chat view: the pending tool row asks for approval; the pill scrolls to it; No sends esc', async () => {
+  await flow('chat view: the pending tool row asks for approval; the pill scrolls to it; row 4 sends down and enter', async () => {
     const asker = await pane('e2e-approval');
     const key = `HireOpz/default/${asker}`;
     // The live shape (Claude Code 2.1, herdr's bash_permission_prompt): description, the
@@ -398,7 +419,9 @@ try {
     });
     try {
       await page.route((url: URL) => /^\/api\/panes\/[^/]+\/chat$/.test(url.pathname), (route: { fulfill: (reply: object) => Promise<void> }) => route.fulfill({ json: transcript }));
-      await page.addInitScript((k: string) => sessionStorage.setItem(`tautan.lens.${k}`, 'chat'), key);
+      // The lens store is localStorage with a Chat default (7fc2cf9); pin it so the flow does
+      // not depend on the default.
+      await page.addInitScript((k: string) => localStorage.setItem(`tautan.lens.${k}`, 'chat'), key);
       await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
       // The user reads further up when the Pane turns blocked: the pill says so, nothing jumps.
       const transcriptBox = page.locator('[aria-label$="transcript"]');
@@ -411,7 +434,8 @@ try {
       assert(await transcriptBox.evaluate((el: HTMLElement) => el.scrollTop) < 40, 'stayed scrolled up');
       const row = page.locator('[data-approval]');
       assert((await row.textContent() ?? '').includes('touch /tmp/tautan-permission-test'), 'command shown');
-      assert(await row.getByRole('radio', { name: /^Yes, key enter/ }).count() === 1 && await row.getByRole('radio', { name: /^No, key esc/ }).count() === 1, 'Yes and No in the row');
+      // e8cabf9: a numbered menu is read as rows, so the radios are `1. Yes` and `4. No`.
+      assert(await row.getByRole('radio', { name: /^1\. Yes/ }).count() === 1 && await row.getByRole('radio', { name: /^4\. No/ }).count() === 1, 'Yes and No in the row');
       assert(await page.getByRole('region', { name: 'Blocked' }).count() === 0, 'dock card hidden in the Chat view');
       assert(await page.getByRole('banner').getByRole('button', { name: 'Review' }).count() === 0, 'no header Review');
       assert(await page.getByRole('banner').getByRole('button', { name: 'Chat' }).count() === 1, 'lens switch stays while blocked');
@@ -425,11 +449,12 @@ try {
       });
       assert(inView, 'row in view');
       assert(await row.evaluate((el: HTMLElement) => el.contains(document.activeElement)), 'focus in the row');
-      assert(await page.evaluate((k: string) => sessionStorage.getItem(`tautan.lens.${k}`), key) === 'chat', 'lens still chat');
-      await row.getByRole('radio', { name: /^No, key esc/ }).click();
+      assert(await page.evaluate((k: string) => localStorage.getItem(`tautan.lens.${k}`), key) === 'chat', 'lens still chat');
+      await row.getByRole('radio', { name: /^4\. No/ }).click();
       await row.getByRole('button', { name: 'Send', exact: true }).click();
       await row.getByText('Sent · waiting for Claude').waitFor({ timeout: 8_000 });
-      return assert(sent.length === 1 && sent[0]!.includes('"keys":["esc"]') && sent[0]!.includes('"promptId"'), `sent=${sent.join('|').slice(0, 120)}`);
+      // Row 4 is one step below the cursor on row 1: one down, then enter.
+      return assert(sent.length === 1 && sent[0]!.includes('"keys":["down","enter"]') && sent[0]!.includes('"promptId"'), `sent=${sent.join('|').slice(0, 120)}`);
     } finally {
       await page.close().catch(() => {});
     }
@@ -469,8 +494,11 @@ try {
       assert(await cells.count() === 2, `cells=${await cells.count()}`);
       const cellA = wide.locator(`[data-pane="${keyA}"]`);
       const cellB = wide.locator(`[data-pane="${keyB}"]`);
-      await cellB.getByText('SPLIT-MARK-B').waitFor({ timeout: 8_000 });
-      await cellA.getByText('SPLIT-MARK-A').waitFor({ timeout: 8_000 });
+      // Both cells are agent Panes, so each opens in the Chat lens and only shows its grid
+      // after the 5 s no-transcript grace (5a6502a), with the Hub's watched-pane poll backing
+      // off to 2 s while quiet: under a full run that lands late, so budget for it.
+      await cellB.getByText('SPLIT-MARK-B').waitFor({ timeout: 15_000 });
+      await cellA.getByText('SPLIT-MARK-A').waitFor({ timeout: 15_000 });
       assert(await cellA.getByText('SPLIT-MARK-B').count() === 0, 'marker B leaked into cell a');
       // A cell's grid never scales under the readable floor (splitFloor of that page's devicePixelRatio).
       const scales = await wide.locator('[data-testid="split-cell"] pre').evaluateAll((pres: HTMLElement[]) => pres.map((p) => Number(/matrix\(([\d.]+)/.exec(getComputedStyle(p).transform)?.[1] ?? 1)));
@@ -494,18 +522,23 @@ try {
       await wide.route(isChat, (route: { fulfill: (reply: object) => Promise<void> }) => route.fulfill({
         json: { sessionId: 'e2e', at: Date.now(), turns: [{ role: 'assistant', text: 'CHAT-MARK-B', tools: [], at: Date.now() }] },
       }));
-      await wide.evaluate((k: string) => sessionStorage.setItem(`tautan.lens.${k}`, 'chat'), keyB);
+      // Chat defaults everywhere now (7fc2cf9), so pin the lenses: b in Chat, a back to Screen.
+      await wide.evaluate(([a, b]: string[]) => {
+        localStorage.setItem(`tautan.lens.${a}`, 'screen');
+        localStorage.setItem(`tautan.lens.${b}`, 'chat');
+      }, [keyA, keyB]);
       await wide.reload({ waitUntil: 'networkidle' });
       await cellB.getByText('CHAT-MARK-B').waitFor({ timeout: 8_000 });
       await cellA.getByText('SPLIT-MARK-A').waitFor({ timeout: 8_000 });
       assert(await wide.getByTestId('split-cell').count() === 2 && await cellB.locator('pre').count() === 0, 'Chat in cell b, Screen in cell a');
-      // No transcript: the lens falls back to Screen, and the split stays.
+      // No transcript: the view falls back to the Screen, and the saved choice stays untouched
+      // (the lens store is localStorage, 7fc2cf9; the fallback never writes it).
       await wide.unroute(isChat);
       await wide.route(isChat, (route: { fulfill: (reply: object) => Promise<void> }) => route.fulfill({ status: 404, json: { error: 'no-transcript' } }));
       await wide.reload({ waitUntil: 'networkidle' });
-      await cellB.getByText('SPLIT-MARK-B').waitFor({ timeout: 8_000 });
-      const lens = await wide.evaluate((k: string) => sessionStorage.getItem(`tautan.lens.${k}`), keyB);
-      assert(lens === 'screen' && await wide.getByTestId('split-cell').count() === 2, `still split after the lens fell back (lens=${lens})`);
+      await cellB.getByText('SPLIT-MARK-B').waitFor({ timeout: 15_000 });
+      const lens = await wide.evaluate((k: string) => localStorage.getItem(`tautan.lens.${k}`), keyB);
+      assert(lens === 'chat' && await wide.getByTestId('split-cell').count() === 2, `still split after the lens fell back (lens=${lens})`);
       await wide.setViewportSize({ width: 1100, height: 900 });
       await wide.getByRole('group', { name: 'Panes in this Tab' }).waitFor({ timeout: 8_000 });
       assert(await wide.getByTestId('split-view').count() === 0, 'split gone at 1100 px');
