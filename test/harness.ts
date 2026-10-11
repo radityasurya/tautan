@@ -74,3 +74,64 @@ export async function startThrowawayHerdr(): Promise<{ sock: string; dir: string
 }
 
 export const herdrMux = (sock: string) => new HerdrMux('throwaway', sock);
+
+/**
+ * The test plugin, shared by the contract test and e2e: the pane actions the contract test
+ * asserts on (an env dump, a global-only one, a contextless one), a scratch action that
+ * calls herdr back through HERDR_BIN_PATH (the plugin API is the CLI), and a failing action
+ * in a second plugin so a grouped list has two groups. Returns the env-dump path.
+ */
+export async function linkTestPlugin(fixture: { sock: string; dir: string }): Promise<{ out: string }> {
+  const out = join(fixture.dir, 'mark-env.txt');
+  const one = join(fixture.dir, 'test-plugin');
+  await mkdir(one);
+  await writeFile(join(one, 'herdr-plugin.toml'), `id = "tautan.test-plugin"
+name = "Tautan Test Plugin"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "mark"
+title = "Mark the pane"
+description = "Writes the invocation env to a file"
+contexts = ["pane", "global"]
+command = ["/bin/sh", "-c", "env > ${out}"]
+
+[[actions]]
+id = "global-only"
+title = "Global only"
+contexts = ["global"]
+command = ["/bin/sh", "-c", ":"]
+
+[[actions]]
+id = "plain"
+title = "No contexts"
+command = ["/bin/sh", "-c", ":"]
+
+[[actions]]
+id = "scratch"
+title = "Open a scratch Tab"
+description = "Calls herdr back through HERDR_BIN_PATH, the plugin API"
+contexts = ["pane"]
+command = ["/bin/sh", "-c", 'exec "$HERDR_BIN_PATH" tab create --workspace "$HERDR_WORKSPACE_ID" --label scratch']
+`);
+  const two = join(fixture.dir, 'test-plugin-two');
+  await mkdir(two);
+  await writeFile(join(two, 'herdr-plugin.toml'), `id = "tautan.test-plugin-two"
+name = "Tautan Second Plugin"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "boom"
+title = "Fail on purpose"
+description = "Exits non-zero so the UI can show herdr's failure text"
+contexts = ["pane"]
+command = ["/bin/sh", "-c", "echo 'the scratch script is missing' >&2; exit 3"]
+`);
+  await herdrRpc(fixture.sock, 'plugin.link', { path: one });
+  await herdrRpc(fixture.sock, 'plugin.link', { path: two });
+  return { out };
+}

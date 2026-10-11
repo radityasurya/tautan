@@ -3,7 +3,7 @@
 // VITE_MOCK=1); it never loads for a real page.
 import type {
   BranchList, DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope, SwitchBody, Worktree,
-  Explain, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
+  Explain, HostIntegrations, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, PluginAction, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
   ScreenMode, SeenBody, Settings, SettingsBody, State, StatePane, Status, SuggestSettingBody,
 } from '../shared/types.ts';
 import type { ChatResponse, Subagent, Turn } from '../shared/chat.ts';
@@ -230,6 +230,8 @@ export const mockState: State = {
     {
       key: 'mbp/herdr/p6', muxKey: 'mbp/herdr', workspaceId: 'digivaley', tabId: 't4', id: 'p6',
       title: 'seo audit for listings', cwd: '~/projects/digivaley.com', agent: 'claude',
+      // The one named Agent (Wave 21): the user's own label, distinct from the title.
+      agentName: 'auditor',
       status: 'idle', revision: 233, seenRevision: 233, cols: 80, rows: 24,
       lastLine: 'Audited 42 listing pages', statusChangedAt: ago(95),
     },
@@ -587,6 +589,30 @@ const FILE_TSX = [
   '',
 ].join('\n');
 
+/** The plugin actions `GET /api/panes/:key/actions` lists on a herdr Pane: two plugins
+ *  (a grouped list has two groups), mixed pane/workspace contexts, one with no description.
+ *  `boom` always fails on invoke, standing in for herdr's own refusals. */
+const MOCK_ACTIONS: PluginAction[] = [
+  { pluginId: 'dev.layout', plugin: 'Layout', actionId: 'apply', title: 'Apply the saved layout', description: 'Reopens the Tabs this Workspace had', contexts: ['pane', 'workspace'] },
+  { pluginId: 'dev.layout', plugin: 'Layout', actionId: 'scratch', title: 'Open a scratch Tab', contexts: ['pane'] },
+  { pluginId: 'tautan.hello', plugin: 'Hello', actionId: 'greet', title: 'Greet the Host', description: 'Says hello in the reply', contexts: ['workspace'] },
+  { pluginId: 'tautan.hello', plugin: 'Hello', actionId: 'boom', title: 'Fail on purpose', contexts: ['pane'] },
+];
+
+/** One entry per herdr Host, as Settings carries them (Wave 21): every state and both
+ *  `available` values on the live Host, herdr's message on the down one. */
+const MOCK_INTEGRATIONS: HostIntegrations[] = [
+  {
+    muxKey: 'mbp/herdr', label: 'default',
+    integrations: [
+      { target: 'claude', label: 'Claude Code', command: 'claude --version', available: true, state: 'current' },
+      { target: 'codex', label: 'Codex', command: 'codex --version', available: true, state: 'outdated' },
+      { target: 'crush', label: 'Crush', command: 'crush --version', available: false, state: 'not_installed' },
+    ],
+  },
+  { muxKey: 'vps/herdr', label: 'default', error: 'ssh: connect to host vps.example.ts.net port 22: Connection timed out' },
+];
+
 /** The slash commands the fake Hub offers, whatever the Agent. */
 const MOCK_COMMANDS = [
   { value: '/clear', label: '/clear', detail: 'Start a new session with empty context' },
@@ -739,6 +765,12 @@ export function assertMockInvariants(): void {
     MOCK_SUBAGENTS.some((a) => a.parentId) || 'a nested subagent',
     MOCK_SUBAGENTS.some((a) => a.state === 'running' && a.updatedAt) && MOCK_SUBAGENTS.some((a) => a.state === 'done') || 'both subagent states',
     mockChat().turns.some((t) => t.tools.some((tool) => tool.link && tool.previewId !== undefined)) || 'an Artifact card with a preview',
+    // Wave 21: two plugins of actions, mixed contexts, a description-less row, a failing
+    // invoke, both integration outcomes, and a named Agent.
+    new Set(MOCK_ACTIONS.map((a) => a.pluginId)).size > 1 && MOCK_ACTIONS.some((a) => a.contexts.includes('workspace'))
+      && MOCK_ACTIONS.some((a) => !a.description) || 'a grouped action list',
+    MOCK_INTEGRATIONS.some((e) => e.error) && MOCK_INTEGRATIONS.some((e) => e.integrations?.some((i) => !i.available)) || 'a failed integration Host',
+    mockState.panes.some((p) => p.agentName) || 'a named Agent',
   ].filter((p) => p !== true);
   if (problems.length) throw new Error(`mock fixtures lost ${problems.join(', ')}`);
 }
@@ -1269,6 +1301,16 @@ function write(s: Store, url: URL, method: string, body: unknown): Response | un
   const o = (body ?? {}) as RenameBody & { workspaceId?: string; tabId?: string; paneId?: string };
   const bad = writableMux(s, o.muxKey ?? '');
   if (bad) return bad;
+  // Wave 21: `agent: true` names the Pane's Agent; an empty (or blank) label clears the
+  // name, where the plain route would 400. The title and the Agent TYPE stay untouched.
+  if ((o as { agent?: true }).agent === true) {
+    const agentPane = s.state.panes.find((p) => p.muxKey === o.muxKey && p.id === o.paneId);
+    if (!agentPane || typeof o.label !== 'string' || o.label.length > 80) return json({ error: 'body' }, 400);
+    const name = o.label.trim();
+    if (name) agentPane.agentName = name; else delete agentPane.agentName;
+    for (const es of sources) es.push(s, { state: true });
+    return noContent();
+  }
   if (badLabel(o.label) || o.label === undefined) return json({ error: 'label' }, 400);
   if (o.label === FAIL) return json({ error: 'agent_not_ready' }, 502);
   const pane = s.state.panes.find((p) => p.muxKey === o.muxKey && p.id === o.paneId);
@@ -1445,6 +1487,30 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
     return whole ? json({ ...result, files: [whole], truncated: false }) : json({ error: 'unknown-file' }, 404);
   }
 
+  // Wave 21 plugin actions: the list and the invoke, herdr Panes only (tmux 501s). `scratch`
+  // really opens a Tab the way the plugin's CLI call does; `boom` stands in for herdr's own
+  // refusal — the one failure whose message the route lets through (probed on 0.9.3).
+  const actionsRoute = url.pathname.match(/^\/api\/panes\/([^/]+)\/actions(?:\/([^/]+))?$/);
+  if (actionsRoute) {
+    let key: string;
+    try { key = decodeURIComponent(actionsRoute[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+    const pane = s.state.panes.find((p) => p.key === key);
+    if (!pane) return json({ error: 'pane not found' }, 404);
+    const bad = writableMux(s, pane.muxKey);
+    if (bad) return bad;
+    if (!actionsRoute[2]) return json({ actions: MOCK_ACTIONS });
+    if (method !== 'POST') return undefined;
+    const pluginId = (body as { pluginId?: string } | undefined)?.pluginId;
+    const found = MOCK_ACTIONS.find((a) => a.actionId === decodeURIComponent(actionsRoute[2]!) && (!pluginId || a.pluginId === pluginId));
+    // `boom`, and an action the list no longer knows, fail the way a real refusal does.
+    if (!found || found.actionId === 'boom') return json({ error: 'plugin_action_not_found: plugin action not found' }, 502);
+    if (found.actionId === 'scratch') {
+      addTab(s, pane.muxKey, pane.workspaceId, { workspaceId: pane.workspaceId, cwd: pane.cwd, label: 'scratch' });
+      for (const es of sources) es.push(s, { state: true });
+    }
+    return noContent();
+  }
+
   const wrote = write(s, url, method, body);
   if (wrote) return wrote;
 
@@ -1562,6 +1628,7 @@ export function installMock(): void {
       servedBy: 'tailscale serve · 127.0.0.1:7700',
       hosts: [{ id: 'vps', label: 'vps', target: 'dev@vps.example.ts.net' }],
       suggest: { provider: 'zai', model: 'glm-5.2', enabled: true },
+      integrations: MOCK_INTEGRATIONS,
     },
     files: { ...MOCK_FILES },
     versions: {},

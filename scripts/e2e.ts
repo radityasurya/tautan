@@ -36,7 +36,7 @@ if (!await exists(new URL('../dist/web/index.html', import.meta.url).pathname)) 
   process.exit(1);
 }
 
-const { startThrowawayHerdr, herdrMux, herdrRpc } = await import('../test/harness.ts');
+const { startThrowawayHerdr, herdrMux, herdrRpc, linkTestPlugin } = await import('../test/harness.ts');
 const exe = '/home/tama/.cache/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-linux64/chrome-headless-shell';
 if (!await exists(exe)) { console.error('e2e: headless chromium not found at', exe); process.exit(1); }
 
@@ -49,6 +49,7 @@ const assert = (condition: boolean, what: string) => { if (!condition) throw new
 
 // ---- the stack ----
 const fixture = await startThrowawayHerdr();
+await linkTestPlugin(fixture); // the ⋯ menu's plugin actions run against the same pair
 const mux = herdrMux(fixture.sock);
 const hub = spawn('bun', ['server/main.ts'], {
   cwd: new URL('..', import.meta.url).pathname,

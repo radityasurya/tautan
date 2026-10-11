@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +7,7 @@ import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
 import { TmuxMux } from '../server/tmux.ts';
 import type { Integration, PluginAction, State } from '../shared/types.ts';
-import { herdrAvailable, herdrMux, herdrRpc, startThrowawayHerdr } from './harness.ts';
+import { herdrAvailable, herdrMux, herdrRpc, linkTestPlugin, startThrowawayHerdr } from './harness.ts';
 
 const tmuxAvailable = Bun.which('tmux') !== null && process.env.CODEX_SANDBOX_NETWORK_DISABLED !== '1';
 const eventually = async <T>(read: () => Promise<T>, accepts: (value: T) => boolean, timeout: number) => {
@@ -16,36 +16,6 @@ const eventually = async <T>(read: () => Promise<T>, accepts: (value: T) => bool
   while (!accepts(value) && Date.now() < deadline) { await Bun.sleep(50); value = await read(); }
   return value;
 };
-
-// A plugin written for this test: a pane action whose effect is observable (it dumps the env
-// herdr gave it), a global-only action (hidden from the list), a contextless one (shows as
-// pane), and a mixed pane+global one (keeps only pane).
-const pluginFiles = (out: string) => ({
-  'herdr-plugin.toml': `id = "tautan.test-plugin"
-name = "Tautan Test Plugin"
-version = "0.1.0"
-min_herdr_version = "0.7.0"
-platforms = ["linux", "macos", "windows"]
-
-[[actions]]
-id = "mark"
-title = "Mark the pane"
-description = "Writes the invocation env to a file"
-contexts = ["pane", "global"]
-command = ["/bin/sh", "-c", "env > ${out}"]
-
-[[actions]]
-id = "global-only"
-title = "Global only"
-contexts = ["global"]
-command = ["/bin/sh", "-c", ":"]
-
-[[actions]]
-id = "plain"
-title = "No contexts"
-command = ["/bin/sh", "-c", ":"]
-`,
-});
 
 describe.skipIf(!herdrAvailable)('plugin and Agent contract', () => {
   let fixture: Awaited<ReturnType<typeof startThrowawayHerdr>>;
@@ -62,12 +32,9 @@ describe.skipIf(!herdrAvailable)('plugin and Agent contract', () => {
 
   beforeAll(async () => {
     fixture = await startThrowawayHerdr();
-    // Link the test plugin into the throwaway (isolated config, so the live set is untouched).
-    const pluginDir = join(fixture.dir, 'test-plugin');
-    await mkdir(pluginDir);
-    out = join(fixture.dir, 'mark-env.txt');
-    for (const [name, body] of Object.entries(pluginFiles(out))) await writeFile(join(pluginDir, name), body);
-    await herdrRpc(fixture.sock, 'plugin.link', { path: pluginDir });
+    // Link the shared test plugins into the throwaway (isolated config, so the live set
+    // is untouched). e2e links the same pair, so both stacks see one plugin surface.
+    ({ out } = await linkTestPlugin(fixture));
     mux = herdrMux(fixture.sock);
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'plugins-contract' });
     workspaceId = workspace.id;
@@ -94,6 +61,8 @@ describe.skipIf(!herdrAvailable)('plugin and Agent contract', () => {
     expect(byId.get('mark')!.contexts).toEqual(['pane']); // mixed pane+global keeps pane only
     expect(byId.get('plain')!.contexts).toEqual(['pane']); // no contexts shows on the Pane menu
     expect(byId.has('global-only')).toBe(false);          // global drives herdr's own window
+    // The second plugin makes a second group in a "grouped by plugin" list.
+    expect(byId.get('boom')).toMatchObject({ pluginId: 'tautan.test-plugin-two', plugin: 'Tautan Second Plugin', title: 'Fail on purpose' });
   }, 10_000);
 
   test('invokes a pane action; herdr passes the Pane context herdr derives from ours', async () => {
@@ -109,6 +78,23 @@ describe.skipIf(!herdrAvailable)('plugin and Agent contract', () => {
     // The cwd fields come from the tree tautan already holds, not a fresh read.
     expect(context.focused_pane_cwd).toBe(fixture.dir);
   }, 15_000);
+
+  test('scratch calls herdr back into the invoking Workspace; a failed run stays 204, an unknown action answers 502', async () => {
+    const tabs = async () => (await mux.tree()).tabs.filter(t => t.workspaceId === workspaceId).map(t => t.id);
+    const invoke = (actionId: string, body = '{}') => fetch(`http://127.0.0.1:${server.port}/api/panes/${encodeURIComponent(paneKey())}/actions/${actionId}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', origin: origin() }, body,
+    });
+    const before = await tabs();
+    expect((await invoke('scratch')).status).toBe(204);
+    const after = await eventually(tabs, list => list.length === before.length + 1, 15_000);
+    expect(after.length).toBe(before.length + 1); // HERDR_BIN_PATH `tab create`d inside this Workspace
+    // herdr runs the command async (its log starts `running`), so a non-zero exit is not the
+    // route's failure: only herdr's own refusals are, and their message arrives whole.
+    expect((await invoke('boom', JSON.stringify({ pluginId: 'tautan.test-plugin-two' }))).status).toBe(204);
+    const unknown = await invoke('nope', JSON.stringify({ pluginId: 'tautan.test-plugin' }));
+    expect(unknown.status).toBe(502);
+    expect((await unknown.json() as { error: string }).error).toBe('plugin_action_not_found: plugin action not found');
+  }, 25_000);
 
   test('renames the Agent, shows agentName in state, keeps the agent type, and clears on empty', async () => {
     const rename = (label: string) => fetch(`http://127.0.0.1:${server.port}/api/rename`, {
