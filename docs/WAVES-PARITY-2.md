@@ -74,9 +74,11 @@ when the user runs those agents).
 - `pane.read` sources are `visible | recent | recent_unwrapped | detection`. On herdr 0.8.0, a
   `recent` read costs about 30 ms per line past the Pane's height on a Claude Pane
   (`server/herdr.ts:109`). Wave 22.1 measured 0.9.2; see its table under Wave 22.
-- Held replies go out when the Pane turns `idle` or `done` (`web/pending.ts`,
-  `autoDeliver`). Nothing reads Claude's input box first. `InputBody` already carries
-  `promptId` for the blocked card's 409 (`shared/types.ts:110`).
+- Claude, pi and omp queue a reply sent mid-turn themselves (`QUEUES`, `web/composer.tsx`),
+  so the Chat view sends it at once and tautan holds replies only for other Agents. Since
+  Wave 20, every Chat-view reply carries `held: true`; on a Claude Pane the Hub reads the box
+  first and answers `409 {error: 'draft'}` when it holds text or is in bash mode
+  (`server/mux.ts` `input()`, `shared/inputbox.ts`). A reply refused that way waits, held.
 - `server/complete.ts:128` ranks slash commands in five tiers: label prefix, word start in
   the label, label substring, description substring, then label letters in order. A bare
   `/effort` opens the effort card, and `effort` stays in `SCREEN_COMMAND`
@@ -112,12 +114,31 @@ once; GLM lanes are not capped.
 | 23 | `web/markdown.tsx`, `server/complete.ts`, `web/complete.tsx`, `web/composer.tsx` |
 | 24 | `test/` only, plus a fix in `web/markdown.tsx` or `shared/blocked.ts` if a test fails |
 
-**Before Batch 3:** `pnpm e2e` fails 8 of 18 flows on `main` at `28eddda`, before Batch 2.
-The wrap guard, held messages queue and flush, chat lens falls back to the Screen, file
-viewer folder view, and chat view approval row flows fail on their own assertions. After the
-chat view flow the browser closes, so the split view, zoom and layout flows fail with
-`Target page, context or browser has been closed`. Wave 20 owns the held-message path, so
-its e2e flow is no gate until that flow passes on `main`.
+**Progress (2026-10-11).** Batches 1–3 are built and committed on `main`; nothing is
+pushed, and no ROADMAP phase is added yet. Batches 4 and 5 are open.
+
+| Batch | Commits | Checks on the final tree |
+|---|---|---|
+| 1 | `6a6f532`, `0d794ab`, `41eb642`, `2b715cb` | typecheck clean, `bun test` 504 pass |
+| 2 | `eb66354`…`9d20b66` (10 commits) | typecheck clean, `bun test` 531 pass, qa 8 of 8 on throwaway servers |
+| 3 | `52ad7b1` (e2e), `5a8479e` (Wave 20) | typecheck clean, `bun test` 560 pass, `pnpm e2e` 19 of 19 |
+
+**The e2e suite is green again (`52ad7b1`).** Before Batch 3 it failed 8 of 18 flows, from
+before Batch 2. Each failing flow checked behaviour a later commit changed on purpose, so
+only `scripts/e2e.ts` changed:
+
+| Flow | What changed in the app | What the flow does now |
+|---|---|---|
+| Held messages queue and flush | Claude, pi and omp queue a reply themselves, so a Claude Pane never holds one; the Send lookup also matched the suggestion pills | Reports the Pane as Codex, matches Send exactly, waits for the automatic send |
+| Wrap guard | Agent Panes open in the Chat view | Pins the Screen view in `localStorage` |
+| Chat lens falls back to the Screen | A 1 s wait ended inside the 5 s Chat grace period | Waits for the Screen text, up to 12 s |
+| File viewer folder view | Folders open from the breadcrumbs on desktop | Clicks the breadcrumb, then the file's link |
+| Chat view approval row | The menu reads as numbered rows | Uses the numbered radios; checks `["down","enter"]` and a `promptId` |
+| Split view | The view choice lives in `localStorage`; the fallback saves nothing | Uses `localStorage`; checks the choice stays `chat` |
+
+The suite has 19 flows now, with the order flow from Wave 19. The browser closing after the
+chat view flow did not come back in 7 runs, and nothing fixed it on purpose. If it returns,
+diagnose it as a new failure.
 
 ---
 
@@ -246,10 +267,51 @@ sequence — emoji stay whole.
 the terminal's box has text". **Send now** stays off for that reason. The existing `stuck`
 map retries when the Pane's revision moves. Other 409s and errors keep today's behaviour.
 
-**Verify:** on the phone, send a reply while Claude works, so it is held. Type a word in
-Claude's box in herdr's own window, and let the turn end. The reply stays held with the
-reason. Clear the box: the reply goes out. Paste text with a zero-width space and send it;
-Claude receives it on the first try.
+**Done (2026-10-11), `5a8479e`:**
+
+- herdr 0.9.3's visible ANSI read keeps dim text (`ESC[0m ESC[2m …`); tmux reads with `-e`.
+  Seven ANSI fixtures are in `test/fixtures/claude-2.1.296/inputbox-*.ansi.txt`. In this
+  probe no dim predicted prompt appeared after a turn, so only one 2-line fixture covers it.
+- `inputBox(screen, ansi)` in `shared/inputbox.ts` returns `'empty' | 'draft' | 'bash' |
+  null`. `stripInvisible()` uses `Intl.Segmenter`, so an emoji joined by U+200D stays whole.
+  Every text to a Claude Pane goes through the strip; other Panes are unchanged.
+- `/api/panes/:key/input` answers 400 for a `held` other than `true`, and maps the `draft`
+  error to 409 before the rule that turns a herdr error code into 502.
+- Tests: `test/inputbox.test.ts`, `test/held.contract.test.ts` (throwaway herdr), a route
+  test in `test/write.test.ts`, and `test/pending.test.ts`.
+
+Two changes from the briefs:
+
+1. **Every Chat-view reply sends `held: true`, not only held ones.** Claude queues a reply
+   itself, so a check on held replies only would never run on a Claude Pane. A reply the Hub
+   refuses for a draft becomes a held reply with the reason.
+2. **A draft-held reply retries every 3 s** (`DRAFT_RETRY_MS`, `web/pending.ts`) while its
+   Pane is `idle` or `done`, and the timer stops when no such reply is left. The brief's
+   trigger, a revision change, never fires: herdr's revision does not move on screen output.
+   Replies held for other reasons keep the revision rule.
+
+**Gaps.**
+
+- Release after the box is cleared is covered by unit tests only. No e2e flow covers the
+  draft row, and a throwaway herdr cannot show it end to end.
+- A draft typed between the Hub's read and its typing is still typed over. Accepted.
+- A question menu whose cursor row sits right below a rule reads as `'draft'`. This fails
+  safe: the Hub holds the reply instead of typing into the menu. No fixture has this layout.
+- The parser fits Claude Code 2.1.296. When a later version changes the box, re-run the 20.1
+  probe and add its fixtures.
+
+**Verify** (replaces the plan's first wording, which assumed Claude replies are held):
+
+1. While Claude works, type a word in Claude's box in herdr's own window.
+2. Send a reply from the phone. Its row says "Waiting: the terminal's box has text", and
+   **Send now** is hidden.
+3. Let the turn end. The reply stays held with the same reason.
+4. Clear the box in herdr's window. Within about 3 s, the reply goes out.
+5. With Claude idle, put the box in bash mode (`!`) and send a reply. It is held the same way.
+6. Send a reply with an empty box. It goes out at once; the dim `Try "…"` text does not hold
+   it.
+7. Paste text with a zero-width space and send it. Claude receives it on the first try.
+8. Send 👨‍👩‍👧. It arrives whole.
 
 ---
 
@@ -283,6 +345,14 @@ throws `unsupported` for all four. Routes: `GET /api/panes/:key/actions`, `POST
 the existing Settings data per Host. The tree carries each Pane's Agent `name`. Contract tests
 on a throwaway herdr with a test plugin linked through `plugin.link`: list, invoke with a
 context, the 501 on tmux, and a rename that shows in `GET /api/state`.
+
+**From Batch 3.** Two rules for 21.1:
+
+- The tree's `agent` field stays the Agent type (`claude`, `codex`). Four places read it to
+  recognise Claude: the box check and the strip in `server/mux.ts` `input()`, `QUEUES` in
+  `web/composer.tsx`, and `server/complete.ts`. Put the user's Agent name in its own field.
+- Keep Wave 20's code in `Hub.input()` (the `held` check and `stripInvisible`) and the
+  `draft` → 409 mapping in the `server/http.ts` catch, ahead of the 502 rule.
 
 **21.2 brief.** **Plugin actions…** in the Pane and Workspace ⋯ menus opens a list grouped by
 plugin, with titles and descriptions; on a phone it is a sheet. A running action shows on its
