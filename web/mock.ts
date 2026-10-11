@@ -3,7 +3,7 @@
 // VITE_MOCK=1); it never loads for a real page.
 import type {
   BranchList, DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope, SwitchBody, Worktree,
-  Explain, HistoryMatch, HistoryResult, HostIntegrations, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, PluginAction, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
+  Explain, HistoryMatch, HistoryResult, HostIntegrations, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, PluginAction, PluginRun, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
   ScreenMode, SeenBody, Settings, SettingsBody, State, StatePane, Status, SuggestSettingBody,
 } from '../shared/types.ts';
 import type { ChatResponse, Subagent, Turn } from '../shared/chat.ts';
@@ -606,7 +606,7 @@ const FILE_TSX = [
 
 /** The plugin actions `GET /api/panes/:key/actions` lists on a herdr Pane: two plugins
  *  (a grouped list has two groups), mixed pane/workspace contexts, one with no description.
- *  `boom` always fails on invoke, standing in for herdr's own refusals. */
+ *  `boom` starts, then exits 3, the way the e2e plugin's does (21.4.1). */
 const MOCK_ACTIONS: PluginAction[] = [
   { pluginId: 'dev.layout', plugin: 'Layout', actionId: 'apply', title: 'Apply the saved layout', description: 'Reopens the Tabs this Workspace had', contexts: ['pane', 'workspace'] },
   { pluginId: 'dev.layout', plugin: 'Layout', actionId: 'scratch', title: 'Open a scratch Tab', contexts: ['pane'] },
@@ -1503,8 +1503,9 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
   }
 
   // Wave 21 plugin actions: the list and the invoke, herdr Panes only (tmux 501s). `scratch`
-  // really opens a Tab the way the plugin's CLI call does; `boom` stands in for herdr's own
-  // refusal — the one failure whose message the route lets through (probed on 0.9.3).
+  // really opens a Tab the way the plugin's CLI call does. The invoke answers how the run
+  // ended (PluginRun, 21.4.1): `boom` failed with exit 3; an action the list no longer knows
+  // is herdr's refusal, the one failure whose message the route lets through (probed on 0.9.3).
   const actionsRoute = url.pathname.match(/^\/api\/panes\/([^/]+)\/actions(?:\/([^/]+))?$/);
   if (actionsRoute) {
     let key: string;
@@ -1517,13 +1518,13 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
     if (method !== 'POST') return undefined;
     const pluginId = (body as { pluginId?: string } | undefined)?.pluginId;
     const found = MOCK_ACTIONS.find((a) => a.actionId === decodeURIComponent(actionsRoute[2]!) && (!pluginId || a.pluginId === pluginId));
-    // `boom`, and an action the list no longer knows, fail the way a real refusal does.
-    if (!found || found.actionId === 'boom') return json({ error: 'plugin_action_not_found: plugin action not found' }, 502);
+    if (!found) return json({ error: 'plugin_action_not_found: plugin action not found' }, 502);
+    if (found.actionId === 'boom') return json({ status: 'failed', exitCode: 3, message: 'the scratch script is missing' } satisfies PluginRun);
     if (found.actionId === 'scratch') {
       addTab(s, pane.muxKey, pane.workspaceId, { workspaceId: pane.workspaceId, cwd: pane.cwd, label: 'scratch' });
       for (const es of sources) es.push(s, { state: true });
     }
-    return noContent();
+    return json({ status: 'succeeded', exitCode: 0 } satisfies PluginRun);
   }
 
   // Wave 22 history search, the way the Hub answers it: a literal, case-insensitive search of

@@ -12,6 +12,7 @@ import { useHold } from './affordances.tsx';
 import { api, haptic, navigate, useDesktop } from './app.tsx';
 import { filesHash } from './folders-logic.ts';
 import { blocksOf, hitsIn, pathsIn, step } from './history-logic.ts';
+import { copyText } from './markdown.tsx';
 import { ChevronDown, Plus, Search } from './icons.tsx';
 import { sliceSpans, spanNode, spanStyle, withLinks } from './pane.tsx';
 import { why } from './sheets.tsx';
@@ -35,7 +36,8 @@ const STEP =
 
 /** A path, as the Screen treats one: a tap copies it and says so, a hold opens it in Files. */
 function PathButton({ path, paneKey, children }: { path: string; paneKey: string; children: ReactNode }) {
-  const [copied, setCopied] = useState(false);
+  /** What the last tap did, for a moment: false when nothing was copied. */
+  const [copied, setCopied] = useState<boolean | null>(null);
   const hold = useHold(() => navigate(filesHash(paneKey, { path })));
   return (
     <button
@@ -45,17 +47,21 @@ function PathButton({ path, paneKey, children }: { path: string; paneKey: string
       onClick={() => {
         if (hold.held.current) return;
         haptic();
-        void navigator.clipboard?.writeText(path);
-        setCopied(true);
-        // ponytail: one timer per tap, as on the Screen; the chip is the whole receipt.
-        setTimeout(() => setCopied(false), 1500);
+        void copyText(path).then((ok) => {
+          setCopied(ok);
+          // ponytail: one timer per tap, as on the Screen; the chip is the whole receipt.
+          setTimeout(() => setCopied(null), 1500);
+        });
       }}
       className="relative text-left whitespace-pre-wrap underline decoration-accent/60 decoration-[1.5px] underline-offset-[3px] [-webkit-touch-callout:none]"
     >
       {children}
-      {copied && (
-        <span aria-hidden className="absolute bottom-full left-0 rounded-chip bg-elevated px-1.5 py-0.5 font-sans text-[11px] font-medium text-fg shadow-elevated">
-          Copied
+      {copied !== null && (
+        <span
+          aria-hidden
+          className={`absolute bottom-full left-0 rounded-chip bg-elevated px-1.5 py-0.5 font-sans text-[11px] font-medium shadow-elevated ${copied ? 'text-fg' : 'text-danger'}`}
+        >
+          {copied ? 'Copied' : 'Not copied'}
         </span>
       )}
     </button>

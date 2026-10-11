@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
-import type { Explain, Integration, Mux, Pane, PluginAction, Screen, State, Tree, Workspace } from '../shared/types.ts';
+import type { Explain, Integration, Mux, Pane, PluginAction, PluginRun, Screen, State, Tree, Workspace } from '../shared/types.ts';
 
 describe('write routes', () => {
   let dir: string;
@@ -19,12 +19,14 @@ describe('write routes', () => {
   let actions: PluginAction[] = [];
   let integrations: Integration[] = [];
   let invoked: { paneId: string; actionId: string; pluginId?: string }[] = [];
+  let freshCalls: boolean[] = [];
+  let run: PluginRun | undefined;
   let fakeMux: Mux & { version(): Promise<string> };
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'tautan-write-'));
     cwd = join(dir, 'cwd'); mkdirSync(cwd);
-    actions = []; integrations = []; invoked = [];
+    actions = []; integrations = []; invoked = []; freshCalls = []; run = undefined;
     tree = {
       workspaces: [{ id: 'w1', label: 'Workspace', cwd }],
       tabs: [{ id: 't1', workspaceId: 'w1', label: 'Tab' }],
@@ -53,8 +55,8 @@ describe('write routes', () => {
         pane.workspaceId = workspace.id; pane.tabId = tab.id; pane.id = `moved-${id}`; return pane.id; // ids change across Workspaces (herdr)
       },
       resize: async () => { fail(); }, moveWorkspace: async () => { fail(); }, moveTab: async () => { fail(); },
-      pluginActions: async () => { fail(); return actions; },
-      invokePluginAction: async (paneId, actionId, pluginId) => { fail(); invoked.push({ paneId, actionId, pluginId }); },
+      pluginActions: async (fresh?: boolean) => { fail(); freshCalls.push(Boolean(fresh)); return actions; },
+      invokePluginAction: async (paneId, actionId, pluginId) => { fail(); invoked.push({ paneId, actionId, pluginId }); return run; },
       renameAgent: async (paneId, name) => { fail(); const pane = tree.panes.find(x => x.id === paneId)!; if (name) pane.agentName = name; else delete pane.agentName; },
       integrations: async () => { fail(); return integrations; },
       close: () => {},
@@ -392,15 +394,25 @@ describe('write routes', () => {
   test('lists, invokes, and maps errors for plugin actions', async () => {
     const key = 'local%2Ffake%2Fp1';
     actions = [{ pluginId: 'tautan.test', plugin: 'Tautan Test', actionId: 'mark', title: 'Mark', contexts: ['pane'] }];
-    const list = await handle(new Request(`http://tautan.test/api/panes/${key}/actions`, { headers: { host: 'tautan.test' } }));
-    expect(list.status).toBe(200); expect(await list.json()).toEqual({ actions });
+    const list = async (query = '') => handle(new Request(`http://tautan.test/api/panes/${key}/actions${query}`, { headers: { host: 'tautan.test' } }));
+    const plain = await list();
+    expect(plain.status).toBe(200); expect(await plain.json()).toEqual({ actions });
     expect((await handle(new Request('http://tautan.test/api/panes/local%2Ffake%2Fmissing/actions', { headers: { host: 'tautan.test' } }))).status).toBe(404);
+    // 21.4.2: only `?fresh=1` reaches past the cache; every other value is not the flag.
+    expect((await list('?fresh=1')).status).toBe(200);
+    expect((await list('?fresh=0')).status).toBe(200);
+    expect(freshCalls).toEqual([false, true, false]);
     // The invoke body is `{pluginId?}` only; the action id rides the path.
     expect((await request(`/api/panes/${key}/actions/mark`, null)).status).toBe(400);
     expect((await request(`/api/panes/${key}/actions/mark`, { pluginId: 5 })).status).toBe(400);
     expect((await request(`/api/panes/${key}/actions/mark`, { pluginId: '' })).status).toBe(400);
-    expect((await request(`/api/panes/${key}/actions/mark`, {})).status).toBe(204);
-    expect((await request(`/api/panes/${key}/actions/mark`, { pluginId: 'tautan.test' })).status).toBe(204);
+    // A double's void cannot say how the run ended (21.4.1): the body says `unknown`.
+    const unknown = await request(`/api/panes/${key}/actions/mark`, {});
+    expect(unknown.status).toBe(200); expect(await unknown.json()).toEqual({ status: 'unknown' });
+    run = { status: 'failed', exitCode: 3, message: 'the scratch script is missing' };
+    const failed = await request(`/api/panes/${key}/actions/mark`, { pluginId: 'tautan.test' });
+    expect(failed.status).toBe(200); expect(await failed.json()).toEqual(run);
+    run = undefined;
     expect(invoked).toEqual([{ paneId: 'p1', actionId: 'mark', pluginId: undefined }, { paneId: 'p1', actionId: 'mark', pluginId: 'tautan.test' }]);
     expect((await request('/api/panes/local%2Ffake%2Fmissing/actions/mark', {})).status).toBe(404);
     failure = 'unsupported';

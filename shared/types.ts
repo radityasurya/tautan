@@ -59,6 +59,9 @@ export interface HistoryResult {
   /** up to 50 matches, newest first; with `before`, only matches whose `line` is below it */
   matches: HistoryMatch[];
 }
+/** 21.4.1: how a plugin command ended, read from herdr's `plugin.log.list` for up to 10 s after the invoke.
+ *  `running` means it outlived the 10 s; `unknown` means no log entry was found (or herdr has no log). */
+export interface PluginRun { status: 'succeeded' | 'failed' | 'running' | 'unknown'; exitCode?: number; /** the last non-empty stderr line, else herdr's `error` */ message?: string }
 
 export interface Mux {
   readonly kind: 'herdr' | 'tmux';
@@ -95,8 +98,10 @@ export interface Mux {
   moveWorkspace(workspaceId: string, index: number): Promise<void>;
   moveTab(tabId: string, index: number): Promise<void>;
   // herdr ≥ 0.9 plugins, Agent names, and integrations (Wave 21); tmux throws `unsupported`.
-  pluginActions(): Promise<PluginAction[]>;
-  invokePluginAction(paneId: string, actionId: string, pluginId?: string): Promise<void>;
+  /** 21.4.2: `fresh: true` skips the Mux's action cache and re-reads herdr */
+  pluginActions(fresh?: boolean): Promise<PluginAction[]>;
+  /** `void` from test doubles reads as `unknown` */
+  invokePluginAction(paneId: string, actionId: string, pluginId?: string): Promise<PluginRun | void>;
   /** `name: null` clears the Agent's name; the Agent itself is untouched */
   renameAgent(paneId: string, name: string | null): Promise<void>;
   integrations(): Promise<Integration[]>;

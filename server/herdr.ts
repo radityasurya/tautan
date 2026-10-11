@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { createConnection, type Socket } from 'node:net';
 import { offeredKeys } from '../shared/blocked.ts';
-import type { Explain, Integration, Mux, Pane, PluginAction, PluginContext, Screen, ScreenMode, Status, Tree, Workspace } from '../shared/types.ts';
+import type { Explain, Integration, Mux, Pane, PluginAction, PluginContext, PluginRun, Screen, ScreenMode, Status, Tree, Workspace } from '../shared/types.ts';
 
 type Json = Record<string, any>;
 export interface HerdrProcessInfo {
@@ -41,14 +41,16 @@ export class HerdrMux implements Mux {
   /** Pane essentials from the last tree() read, so invokePluginAction builds herdr's
    *  PluginInvocationContext from the tree the Hub already holds — no fresh RPC. */
   private paneContexts = new Map<string, { workspaceId: string; tabId: string; cwd?: string; workspaceCwd?: string }>();
+  /** Poll window in invokePluginAction; a test shortens it to keep the deadline test fast. */
+  private pluginPollMs = 10_000;
 
   constructor(readonly id: string, readonly socketPath: string) {}
 
-  private rpc(method: string, params: Json): Promise<Json> {
+  private rpc(method: string, params: Json, timeoutMs = 10_000): Promise<Json> {
     return new Promise((resolve, reject) => {
       const socket = createConnection(this.socketPath);
       let data = '';
-      const timeout = setTimeout(() => socket.destroy(new Error('Herdr RPC timed out')), 10_000);
+      const timeout = setTimeout(() => socket.destroy(new Error('Herdr RPC timed out')), timeoutMs);
       const finish = (error?: Error, value?: Json) => {
         clearTimeout(timeout); socket.destroy();
         error ? reject(error) : resolve(value!);
@@ -341,10 +343,11 @@ export class HerdrMux implements Mux {
     await this.rpc('tab.move', { tab_id: tabId, insert_index: index });
   }
 
-  async pluginActions(): Promise<PluginAction[]> {
+  async pluginActions(fresh = false): Promise<PluginAction[]> {
     // ponytail: 30 s cache — a plugin linked in herdr's own window reaches the next menu
-    // open within 30 s. Force-refresh when a menu must reflect the link at once.
-    if (this.actionsCache && Date.now() - this.actionsCache.at < ACTIONS_TTL) return this.actionsCache.value;
+    // open within 30 s. `fresh` (21.4.2: the menu just opened) skips the cache and, by
+    // completing the read below, refreshes it.
+    if (!fresh && this.actionsCache && Date.now() - this.actionsCache.at < ACTIONS_TTL) return this.actionsCache.value;
     if (!this.actionsRequest) this.actionsRequest = (async () => {
       const [listed, plugins] = await Promise.all([
         this.rpc('plugin.action.list', {}),
@@ -377,7 +380,7 @@ export class HerdrMux implements Mux {
     return this.actionsRequest;
   }
 
-  async invokePluginAction(paneId: string, actionId: string, pluginId?: string): Promise<void> {
+  async invokePluginAction(paneId: string, actionId: string, pluginId?: string): Promise<PluginRun> {
     const pane = this.paneContexts.get(paneId);
     const context: Json = {
       focused_pane_id: paneId,
@@ -387,7 +390,49 @@ export class HerdrMux implements Mux {
         ...(pane.workspaceCwd ? { workspace_cwd: pane.workspaceCwd } : {}),
       } : {}),
     };
+    // 21.4.1: herdr runs the command async, so the outcome comes from plugin.log.list.
+    // The log carries no invocation id; the log_id set from before the invoke identifies
+    // this run without a clock — a remote Host's clock can differ from the Hub's, but its
+    // log ids are its own. Entries come oldest-first and `limit` keeps the newest.
+    let known: Set<string> | undefined;
+    try {
+      const list = await this.rpc('plugin.log.list', { ...(pluginId ? { plugin_id: pluginId } : {}), limit: 20 });
+      known = new Set((Array.isArray(list.logs) ? list.logs : []).map((log: Json) => log.log_id));
+    } catch (error) {
+      // A server without the log (unknown variant) or an unreadable one: the invoke still
+      // runs, the outcome just cannot be read back.
+      if (!(error instanceof Error && error.message.startsWith('unknown variant'))) console.warn('tautan: plugin.log.list before invoke failed', error);
+    }
     await this.rpc('plugin.action.invoke', { action_id: actionId, ...(pluginId ? { plugin_id: pluginId } : {}), context });
+    if (!known) return { status: 'unknown' };
+    // Each poll is its own rpc: herdr closes the socket after one response. A poll's own
+    // timeout is its remaining budget (floor 250 ms), so a hung RPC cannot outlive the
+    // window — without it, a poll starting just before the deadline runs its full 10 s.
+    const deadline = Date.now() + this.pluginPollMs;
+    let seen = false;
+    while (Date.now() < deadline) {
+      let entry: Json | undefined;
+      try {
+        const list = await this.rpc('plugin.log.list', { ...(pluginId ? { plugin_id: pluginId } : {}), limit: 20 }, Math.max(deadline - Date.now(), 250));
+        const logs: Json[] = Array.isArray(list.logs) ? list.logs : [];
+        entry = [...logs].reverse().find(log => !known.has(log.log_id) && log.action_id === actionId && (!pluginId || log.plugin_id === pluginId));
+        seen = seen || entry !== undefined;
+      } catch (error) { console.warn('tautan: plugin.log.list poll failed', error); }
+      if (entry && entry.status !== 'running') {
+        // Only herdr's two settled statuses map through; a future one (`cancelled`) reads
+        // as unknown rather than silently succeeded.
+        if (entry.status !== 'succeeded' && entry.status !== 'failed') return { status: 'unknown' };
+        const stderrLines = String(entry.stderr ?? '').split('\n').filter(line => line.trim());
+        return {
+          status: entry.status,
+          ...(typeof entry.exit_code === 'number' ? { exitCode: entry.exit_code } : {}),
+          ...(entry.status === 'failed' ? { message: String(stderrLines.at(-1) ?? entry.error ?? '').slice(0, 300) } : {}),
+        };
+      }
+      if (Date.now() >= deadline) break;
+      await Bun.sleep(250);
+    }
+    return { status: seen ? 'running' : 'unknown' };
   }
 
   /** herdr's target is "a unique live agent name or the pane ID that currently hosts the

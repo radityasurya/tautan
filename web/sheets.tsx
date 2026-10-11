@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { FocusEvent, ReactNode, RefObject } from 'react';
 
-import type { BranchList, PluginAction, State, Worktree } from '../shared/types.ts';
+import type { BranchList, PluginAction, PluginRun, State, Worktree } from '../shared/types.ts';
 import { api, navigate } from './app.tsx';
 import { Toggle } from './hosts.tsx';
-import { appeared, byPlugin, keysIn, NEW_PANE_MS, type PaneWatch } from './plugins.ts';
+import { actionsFor, appeared, byPlugin, keysIn, NEW_PANE_MS, type PaneWatch } from './plugins.ts';
 import { FolderBrowser } from './folders.tsx';
 import { basename } from './folders-logic.ts';
 import { Check } from './icons.tsx';
@@ -65,6 +65,61 @@ export function useWrite<T>(open: boolean, run: Submit<T>, onClose: () => void) 
   };
 }
 
+// ---- focus back to the opener (21.4.4) ----
+// A tap does not focus a button on iOS Safari, so `document.activeElement` is the body when a
+// sheet opens there. The opener is the element under the last press instead: the pointer's
+// target, or the focused element for a key. A press on a row of a sheet that closed under it
+// (⋯ › Rename) stands for that sheet's own opener, so the follow-up sheet gives focus back
+// to the ⋯ button too.
+const FOCUSABLE = 'button, a[href], input, select, textarea, [tabindex]';
+// ponytail: the last press, however old. Every sheet today opens from a press; if one ever
+// opens on its own later, give `pressed` a timestamp and ignore a stale one.
+let pressed: { el: HTMLElement; sheet: Element | null } | null = null;
+const openers = new WeakMap<Element, RefObject<HTMLElement | null>>();
+const press = (target: EventTarget | null) => {
+  const el = target instanceof Element ? target.closest<HTMLElement>(FOCUSABLE) : null;
+  pressed = el && { el, sheet: el.closest('[data-sheet]') };
+};
+if (typeof document !== 'undefined') {
+  document.addEventListener('pointerdown', (e) => press(e.target), true);
+  document.addEventListener('keydown', () => press(document.activeElement), true);
+}
+const sheetOpener = (p: NonNullable<typeof pressed>) => (p.sheet && openers.get(p.sheet)?.current) || null;
+const openerNow = () => (!pressed ? null : pressed.el.isConnected ? pressed.el : sheetOpener(pressed));
+/**
+ * For a dialog that is not a Sheet (Find in terminal): what it gives focus back to, read in
+ * the click of the menu row that opens it. A row in a sheet stands for that sheet's opener.
+ */
+export const menuOpener = () => (pressed && (sheetOpener(pressed) ?? pressed.el)) || null;
+/** Sheets opened so far, so a closing sheet can tell that a follow-up opened with it. */
+let opened = 0;
+
+/**
+ * Gives focus back to the opener when `open` turns false, if it is still on the page and
+ * nothing else took focus meanwhile (the next sheet's field). `root` is the sheet's own
+ * element: focus inside it (the kit's ✕) still counts as nothing else. When a follow-up
+ * sheet opens as this one closes (⋯ › Rename), focus waits for that one to close instead,
+ * so Enter does not reopen the menu behind it.
+ */
+function useFocusBack(open: boolean, root?: RefObject<HTMLElement | null>) {
+  const opener = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    opened++;
+    const from = (opener.current = openerNow());
+    return () => {
+      const at = opened;
+      // After the commit's other effects, where a follow-up sheet counts itself in.
+      queueMicrotask(() => {
+        const now = document.activeElement;
+        if (opened !== at || !from?.isConnected) return;
+        if (!now || now === document.body || root?.current?.contains(now)) from.focus({ preventScroll: true });
+      });
+    };
+  }, [open]);
+  return opener;
+}
+
 /**
  * The kit Sheet, sized for a phone: full height, scrollable inside, and the meta line
  * (the "in tautan · mbp" context) under the title where the kit's header row leaves room.
@@ -72,6 +127,7 @@ export function useWrite<T>(open: boolean, run: Submit<T>, onClose: () => void) 
  * on open and unmounts once the slide-out has played; content unmounts immediately.
  * `flush` hands the body to the child: no scroll wrapper, so it can bleed to the panel's
  * edges (`FLUSH_BODY`) and pin its own top over its own scroller.
+ * Closing gives focus back to whatever opened it, on every sheet (`useFocusBack`).
  */
 export function Sheet({
   open,
@@ -96,24 +152,36 @@ export function Sheet({
       return () => clearTimeout(t);
     }
   }, [open]);
+  const root = useRef<HTMLDivElement | null>(null);
+  const opener = useFocusBack(open, root);
   if (!mounted) return null;
   return (
-    <KitSheet open={open} onClose={onClose} title={title}>
-      {open && (
-        <>
-          {meta && (
-            <div style={{ marginTop: -14, marginBottom: 14 }}>
-              <Caption>{meta}</Caption>
-            </div>
-          )}
-          {flush ? (
-            children
-          ) : (
-            <div style={{ maxHeight: 'calc(100dvh - 120px)', overflowY: 'auto', overscrollBehavior: 'contain' }}>{children}</div>
-          )}
-        </>
-      )}
-    </KitSheet>
+    // No box of its own: it marks the sheet for `useFocusBack` and `openerNow`.
+    <div
+      data-sheet
+      style={{ display: 'contents' }}
+      ref={(el) => {
+        root.current = el;
+        if (el) openers.set(el, opener);
+      }}
+    >
+      <KitSheet open={open} onClose={onClose} title={title}>
+        {open && (
+          <>
+            {meta && (
+              <div style={{ marginTop: -14, marginBottom: 14 }}>
+                <Caption>{meta}</Caption>
+              </div>
+            )}
+            {flush ? (
+              children
+            ) : (
+              <div style={{ maxHeight: 'calc(100dvh - 120px)', overflowY: 'auto', overscrollBehavior: 'contain' }}>{children}</div>
+            )}
+          </>
+        )}
+      </KitSheet>
+    </div>
   );
 }
 
@@ -308,19 +376,11 @@ export function MenuSheet({
   );
 }
 
-/** The element that had focus when `open` turned true: the ⋯ button a follow-up sheet gives focus back to. */
-export function useOpener(open: boolean) {
-  const opener = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    if (open) opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  }, [open]);
-  return opener;
-}
-
 /**
- * herdr's plugin actions for a herdr Pane (Wave 21): asked once for the Pane and again each
- * time `open` turns true, so the ⋯ item is there before the menu is. Empty until the Hub
- * answers, and when it refuses (tmux answers 501).
+ * herdr's plugin actions, for the Workspace ⋯ menu: asked each time that menu opens (`open`),
+ * past the Hub's 30 s cache, so a plugin linked a moment ago is listed. The menu shows its row
+ * when an action fits and hands the list to the sheet, which then does not ask again. Empty
+ * until the Hub answers, and when it refuses (tmux answers 501).
  */
 export function usePluginActions(paneKey: string | undefined, open: boolean): PluginAction[] {
   const [got, setGot] = useState<{ key: string; actions: PluginAction[] } | null>(null);
@@ -329,7 +389,7 @@ export function usePluginActions(paneKey: string | undefined, open: boolean): Pl
     if (!paneKey || (!open && asked.current === paneKey)) return;
     asked.current = paneKey;
     let live = true;
-    api<{ actions: PluginAction[] }>(`/api/panes/${encodeURIComponent(paneKey)}/actions`, undefined, 'GET').then(
+    api<{ actions: PluginAction[] }>(`/api/panes/${encodeURIComponent(paneKey)}/actions?fresh=1`, undefined, 'GET').then(
       (r) => live && setGot({ key: paneKey, actions: r.actions }),
       () => live && setGot({ key: paneKey, actions: [] }),
     );
@@ -342,30 +402,94 @@ export function usePluginActions(paneKey: string | undefined, open: boolean): Pl
 
 const actionKey = (a: PluginAction) => `${a.pluginId}/${a.actionId}`;
 
+/** What went wrong with a run: a line in the danger tint, and herdr's own text under it. */
+interface Trouble {
+  head: string;
+  detail?: string;
+}
+
+// ---- the notice for a run that ended after its sheet closed (21.4.1) ----
+// ponytail: one notice at a time, the newest wins; a queue if runs ever overlap.
+let notice: Trouble | null = null;
+const noticeListeners = new Set<() => void>();
+const setNotice = (next: Trouble | null) => {
+  notice = next;
+  noticeListeners.forEach((fn) => fn());
+};
+const NOTICE_MS = 8_000;
+
 /**
- * Plugin actions, grouped under each plugin's name. One runs at a time: its row says so and
- * the rest wait. herdr's refusal shows above the list, which stays open. A 204 means herdr
- * started the action, so the sheet closes; a Pane that then appears in the Workspace within
- * NEW_PANE_MS opens. Focus goes back to the ⋯ button that opened the menu.
+ * A plugin action that failed after its sheet closed, at the top of the screen where the
+ * NeedsCard shows: what failed, then herdr's text. It goes after NOTICE_MS, or on ×.
+ */
+export function RunNotice() {
+  const shown = useSyncExternalStore(
+    (fn) => {
+      noticeListeners.add(fn);
+      return () => void noticeListeners.delete(fn);
+    },
+    () => notice,
+  );
+  useEffect(() => {
+    if (!shown) return;
+    const t = setTimeout(() => setNotice(null), NOTICE_MS);
+    return () => clearTimeout(t);
+  }, [shown]);
+  return (
+    <div role="alert" className="pointer-events-none fixed inset-x-0 top-[env(safe-area-inset-top)] z-[60] flex justify-center p-2">
+      {shown && (
+        <div className="pointer-events-auto flex w-full max-w-md items-start gap-1 rounded-card bg-elevated py-2.5 pl-3.5 shadow-elevated">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <p className="text-[13px] font-semibold text-danger">{shown.head}</p>
+            {shown.detail && <p className="font-mono text-[11.5px] leading-normal break-words text-muted">{shown.detail}</p>}
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setNotice(null)}
+            className="-my-1.5 flex size-9 shrink-0 items-center justify-center text-muted outline-none hover:text-fg focus-visible:text-fg"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** herdr's own message, as against a code the Hub sends (`why` puts those in words). */
+const herdrText = (error: string) => !(error in WHY) && !/^http \d+$/.test(error);
+
+/**
+ * Plugin actions, grouped under each plugin's name, read fresh from herdr each time the sheet
+ * opens (21.4.2), or as the menu that opened it did, so a plugin linked a moment ago is listed.
+ * One runs at a time: its row says
+ * so and the rest wait. The Hub answers when the run ends, up to 10 s later (21.4.1): a run
+ * that succeeded closes the sheet; one that failed shows its exit code and herdr's last
+ * stderr line here, or in a RunNotice when the sheet has closed meanwhile. herdr's refusal
+ * shows above the list, which stays open. A Pane that appears in the Workspace within
+ * NEW_PANE_MS of the tap opens. Focus goes back to the ⋯ button (`Sheet` does it).
  */
 export function PluginActionsSheet({
   open,
   onClose,
   meta,
-  actions,
+  menu,
+  actions: given,
   paneKey,
   state,
-  opener,
 }: {
   open: boolean;
   onClose: () => void;
   meta?: string;
-  /** Already filtered for the menu that opened it (`actionsFor`). */
-  actions: PluginAction[];
+  /** Which menu opened it: `actionsFor` keeps the actions that fit it. */
+  menu: 'pane' | 'workspace';
+  /** The list the menu already read fresh as it opened (the Workspace ⋯), held from the tap
+   *  that opened the sheet; then the sheet does not ask. */
+  actions?: PluginAction[];
   /** The Pane an action runs from: the Pane itself, or one of the Workspace's. */
   paneKey?: string;
   state: State | null;
-  opener: RefObject<HTMLElement | null>;
 }) {
   const latest = useRef(state);
   latest.current = state;
@@ -379,28 +503,76 @@ export function PluginActionsSheet({
   };
   useEffect(follow, [state]);
 
-  const [pick, setPick] = useState('');
-  const run = async (a: PluginAction) => {
+  // The list: null while herdr is asked.
+  const [read, setRead] = useState<PluginAction[] | null>(null);
+  const [listError, setListError] = useState('');
+  const [asks, setAsks] = useState(0);
+  useEffect(() => {
+    if (!open || !paneKey || given) return;
+    let live = true;
+    setRead(null);
+    setListError('');
+    api<{ actions: PluginAction[] }>(`/api/panes/${encodeURIComponent(paneKey)}/actions?fresh=1`, undefined, 'GET').then(
+      (r) => live && setRead(actionsFor(r.actions, menu)),
+      (e: unknown) => live && setListError((e instanceof Error && e.message) || 'network'),
+    );
+    return () => {
+      live = false;
+    };
+  }, [open, paneKey, asks]);
+
+  // The run. `gen` moves on when the sheet closes or goes, so a late answer becomes a notice.
+  const gen = useRef(0);
+  const [running, setRunning] = useState('');
+  const [error, setError] = useState('');
+  const [failed, setFailed] = useState<Trouble | null>(null);
+  useEffect(() => {
+    if (open) return;
+    gen.current++;
+    setRunning('');
+    setError('');
+    setFailed(null);
+    // So a reopened sheet starts on "Asking herdr…", not one frame of the last list.
+    setRead(null);
+    setListError('');
+  }, [open]);
+  useEffect(() => () => void gen.current++, []);
+
+  const run = (a: PluginAction) => {
     const panes = latest.current?.panes ?? [];
     const pane = panes.find((p) => p.key === paneKey);
-    if (!pane) throw new Error('pane not found');
-    // The Workspace's Panes before the action, so a Pane it opens stands out after.
-    const before = keysIn(panes, pane.muxKey, pane.workspaceId);
-    await api<void>(`/api/panes/${encodeURIComponent(pane.key)}/actions/${encodeURIComponent(a.actionId)}`, { pluginId: a.pluginId });
-    watch.current = { muxKey: pane.muxKey, workspaceId: pane.workspaceId, before, until: Date.now() + NEW_PANE_MS };
-    follow(); // the Hub refreshes before it replies, so the new Pane may already be here
+    if (!pane) return setError('pane not found');
+    // The watch starts at the tap: herdr can open the new Pane well before the run ends.
+    watch.current = { muxKey: pane.muxKey, workspaceId: pane.workspaceId, before: keysIn(panes, pane.muxKey, pane.workspaceId), until: Date.now() + NEW_PANE_MS };
+    const at = gen.current;
+    setRunning(actionKey(a));
+    setError('');
+    setFailed(null);
+    api<PluginRun>(`/api/panes/${encodeURIComponent(pane.key)}/actions/${encodeURIComponent(a.actionId)}`, { pluginId: a.pluginId }).then(
+      (r) => {
+        follow(); // the Hub refreshes before it replies, so the new Pane may already be here
+        // `running` (still going after 10 s) and `unknown` say nothing, like a success.
+        const trouble = r.status === 'failed' ? { head: `${a.title} failed${r.exitCode === undefined ? '' : ` · exit ${r.exitCode}`}`, detail: r.message || undefined } : null;
+        if (gen.current !== at) return trouble && setNotice(trouble);
+        setRunning('');
+        if (trouble) setFailed(trouble);
+        else onClose();
+      },
+      (e: unknown) => {
+        const code = (e instanceof Error && e.message) || 'network';
+        if (gen.current !== at) return setNotice({ head: `${a.title} did not run`, detail: herdrText(code) ? code : why(code) });
+        setRunning('');
+        setError(code);
+      },
+    );
   };
-  const { busy, error, submit } = useWrite(open, run, onClose);
 
-  const wasOpen = useRef(open);
-  useEffect(() => {
-    if (wasOpen.current && !open) opener.current?.focus();
-    wasOpen.current = open;
-  }, [open]);
-
+  const busy = running !== '';
   // A known code reads as a sentence; anything else is herdr's own message.
-  const refused = Boolean(error) && !(error in WHY) && !/^http \d+$/.test(error);
-  const groups = byPlugin(actions);
+  const refused = Boolean(error) && herdrText(error);
+  const actions = given ? actionsFor(given, menu) : read;
+  const groups = byPlugin(actions ?? []);
+  const trouble: Trouble | null = failed ?? (refused ? { head: 'herdr refused the action', detail: error } : null);
   return (
     <Sheet open={open} title="Plugin actions" onClose={onClose} flush>
       <div className="flex flex-col" style={FLUSH_BODY}>
@@ -410,47 +582,62 @@ export function PluginActionsSheet({
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pt-1.5 pb-6" style={{ scrollbarGutter: 'stable' }}>
-          {error &&
-            (refused ? (
-              <div role="alert" className="mx-6 mt-1.5 mb-1 flex flex-col gap-1.5 rounded-chip bg-danger/10 p-3">
-                <p className="text-[13px] font-semibold text-danger">herdr refused the action</p>
-                <pre className="font-mono text-[11.5px] leading-normal whitespace-pre-wrap text-danger [overflow-wrap:anywhere]">{error}</pre>
+          {trouble && (
+            <div role="alert" className="mx-6 mt-1.5 mb-1 flex flex-col gap-1.5 rounded-chip bg-danger/10 p-3">
+              <p className="text-[13px] font-semibold text-danger">{trouble.head}</p>
+              {trouble.detail && <pre className="font-mono text-[11.5px] leading-normal whitespace-pre-wrap text-danger [overflow-wrap:anywhere]">{trouble.detail}</pre>}
+            </div>
+          )}
+          {error && !refused && (
+            <p role="alert" className="px-6 pt-1.5 pb-1 text-caption text-danger">
+              {why(error)}
+            </p>
+          )}
+          {listError ? (
+            <div className="px-6 pt-3">
+              <ErrorLine error={listError} busy={false} onRetry={() => setAsks((n) => n + 1)} />
+            </div>
+          ) : actions === null ? (
+            <p role="status" className="px-6 pt-3 text-caption text-muted">
+              Asking herdr…
+            </p>
+          ) : (
+            groups.length === 0 && (
+              <div className="flex flex-col gap-1 px-6 pt-3">
+                <p className="text-body text-fg">No plugin actions for this {menu === 'pane' ? 'Pane' : 'Workspace'}</p>
+                <p className="text-caption text-muted">
+                  A linked herdr plugin with {menu === 'pane' ? 'a pane or tab' : 'a workspace'} action shows up here.
+                </p>
               </div>
-            ) : (
-              <p role="alert" className="px-6 pt-1.5 pb-1 text-caption text-danger">
-                {why(error)}
-              </p>
-            ))}
-          {groups.length === 0 && <p className="px-6 pt-3 text-caption text-muted">No plugin actions here</p>}
+            )
+          )}
           {groups.map((g, i) => (
             <section key={g.pluginId} className={i > 0 ? 'mt-1.5 border-t border-border/60 pt-1.5' : ''}>
               <h3 className={MENU_HEADING}>{g.plugin}</h3>
               <ul>
                 {g.actions.map((a) => {
                   // The running row stays focusable (aria-disabled, not disabled), so focus
-                  // does not drop to the page while herdr starts it.
-                  const running = busy && pick === actionKey(a);
+                  // does not drop to the page while herdr runs it.
+                  const mine = busy && running === actionKey(a);
                   return (
                     <li key={actionKey(a)}>
                       <button
                         type="button"
-                        disabled={busy && !running}
-                        aria-disabled={running || undefined}
-                        aria-busy={running || undefined}
+                        disabled={busy && !mine}
+                        aria-disabled={mine || undefined}
+                        aria-busy={mine || undefined}
                         onClick={() => {
-                          if (busy) return;
-                          setPick(actionKey(a));
-                          submit(a);
+                          if (!busy) run(a);
                         }}
                         className={`${MENU_ROW} text-body text-fg outline-none focus-visible:bg-bg focus-visible:shadow-[inset_2px_0_0_var(--accent)] disabled:cursor-default disabled:opacity-40 ${
-                          running ? 'cursor-default bg-bg' : busy ? '' : 'hover:bg-bg active:bg-bg'
+                          mine ? 'cursor-default bg-bg' : busy ? '' : 'hover:bg-bg active:bg-bg'
                         }`}
                       >
                         <span className="min-w-0 flex-1">
                           <span className="block truncate">{a.title}</span>
                           {a.description && <span className="mt-0.5 block text-caption text-muted">{a.description}</span>}
                         </span>
-                        {running && <span className="shrink-0 text-caption text-muted">Starting…</span>}
+                        {mine && <span className="shrink-0 text-caption text-muted">Running…</span>}
                       </button>
                     </li>
                   );
@@ -865,6 +1052,9 @@ export function ConfirmCloseSheet({
       setOverruled(false);
     }
   }, [open]);
+  // A kit dialog, not a Sheet, so it asks for focus back itself. After a close that worked,
+  // the ⋯ button has usually gone with its row.
+  useFocusBack(open);
 
   const recoverable = /dirty_worktree_requires_force|dirty (?:checkout|worktree)|modified or untracked files|uncommitted (?:changes|files)|agents?.*\brunning\b|\brunning agents?\b/i.test(error);
   const consequence =

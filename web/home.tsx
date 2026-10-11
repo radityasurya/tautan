@@ -2,7 +2,7 @@ import { TopBar } from './header.tsx';
 import { useEffect, useRef, useState } from 'react';
 import type { DragEvent, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type {
-  NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, RenameBody, State, StatePane, StateWorkspace, Status,
+  NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
 import { api, haptic, Link, navigate, opensWith, reducedMotion, useDesktop } from './app.tsx';
 import { dropMuxOrders, moveWorkspace, muxOrders, orderWorkspaces, readOrder, spliceIndex, writeOrder, type WorkspaceOrder } from './order.ts';
@@ -13,7 +13,7 @@ import {
   rollup, setAgentGroup, setAgentSort, setPaneList, setShowShells, setSpaceAgentsOnly, setSpaceSort, sortSpaces, tildePath,
   usePref, type AgentGroup, type AgentSort, type PaneList, type SpaceSort,
 } from './spaces.ts';
-import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, PluginActionsSheet, RenameSheet, useOpener, usePluginActions, why } from './sheets.tsx';
+import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, PluginActionsSheet, RenameSheet, usePluginActions, why } from './sheets.tsx';
 import { actionsFor } from './plugins.ts';
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
@@ -966,9 +966,9 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const [paneMenu, setPaneMenu] = useState<StatePane | null>(null);
   const [paneRename, setPaneRename] = useState<StatePane | null>(null);
   const [paneClose, setPaneClose] = useState<StatePane | null>(null);
-  /** The Workspace whose plugin actions sheet is open (Wave 21). */
-  const [actionsIn, setActionsIn] = useState<StateWorkspace | null>(null);
-  const menuOpener = useOpener(menu !== null);
+  /** The Workspace whose plugin actions sheet is open (Wave 21), with the list as the menu had
+   *  it when Plugin actions… was tapped: the live read empties when its Pane changes key. */
+  const [actionsIn, setActionsIn] = useState<{ ws: StateWorkspace; actions: PluginAction[] } | null>(null);
   const [q, setQ] = useState('');
   // The Workspace this screen just created: it stays listed until State fills it with a
   // Pane, and scrolls itself into view the first time State carries it.
@@ -1123,9 +1123,9 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const keys = layout === 'herdr' ? [] : [...groups.map((g) => g.w.key), ...(needsYou.length ? [NEEDS] : []), ...(running.length ? [RUNNING] : [])];
   const allShut = keys.length > 0 && keys.every((k) => collapsed.includes(k));
   // A Workspace action runs through one of its Panes: the first in herdr's own order (the
-  // tree carries no active Tab). The list is asked for when the menu opens and held while
-  // its sheet is open.
-  const actionsWs = actionsIn ?? menu;
+  // tree carries no active Tab). The list is asked for, fresh, when the menu opens: the row
+  // shows when a workspace action fits, and the sheet takes the same list.
+  const actionsWs = actionsIn?.ws ?? menu;
   const actionsPane = actionsWs && state?.panes.find((p) => p.muxKey === actionsWs.muxKey && p.workspaceId === actionsWs.id);
   const wsActions = actionsFor(usePluginActions(writable(actionsWs?.muxKey) ? actionsPane?.key : undefined, menu !== null), 'workspace');
   const rowActions = (p: StatePane): RowActions | undefined =>
@@ -1523,18 +1523,18 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
               ]
             : []),
           // Last, so it can arrive after the menu opens without moving a row under a finger.
-          ...(wsActions.length ? [{ label: 'Plugin actions…', onClick: () => setActionsIn(menu) }] : []),
+          ...(menu && wsActions.length ? [{ label: 'Plugin actions…', onClick: () => setActionsIn({ ws: menu, actions: wsActions }) }] : []),
           ...(writable(menu?.muxKey) ? [{ label: 'Close Workspace', danger: true, onClick: () => menu && setClose(menu) }] : []),
         ]}
       />
       <PluginActionsSheet
         open={actionsIn !== null}
         onClose={() => setActionsIn(null)}
-        meta={actionsIn?.label}
-        actions={wsActions}
+        meta={actionsIn?.ws.label}
+        menu="workspace"
+        actions={actionsIn?.actions}
         paneKey={actionsPane?.key}
         state={state}
-        opener={menuOpener}
       />
       <RenameSheet
         open={rename !== null}

@@ -16,8 +16,7 @@ import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, markSeen, unseen } from './home.tsx';
 import { ChevronDown, Down, Plus, ZoomIn, ZoomOut } from './icons.tsx';
-import { ConfirmCloseSheet, MenuSheet, NewTabSheet, PluginActionsSheet, RenameSheet, useOpener, usePluginActions, why } from './sheets.tsx';
-import { actionsFor } from './plugins.ts';
+import { ConfirmCloseSheet, menuOpener, MenuSheet, NewTabSheet, PluginActionsSheet, RenameSheet, why } from './sheets.tsx';
 import { MoveSheet, RESIZE_STEP, ResizeSheet, SwapSheet } from './layout.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
@@ -1287,11 +1286,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   /** Wave 21: the Agent's own name, and the plugin actions sheet, both from ⋯. */
   const [agentRename, setAgentRename] = useState(false);
   const [showActions, setShowActions] = useState(false);
-  const moreOpener = useOpener(showMore);
   /** Wave 22: Find in terminal, and where focus goes back when it closes. */
   const [finding, setFinding] = useState(false);
   const findOpener = useRef<HTMLElement | null>(null);
-  const actions = actionsFor(usePluginActions(writable ? paneKey : undefined, showMore), 'pane');
   const [confirmClose, setConfirmClose] = useState(false);
   const [tabMenu, setTabMenu] = useState<string | null>(null);
   /** A desktop Tab drag: the Tab in hand and the one under the pointer. */
@@ -2034,13 +2031,13 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
             label: 'Find in terminal',
             hint: desktop ? FIND_KEY : undefined,
             onClick: () => {
-              findOpener.current = moreOpener.current;
+              findOpener.current = menuOpener();
               setFinding(true);
             },
           },
           ...(agent ? [{ label: 'Read aloud', onClick: speak }] : []),
-          // herdr's plugins (Wave 21): listed only when one offers a Pane or Tab action.
-          ...(actions.length ? [{ label: 'Plugin actions…', onClick: () => setShowActions(true) }] : []),
+          // herdr's plugins (Wave 21) on every herdr Pane: the sheet asks herdr when it opens (21.4.2).
+          ...(writable ? [{ label: 'Plugin actions…', onClick: () => setShowActions(true) }] : []),
           kind === 'shell'
             ? {
                 // Three states for a shell: auto, then the two explicit choices.
@@ -2169,10 +2166,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         open={showActions}
         onClose={() => setShowActions(false)}
         meta={pane?.title}
-        actions={actions}
+        menu="pane"
         paneKey={paneKey}
         state={state}
-        opener={moreOpener}
       />
       <ConfirmCloseSheet
         open={confirmClose}

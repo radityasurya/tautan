@@ -4,7 +4,7 @@ import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseAnsi } from '../shared/ansi.ts';
 import { inputBox, stripInvisible } from '../shared/inputbox.ts';
-import type { Explain, HostConfig, HostIntegrations, InputBody, MouseBody, MoveBody, Mux, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, PushSubscriptionBody, RenameBody, Screen, ScreenEvent, ScreenMode, Settings, SplitBody, State, StateHost, StatePane, Tree } from '../shared/types.ts';
+import type { Explain, HostConfig, HostIntegrations, InputBody, MouseBody, MoveBody, Mux, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, PluginRun, PushSubscriptionBody, RenameBody, Screen, ScreenEvent, ScreenMode, Settings, SplitBody, State, StateHost, StatePane, Tree } from '../shared/types.ts';
 import { sendPush, type VapidKeys } from './push.ts';
 import { configureSuggest, type SuggestAdapter } from './suggest.ts';
 import { hostId as localHostId, hostsConfigPath } from './hosts.ts';
@@ -458,20 +458,23 @@ export class Hub {
   }
 
   /** Wave 21: herdr plugin actions for the Pane the key names (the list is Pane-independent;
-   *  the key check is the route's 404). */
-  async pluginActions(paneKey: string): Promise<PluginAction[]> {
+   *  the key check is the route's 404). 21.4.2: `fresh` bypasses the Mux's action cache. */
+  async pluginActions(paneKey: string, fresh?: boolean): Promise<PluginAction[]> {
     await this.state();
     const found = this.resolve(paneKey);
     if (!found) throw new Error('pane not found');
-    return found.entry.mux.pluginActions();
+    return found.entry.mux.pluginActions(fresh);
   }
 
-  async invokePluginAction(paneKey: string, actionId: string, pluginId?: string): Promise<void> {
+  /** 21.4.1: the Mux reads the run's outcome from herdr's plugin log; a test double's
+   *  `void` reads as `unknown` in the route. */
+  async invokePluginAction(paneKey: string, actionId: string, pluginId?: string): Promise<PluginRun | void> {
     await this.state();
     const found = this.resolve(paneKey);
     if (!found) throw new Error('pane not found');
-    await found.entry.mux.invokePluginAction(found.paneId, actionId, pluginId);
+    const run = await found.entry.mux.invokePluginAction(found.paneId, actionId, pluginId);
     await this.refreshAfterWrite(found.muxKey);
+    return run;
   }
 
   // ponytail: the write already happened; a failed receipt must not trigger a duplicate Retry.

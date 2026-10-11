@@ -77,10 +77,16 @@ describe.skipIf(!herdrAvailable)('blocked flow contract', () => {
     const drawn = await eventually(readExplain, (value) => typeof value?.promptId === 'string', 5_000);
     expect(drawn!.promptId).toMatch(/^[0-9a-f]{12}$/);
 
-    // The box moves on underneath the card the phone still shows.
-    await mux.sendText(paneId, `clear; printf '%s\\n' ${quoted(prompt.replaceAll('❯ 1. Yes', '❯ 1. Yes (edited)'))}`);
+    // The box moves on underneath the card the phone still shows. The shell echoes the
+    // typed command first, and the echo carries '(edited)' too, so waiting for the text
+    // alone races the command's execution. Wait for the executed box: `clear` has erased
+    // the echo (no `printf` left on screen) and the edited row is there. `PROMPT=` keeps
+    // zsh from drawing a prompt line below the box, so this screen cannot change again
+    // and the fresh id read from it stays current until the input lands.
+    await mux.sendText(paneId, `PROMPT=; clear; printf '%s\\n' ${quoted(prompt.replaceAll('❯ 1. Yes', '❯ 1. Yes (edited)'))}`);
     await mux.sendKeys(paneId, ['enter']);
-    await eventually(() => mux.read(paneId, 'visible'), (screen) => screen.text.includes('(edited)'), 5_000);
+    await eventually(() => mux.read(paneId, 'visible'),
+      (screen) => !screen.text.includes('printf') && screen.text.includes('(edited)'), 5_000);
 
     // The stale id must not land: the answer would approve a different prompt.
     const stale = await send(drawn!.promptId);

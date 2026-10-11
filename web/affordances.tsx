@@ -8,6 +8,7 @@ import { wheelBytes } from '../shared/affordances.ts';
 import type { Action, Affordance, InputBody, MouseBody } from '../shared/types.ts';
 import { haptic, navigate, post } from './app.tsx';
 import { keyGlyph } from './keys.ts';
+import { copyText } from './markdown.tsx';
 import { pillLabel } from './replies.ts';
 import type { Pill } from './replies.ts';
 
@@ -99,14 +100,15 @@ function Box({
   scale,
   onTap,
   onHold,
-  copied,
+  chip,
 }: {
   a: Affordance;
   cell: Cell;
   scale: number;
   onTap: () => void;
   onHold?: () => void;
-  copied: boolean;
+  /** What a copy did, over the token for a moment: `Copied` or `Not copied`. */
+  chip?: string;
 }) {
   const hold = useHold(() => onHold?.());
   // The 44 px hit area is physical, so under Fit it is drawn larger in the grid's own
@@ -146,10 +148,10 @@ function Box({
           background: 'color-mix(in srgb, var(--accent) 60%, transparent)',
         }}
       />
-      {copied && (
+      {chip && (
         <span
           aria-hidden
-          className="absolute rounded-chip bg-elevated px-1.5 py-0.5 text-[11px] font-medium text-fg shadow-elevated"
+          className={`absolute rounded-chip bg-elevated px-1.5 py-0.5 text-[11px] font-medium shadow-elevated ${chip === 'Copied' ? 'text-fg' : 'text-danger'}`}
           style={{
             left: padX,
             top: padY,
@@ -158,7 +160,7 @@ function Box({
             transformOrigin: 'top left',
           }}
         >
-          Copied
+          {chip}
         </span>
       )}
     </button>
@@ -187,7 +189,7 @@ export function AffordanceLayer({
   from: number;
   to: number;
 }) {
-  const [copied, setCopied] = useState(-1);
+  const [copied, setCopied] = useState<{ i: number; ok: boolean } | null>(null);
   if (!cell.cw) return null;
   return (
     <div className="absolute inset-0 overflow-hidden" style={{ pointerEvents: 'none' }}>
@@ -203,14 +205,15 @@ export function AffordanceLayer({
             a={a}
             cell={cell}
             scale={scale}
-            copied={copied === i}
+            chip={copied?.i === i ? (copied.ok ? 'Copied' : 'Not copied') : undefined}
             onTap={() => {
               if (!('copy' in a.action)) return sendAction(paneKey, a.action);
               haptic();
-              void navigator.clipboard?.writeText(a.action.copy);
-              setCopied(i);
-              // ponytail: one timer per tap, no toast system — the chip is the whole receipt.
-              setTimeout(() => setCopied((c) => (c === i ? -1 : c)), 1500);
+              void copyText(a.action.copy).then((ok) => {
+                setCopied({ i, ok });
+                // ponytail: one timer per tap, no toast system — the chip is the whole receipt.
+                setTimeout(() => setCopied((c) => (c?.i === i ? null : c)), 1500);
+              });
             }}
             // Move and confirm in one send: the Hub plays the keys in order.
             onHold={path

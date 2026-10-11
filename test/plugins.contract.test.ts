@@ -69,7 +69,9 @@ describe.skipIf(!herdrAvailable)('plugin and Agent contract', () => {
     const response = await fetch(`http://127.0.0.1:${server.port}/api/panes/${encodeURIComponent(paneKey())}/actions/mark`, {
       method: 'POST', headers: { 'content-type': 'application/json', origin: origin() }, body: '{}',
     });
-    expect(response.status).toBe(204);
+    // 21.4.1: the body says how the run ended, read back from plugin.log.list.
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'succeeded', exitCode: 0 });
     const env = await eventually(async () => existsSync(out) ? await readFile(out, 'utf8') : '', text => text.length > 0, 10_000);
     expect(env).toContain('HERDR_PLUGIN_ID=tautan.test-plugin');
     expect(env).toContain('HERDR_PLUGIN_ACTION_ID=mark');
@@ -79,18 +81,23 @@ describe.skipIf(!herdrAvailable)('plugin and Agent contract', () => {
     expect(context.focused_pane_cwd).toBe(fixture.dir);
   }, 15_000);
 
-  test('scratch calls herdr back into the invoking Workspace; a failed run stays 204, an unknown action answers 502', async () => {
+  test('scratch calls herdr back into the invoking Workspace; a failed run answers 200 with its exit code and stderr tail', async () => {
     const tabs = async () => (await mux.tree()).tabs.filter(t => t.workspaceId === workspaceId).map(t => t.id);
     const invoke = (actionId: string, body = '{}') => fetch(`http://127.0.0.1:${server.port}/api/panes/${encodeURIComponent(paneKey())}/actions/${actionId}`, {
       method: 'POST', headers: { 'content-type': 'application/json', origin: origin() }, body,
     });
     const before = await tabs();
-    expect((await invoke('scratch')).status).toBe(204);
+    const scratch = await invoke('scratch');
+    expect(scratch.status).toBe(200);
+    expect(await scratch.json()).toEqual({ status: 'succeeded', exitCode: 0 });
     const after = await eventually(tabs, list => list.length === before.length + 1, 15_000);
     expect(after.length).toBe(before.length + 1); // HERDR_BIN_PATH `tab create`d inside this Workspace
     // herdr runs the command async (its log starts `running`), so a non-zero exit is not the
-    // route's failure: only herdr's own refusals are, and their message arrives whole.
-    expect((await invoke('boom', JSON.stringify({ pluginId: 'tautan.test-plugin-two' }))).status).toBe(204);
+    // route's failure — 21.4.1 reads the outcome from herdr's plugin log instead: the exit
+    // code and the last stderr line arrive in the body. Only herdr's own refusals 502.
+    const boom = await invoke('boom', JSON.stringify({ pluginId: 'tautan.test-plugin-two' }));
+    expect(boom.status).toBe(200);
+    expect(await boom.json()).toEqual({ status: 'failed', exitCode: 3, message: 'the scratch script is missing' });
     const unknown = await invoke('nope', JSON.stringify({ pluginId: 'tautan.test-plugin' }));
     expect(unknown.status).toBe(502);
     expect((await unknown.json() as { error: string }).error).toBe('plugin_action_not_found: plugin action not found');
@@ -109,6 +116,20 @@ describe.skipIf(!herdrAvailable)('plugin and Agent contract', () => {
     const cleared = (await eventually(async () => await statePane(), pane => pane?.agentName === undefined, 5_000))!;
     expect(cleared.agentName).toBeUndefined();
   }, 10_000);
+
+  test('a rename made in herdr\'s own window reaches the Hub tree within 1 s (21.4.3)', async () => {
+    // agent.rename (set and clear) fires exactly one pane.updated about 10 ms after the
+    // reply, and its payload carries no Agent name (probed on 0.9.3) — but the next
+    // session.snapshot holds it. The Hub already subscribes to pane.updated and re-reads
+    // the tree on it (150 ms debounce, then Hub.changed's 200 ms), so 21.4.3 needed no
+    // herdr.ts edit; this case pins that whole chain with no other trigger.
+    await herdrRpc(fixture.sock, 'agent.rename', { target: paneId, name: 'window-rename' });
+    const renamed = await eventually(async () => await statePane(), pane => pane?.agentName === 'window-rename', 1_000);
+    expect(renamed?.agentName).toBe('window-rename');
+    await herdrRpc(fixture.sock, 'agent.rename', { target: paneId, name: null });
+    const gone = await eventually(async () => await statePane(), pane => pane?.agentName === undefined, 1_000);
+    expect(gone?.agentName).toBeUndefined();
+  }, 5_000);
 
   test('Settings carries this Host integration list', async () => {
     const settings = await (await fetch(`http://127.0.0.1:${server.port}/api/settings`)).json() as { integrations?: { muxKey: string; label: string; integrations?: Integration[]; error?: string }[] };

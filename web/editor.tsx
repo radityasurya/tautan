@@ -17,6 +17,7 @@ import { AlertDialog } from './halaska-kit';
 import { lineBreakOf } from './folders-logic.ts';
 import { ON_WARN } from './blocked.tsx';
 import { why } from './sheets.tsx';
+import { copyText } from './markdown.tsx';
 
 /** Each language is its own chunk, loaded into a Compartment once the editor is up. */
 const LANGUAGES: [RegExp, (path: string) => Promise<Extension>][] = [
@@ -277,13 +278,13 @@ export default function Editor({
   };
   const copy = () => {
     const doc = view.current?.state.sliceDoc() ?? '';
-    // Over plain http there is no clipboard: select everything, so the system Copy is one tap.
-    if (!navigator.clipboard) return selectAll();
-    navigator.clipboard.writeText(doc).then(() => {
+    // Where neither way copies, select everything, so the system Copy is one tap.
+    void copyText(doc).then((ok) => {
+      if (!ok) return selectAll();
       copiedOnce.current = true;
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    }, selectAll);
+    });
   };
 
   const [label, tone] = STATUS[status];

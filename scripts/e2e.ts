@@ -7,7 +7,7 @@
  * built app in headless Chromium at 390 px. Nothing here may touch the live
  * herdr socket or port 7700. Write tests run only against the throwaway server.
  */
-import { access, mkdir } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { splitFloor } from '../web/split-floor.ts';
 import { installCommand, integrationOrder } from '../web/plugins.ts';
@@ -660,7 +660,7 @@ try {
     const right = await settle(dragged);
     return assert(right[1] === t3 && right.length === 3, `Move right: ${dragged.join()} → ${right.join()}`);
   });
-  await flow('plugins (Wave 21): Pane ⋯ Plugin actions… groups two plugins, hides Global only, gives focus back, and Open a scratch Tab opens the new Pane; the Workspace menu has none', async () => {
+  await flow('plugins (Wave 21, 21.4): Pane ⋯ Plugin actions… asks herdr when it opens, groups the plugins, hides Global only, gives focus back, shows a failed run\'s exit code and stderr, and Open a scratch Tab opens the new Pane; the Workspace menu has none', async () => {
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-plugins' });
     const only = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
     const key = `HireOpz/default/${only}`;
@@ -672,12 +672,38 @@ try {
         await page.getByRole('button', { name: 'Plugin actions…' }).click();
         await page.getByRole('heading', { name: 'Tautan Second Plugin' }).waitFor({ timeout: 8_000 });
       };
+      // A closed sheet keeps its panel, ✕ included, through its slide-out: close the open one
+      // once it is the only ✕ left.
+      const close = async () => {
+        await page.waitForFunction(() => [...document.querySelectorAll('button')].filter((b) => b.textContent === '✕' && !b.hasAttribute('aria-label')).length === 1, undefined, { timeout: 3_000 });
+        await page.getByRole('button', { name: '✕' }).click();
+      };
       await open();
       assert(await page.getByRole('heading', { name: 'Tautan Test Plugin' }).count() === 1, 'two groups');
       for (const title of ['Mark the pane', 'No contexts', 'Open a scratch Tab', 'Fail on purpose']) {
         assert(await page.getByRole('button', { name: new RegExp(`^${title}`) }).count() === 1, `row ${title}`);
       }
       assert(await page.getByText('Global only').count() === 0, 'no Global only');
+      // 21.4.2: the sheet asks herdr each time it opens, past the Hub's 30 s cache, so a
+      // plugin linked after the first read is listed on the next open.
+      const late = `${fixture.dir}/test-plugin-late`;
+      await mkdir(late, { recursive: true });
+      await writeFile(`${late}/herdr-plugin.toml`, `id = "tautan.test-plugin-late"
+name = "Tautan Late Plugin"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "late"
+title = "Linked late"
+contexts = ["pane"]
+command = ["/bin/sh", "-c", ":"]
+`);
+      await herdrRpc(fixture.sock, 'plugin.link', { path: late });
+      await close();
+      await open();
+      await page.getByRole('heading', { name: 'Tautan Late Plugin' }).waitFor({ timeout: 3_000 });
       await page.waitForTimeout(500); // the slide-in
       await page.screenshot({ path: '/tmp/tautan-plugins/actions-light.png' });
       await page.emulateMedia({ colorScheme: 'dark' });
@@ -685,10 +711,17 @@ try {
       await page.screenshot({ path: '/tmp/tautan-plugins/actions-dark.png' });
       await page.emulateMedia({ colorScheme: 'light' });
       // Closing the sheet gives focus back to the ⋯ button that opened the menu.
-      await page.getByRole('button', { name: '✕' }).click();
-      await page.waitForTimeout(500);
+      await close();
+      await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'More', undefined, { timeout: 3_000 }).catch(() => {});
       assert(await page.evaluate(() => document.activeElement?.getAttribute('aria-label')) === 'More', 'focus back on More');
       await open();
+      // 21.4.1: herdr starts `boom`, which exits 3; the sheet stays open and says so.
+      await page.getByRole('button', { name: /^Fail on purpose/ }).click();
+      const failure = page.getByRole('alert').filter({ hasText: 'Fail on purpose failed' });
+      await failure.waitFor({ timeout: 12_000 });
+      const said = await failure.innerText();
+      assert(said.includes('exit 3') && said.includes('the scratch script is missing'), `failure says: ${said}`);
+      await page.screenshot({ path: '/tmp/tautan-plugins/actions-failed.png' });
       await page.getByRole('button', { name: /^Open a scratch Tab/ }).click();
       for (let i = 0; i < 40 && decodeURIComponent(page.url()).endsWith(key); i++) await Bun.sleep(250);
       const opened = decodeURIComponent(page.url()).split('/').pop()!;
@@ -699,7 +732,7 @@ try {
       await page.getByRole('button', { name: 'e2e-plugins actions' }).click();
       await page.getByRole('button', { name: 'Diff' }).waitFor({ timeout: 8_000 });
       await page.waitForTimeout(1000);
-      return assert(await page.getByRole('button', { name: 'Plugin actions…' }).count() === 0, 'grouped, focus back, new Pane opened, no Workspace item');
+      return assert(await page.getByRole('button', { name: 'Plugin actions…' }).count() === 0, 'fresh, grouped, focus back, exit 3 shown, new Pane opened, no Workspace item');
     } finally {
       await page.close().catch(() => {});
     }

@@ -711,7 +711,8 @@ export function startHttp(hub: Hub, opts: {
           let key: string;
           try { key = decodeURIComponent(actionsList[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
-          return json({ actions: await hub.pluginActions(key) });
+          // 21.4.2: `?fresh=1` (the menu just opened) reads herdr past the Hub's 30 s cache.
+          return json({ actions: await hub.pluginActions(key, url.searchParams.get('fresh') === '1') });
         }
         // Wave 22 (ADR 0010): search one history read. `q` is used literally, never as a
         // regex; `before` pages backwards from a line number.
@@ -729,6 +730,8 @@ export function startHttp(hub: Hub, opts: {
         }
         // Wave 21: run one of the listed actions from this Pane. herdr's own message reaches
         // the UI on failure (up to 1000 chars), unlike the code-only 502 the catch maps.
+        // 21.4.1: the body is how the run ended (PluginRun); a Mux that cannot say (a test
+        // double's void) answers `unknown` instead of the old empty 204.
         const actionInvoke = url.pathname.match(/^\/api\/panes\/([^/]+)\/actions\/([^/]+)$/);
         if (req.method === 'POST' && actionInvoke) {
           let key: string; let actionId: string;
@@ -738,14 +741,13 @@ export function startHttp(hub: Hub, opts: {
           let body: { pluginId?: unknown };
           try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
           if (!plainObject(body) || body.pluginId !== undefined && (typeof body.pluginId !== 'string' || !body.pluginId)) return json({ error: 'body' }, 400);
-          try { await hub.invokePluginAction(key, actionId, body.pluginId); }
+          try { return json(await hub.invokePluginAction(key, actionId, body.pluginId) ?? { status: 'unknown' }, 200); }
           catch (error) {
             const message = errorMessage(error);
             // the outer catch owns these two: 404 for the pane, 501 for tmux.
             if (message === 'pane not found' || message === 'unsupported') throw error;
             return json({ error: message.slice(0, 1000) }, 502);
           }
-          return new Response(null, { status: 204 });
         }
         const match = url.pathname.match(/^\/api\/panes\/([^/]+)\/(screen|input|seen|explain|attach|suggest|close|zoom|split|swap|move|resize)$/);
         if (match) {

@@ -13,6 +13,7 @@ import { CHAT_EVENT } from '../shared/chat-merge.ts';
 import { autoDeliver } from './pending.ts';
 import { setBadge } from './push.ts';
 import { Settings } from './settings.tsx';
+import { RunNotice } from './sheets.tsx';
 import { UsageStrip } from './usage.tsx';
 import { ThemeProvider, tokens } from './halaska-kit';
 import { PALETTES, PALETTE_IDS, kitTokens } from './palettes.ts';
@@ -718,6 +719,7 @@ export function App() {
         <span className="sr-only">{connected ? '' : 'Reconnecting'}</span>
       </div>
       <StorageNotice />
+      <RunNotice />
       <NeedsCard state={state} openPaneKey={paneKey} onOpen={(key) => navigate(`#/pane/${encodeURIComponent(key)}`)} />
       {desktop ? (
         // The frame is the window: the sidebar and the screen each scroll inside it, so the

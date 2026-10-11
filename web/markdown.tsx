@@ -272,25 +272,65 @@ export function inline(text: string, refs?: Record<string, string>): ReactNode[]
   return out;
 }
 
-// Clipboard needs a secure context; over plain http the button is left out, not broken.
-const canCopy = () => typeof navigator !== 'undefined' && Boolean(navigator.clipboard);
+/**
+ * Copies `text`; false when nothing was copied. The Clipboard API needs a secure context, so
+ * over plain http on a LAN address it is missing, and a hidden textarea with
+ * `execCommand('copy')` (deprecated, still in every browser) does it instead. With no
+ * Clipboard API the fallback runs in the same task as the tap, which it needs. An open modal
+ * <dialog> (Find in terminal) makes the rest of the page inert, so the textarea goes inside
+ * it; a textarea that cannot take focus copies nothing, and says so.
+ * Every copy in web/ goes through here.
+ */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const box = document.createElement('textarea');
+    box.value = text;
+    box.setAttribute('readonly', ''); // no keyboard on a phone
+    // 16 px so iOS does not zoom; fixed and off to the left so nothing scrolls.
+    box.style.cssText = 'position:fixed;top:0;left:-9999px;font-size:16px';
+    const was = document.activeElement as HTMLElement | null;
+    ([...document.querySelectorAll('dialog[open]')].at(-1) ?? document.body).append(box);
+    box.focus({ preventScroll: true });
+    box.select();
+    box.setSelectionRange(0, text.length); // iOS ignores select() alone
+    let ok = false;
+    try {
+      // Unfocused, execCommand would copy whatever else is selected and still answer true.
+      ok = document.activeElement === box && document.execCommand('copy');
+    } catch {
+      // a browser that dropped execCommand throws: nothing was copied
+    }
+    box.remove();
+    was?.focus?.({ preventScroll: true });
+    return ok;
+  }
+}
+
+/** Over plain http with no Clipboard API, execCommand still copies; only both missing leaves Copy out. */
+const canCopy = () =>
+  typeof document !== 'undefined' && (Boolean(navigator.clipboard?.writeText) || document.queryCommandSupported?.('copy') === true);
 
 export function CopyButton({ text, className, label }: { text: string; className: string; /** names what it copies, where several sit together */ label?: string }) {
-  const [copied, setCopied] = useState(false);
+  const [done, setDone] = useState<'Copied' | 'Not copied' | null>(null);
   if (!canCopy()) return null;
   return (
     <button
       type="button"
       aria-label={label}
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        }, () => {});
+        void copyText(text).then((ok) => {
+          setDone(ok ? 'Copied' : 'Not copied');
+          setTimeout(() => setDone(null), 1500);
+        });
       }}
       className={className}
     >
-      <span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
+      <span aria-live="polite" className={done === 'Not copied' ? 'text-danger' : undefined}>
+        {done ?? 'Copy'}
+      </span>
     </button>
   );
 }
