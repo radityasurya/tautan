@@ -108,8 +108,13 @@ export function readBox(detection: string): { head: string; rest: string[]; menu
     break;
   }
   const lines = raw.slice(start).filter((line) => !RULE.test(plain(line)));
-  // The menu: each numbered row, and the deeper-indented lines under it as its description.
-  const menu: (MenuOption & { at: number })[] = [];
+  // A row wraps only at the terminal's right edge, which the box's full-width rule spans —
+  // solid ─ or dashed ╌, whichever the Agent drew. The longest line on screen is not that
+  // edge: an unwrapped row can be the longest thing there, and a longer line can hide a wrap.
+  const width = Math.max(0, ...raw.filter((line) => /^[─╌]{20,}$/.test(plain(line).trim())).map((line) => plain(line).trim().length));
+  // The menu: each numbered row, and the deeper-indented lines under it as its description —
+  // except a wrap of the label itself, which shows when the row above fills the box width.
+  const menu: (MenuOption & { at: number; wrapped?: boolean })[] = [];
   const used = new Set<number>();
   let cursor = 0;
   let column = -1;
@@ -123,11 +128,21 @@ export function readBox(detection: string): { head: string; rest: string[]; menu
       used.add(i);
     } else if (menu.length && text.trim() && text.length - text.trimStart().length > column) {
       const last = menu.at(-1)!;
-      last.detail = last.detail ? `${last.detail} ${text.trim()}` : text.trim();
+      const above = plain(lines[i - 1]!).replace(frame, '').trimEnd();
+      if (width > 0 && (i === last.at + 1 || last.wrapped) && above.length >= width - 1) {
+        // ponytail: a deeper line under a row that fills the width is a wrap of the label, not a
+        // description; a wrap that ends short of the edge by more than one column still reads as
+        // one — tell them apart by indent alone is not possible.
+        last.label += above.length === width ? text.trim() : ` ${text.trim()}`;
+        last.wrapped = true;
+      } else {
+        last.detail = last.detail ? `${last.detail} ${text.trim()}` : text.trim();
+        last.wrapped = false;
+      }
       used.add(i);
     } else if (text.trim()) column = Infinity; // a shallower line ends the last row's description
   });
-  const options = menu.length >= 2 ? menu.map(({ at: _at, ...option }, i) => ({
+  const options = menu.length >= 2 ? menu.map(({ at: _at, wrapped: _wrapped, ...option }, i) => ({
     ...option,
     keys: [...Array<string>(Math.abs(i - cursor)).fill(i > cursor ? 'down' : 'up'), 'enter'],
   })) : [];

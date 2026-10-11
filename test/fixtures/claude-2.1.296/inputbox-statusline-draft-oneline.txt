@@ -1,0 +1,32 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Sonnet 5.5 · Claude Plan
+ ▝▝   ▝▝   /…/-home-user-projects-taut/ef720fc0-f056-44b2-8f69-5de99aef8a0d/scratchpad/20.1/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scro…
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ hello there
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  [PONYTAIL]
+  ⏵⏵ auto mode on (shift+tab to cycle)

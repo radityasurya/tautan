@@ -1,0 +1,32 @@
+
+ ▐▛███▛█   Claude Code v2.1.296
+▝▜██████▀  Sonnet 5.5 · Claude Plan
+ ▝▝   ▝▝   /…/-home-user-projects-taut/ef720fc0-f056-44b2-8f69-5de99aef8a0d/scratchpad/20.1/work
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tra…
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ line one
+  line two
+  line three
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

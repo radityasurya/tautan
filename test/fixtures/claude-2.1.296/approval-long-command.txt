@@ -1,0 +1,20 @@
+ │ line 31 of the ping-pong tournament draw
+ │ line 32 of the ping-pong tournament draw
+ │ line 33 of the ping-pong tournament draw
+ │ line 34 of the ping-pong tournament draw
+ │ line 35 of the ping-pong tournament draw
+ │ line 36 of the ping-pong tournament draw
+ │ line 37 of the ping-pong tournament draw
+ │ line 38 of the ping-pong tournament draw
+ │ line 39 of the ping-pong tournament draw
+ │ line 40 of the ping-pong tournament draw
+ │ EOF
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to /tmp/claude-1000/-home-user-projects-taut/ef720fc0-f056-44b2-8
+      f69-5de99aef8a0d/scratchpad/24.2/work from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend

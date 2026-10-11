@@ -1,0 +1,32 @@
+
+  I can paste the full text here or save it to a file.
+
+  You declined ls -la /etc both times, so I haven't run it. Tell me if you want me to try again, or
+  if you want something different.
+
+✻ Baked for 53s · done 4:02 PM
+
+❯ run: ls -la /etc
+
+  Listed 1 directory
+  ⎿  Interrupted · What should Claude do instead?
+
+✻ Baked for 1s · done 4:03 PM
+
+❯ Use AskUserQuestion to ask me: ship today or next week or never? Exactly three options.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Ship date
+
+When do you want to ship?
+
+  1. Today
+     Ship today.
+  2. Next week
+     Ship next week.
+  3. Never
+     Do not ship.
+❯ 4. maybe friday
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel
