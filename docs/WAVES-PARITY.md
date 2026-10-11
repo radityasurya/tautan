@@ -6,6 +6,10 @@ orchestrator routes its lanes. Vocabulary is in [../CONTEXT.md](../CONTEXT.md). 
 [standing constraints](./WAVES.md#standing-constraints) and the
 [routing table](./WAVES.md#routing) in WAVES.md hold here too.
 
+The next plan, for herdr-web-ui 0.4.0–0.4.6 and the herdr 0.9.2 API, is
+[WAVES-PARITY-2.md](./WAVES-PARITY-2.md). Its facts replace this file's claim that herdr cannot
+reorder Workspaces.
+
 [ROADMAP.md](./ROADMAP.md) records what landed. When a wave passes its verification, add its
 phase there with its Verify step. Agents never tick a ROADMAP box; the user does, on a real
 device.
