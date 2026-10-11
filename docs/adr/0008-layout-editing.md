@@ -92,6 +92,10 @@ Two gestures are desktop-only, because touch cannot make them precise:
 
 ### Workspace order
 
+Superseded by [ADR 0009](./0009-reordering-workspaces-and-tabs.md) (herdr 0.7.2 grew
+`workspace.move` and `tab.move`); the `localStorage` order below now applies to tmux Muxes
+only.
+
 herdr has no reorder, and tmux cannot reorder Workspaces either, so the order never leaves
 tautan: one `localStorage` key, `tautan.workspaceOrder`, holding `{ [muxKey]: [workspaceId,
 …] }` — `muxKey` already names Host and Mux, the same stability `tautan.watched` relies on.
