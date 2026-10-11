@@ -712,3 +712,5 @@ locked sends a push that names it.
 - Per-agent prompt grammars (native widgets for select lists)
 - Passcode or SSO in front of the Hub
 - Per-Workspace push muting; attachment pruning
+- Optional: switch a Claude Pane to another account when its account hits a limit
+  ([WAVES-PARITY-2](./WAVES-PARITY-2.md#wave-25--claude-accounts), Wave 25 leaves it out)

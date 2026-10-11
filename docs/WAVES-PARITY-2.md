@@ -16,6 +16,10 @@ plus the API schema of herdr 0.9.2 (`herdr api schema --json`) on this machine. 
 schema is identical. Most of herdr-web-ui's new features rest on herdr API methods that tautan
 does not call yet.
 
+Item 8 came later (2026-10-11), from two pages on running several Claude Code accounts on one
+machine: [a blog post](https://www.boxblinkracer.com/blog/claude-code-multi-account) and
+[AgentsRoom's multi-account feature](https://agentsroom.dev/features/claude-multi-account).
+
 **Scope.** Every item the user chose from that comparison:
 
 | # | Item | herdr-web-ui 0.4.x | tautan today | Wave |
@@ -32,13 +36,16 @@ does not call yet.
 | c | An `/effort` card | 0.4.1 | `/effort` goes to the Screen | 23 |
 | d | The Markdown parser survives pathological input | 0.4.0–0.4.1 | untested | 24 |
 | e | Newer Claude Code approval footers | 0.4.3–0.4.4 | untested | 24 |
+| 8 | Claude accounts, one `CLAUDE_CONFIG_DIR` each | (AgentsRoom: an account per project or Agent) | `~/.claude` only | 25 |
 
 The user weighed a density setting on 2026-10-11 and kept the
 [WAVES.md rejection](./WAVES.md#what-this-plan-does-not-do): one scale, and if desktop feels
 loose, tune that scale. The other rejections stand too: no command palette (plugin actions go
 in the ⋯ menus), no token gate, no xterm.js. Out of scope: patch notes in the app, anonymous
 telemetry, Windows and macOS path fixes, and Chat for Devin, OpenCode 2 and Gajae (add them
-when the user runs those agents).
+when the user runs those agents). For item 8, sharing skills, plugins and `CLAUDE.md` across
+Claude accounts stays with the user's dotfiles, and switching a Pane to another account at a
+limit is on the ROADMAP's "Later" list, optional.
 
 ## Facts the waves depend on
 
@@ -88,6 +95,18 @@ when the user runs those agents).
   dependency.
 - tmux reorders windows (Tabs) with `move-window` and `swap-window`. tmux sessions
   (Workspaces) have no order.
+- Claude Code keeps an account in the folder `CLAUDE_CONFIG_DIR` names (default
+  `~/.claude`): its login, settings, transcripts under `projects/`, skills and plugins. Each
+  folder is separate; nothing is shared between them.
+- herdr 0.9.3's `tab.create`, `pane.split` and `workspace.create` take `env`; `agent.start`
+  takes `args` but no `env`. herdr's Claude hook (`~/.claude/hooks/herdr-agent-state.sh`) is
+  set up in `~/.claude/settings.json` only, so a Claude on another folder sends herdr no
+  `agent_session` until that folder has the hook too.
+- quota-axi reads one account: `CLAUDE_CONFIG_DIR=<folder> quota-axi --provider claude
+  --profile-only --json`. The Hub runs plain `quota-axi --json` (`server/http.ts:69`).
+- tautan reads `~/.claude` in `server/chat.ts:58` and `:63` (transcripts) and in
+  `server/complete.ts:236`, `:237` and `:262` (settings, plugins, commands and skills). No
+  `~/.claude-*` folder exists on this machine yet (checked 2026-10-11).
 - Write tests and probes run only on throwaway servers from `test/harness.ts`. A probe that
   needs a logged-in Claude Code runs it in a throwaway tmux (`tmux -f /dev/null -S <sock>`),
   which keeps the real `HOME`. The live herdr socket never receives a write.
@@ -103,7 +122,8 @@ once; GLM lanes are not capped.
 | 2 | 19 build · 23 | 19 owns the order path; 23 owns the composer and Markdown |
 | 3 | 20 build | 20 owns the input path |
 | 4 | 21 | It edits `server/herdr.ts` and the ⋯ menus after 19 |
-| 5 | 22 build · final qa | It edits `server/herdr.ts` and the ⋯ menus after 21 |
+| 5 | 22 build · 25.1 | 22 edits `server/herdr.ts` and the ⋯ menus after 21; 25.1 is a probe and an ADR |
+| 6 | 25 build · final qa | 25 edits `server/herdr.ts`, the Chat and completion reads, and Settings after 22 |
 
 | Wave | Owns (do not edit from a parallel wave) |
 |---|---|
@@ -113,9 +133,10 @@ once; GLM lanes are not capped.
 | 22 | `server/herdr.ts` and `server/tmux.ts` read paths, a history route in `server/http.ts`, `web/history.tsx` (new), the Pane ⋯ menu |
 | 23 | `web/markdown.tsx`, `server/complete.ts`, `web/complete.tsx`, `web/composer.tsx` |
 | 24 | `test/` only, plus a fix in `web/markdown.tsx` or `shared/blocked.ts` if a test fails |
+| 25 | `server/accounts.ts` (new), the account reads in `server/chat.ts` and `server/complete.ts`, `env` on create in `server/herdr.ts` and `server/tmux.ts`, the create routes and the quota route in `server/http.ts`, the create sheets in `web/sheets.tsx`, `web/settings.tsx`, `web/usage.tsx` |
 
 **Progress (2026-10-12).** Batches 1–4 are built and committed on `main`; nothing is
-pushed. ROADMAP has Phases 32–36. Batch 5 is open.
+pushed. ROADMAP has Phases 32–36. Batches 5 and 6 are open.
 
 | Batch | Commits | Checks on the final tree |
 |---|---|---|
@@ -137,8 +158,8 @@ only `scripts/e2e.ts` changed:
 | Chat view approval row | The menu reads as numbered rows | Uses the numbered radios; checks `["down","enter"]` and a `promptId` |
 | Split view | The view choice lives in `localStorage`; the fallback saves nothing | Uses `localStorage`; checks the choice stays `chat` |
 
-The suite has 22 flows now, with the order flow from Wave 19 and Wave 21's three. The browser closing after the
-chat view flow did not come back in 7 runs, and nothing fixed it on purpose. If it returns,
+The suite has 22 flows now, with the order flow from Wave 19 and Wave 21's three. The browser
+closing after the chat view flow did not come back in 7 runs, and nothing fixed it on purpose. If it returns,
 diagnose it as a new failure.
 
 ---
@@ -635,9 +656,86 @@ label that wraps at the box width instead of reading the rest as a description.
 
 ---
 
+# Wave 25 — Claude accounts
+
+**Item 8. Goal:** a Claude Pane on any account works in tautan as one on `~/.claude` does,
+and a new Claude Pane starts on the account you pick.
+
+**Why now:** Claude Code keeps an account in the folder `CLAUDE_CONFIG_DIR` names. A Claude
+Pane on a second account gets no Chat view, no slash commands from that account and no
+usage numbers, because tautan reads `~/.claude` only, and herdr's Claude hook is set up in
+`~/.claude` only.
+
+**Decisions (the user, 2026-10-11):**
+
+- Accounts are found, not configured: `~/.claude` and each `~/.claude-*` folder on a Host.
+  There is no settings form for them.
+- tautan never writes into an account folder. **Add account** opens a Tab that runs Claude on
+  the new folder; Claude creates it, and the user signs in with `/login` on the Screen.
+- tautan shows herdr's hook state for each account and the command that installs it, with
+  Copy. It never runs the command.
+- Out of scope: sharing skills, plugins, `CLAUDE.md` and MCP servers across accounts (the
+  user's dotfiles can render the same files into each account folder). Switching a Pane to
+  another account when its account hits a limit is on the ROADMAP's "Later" list, optional.
+
+| # | Lane | Specialist | Parallel |
+|---|---|---|---|
+| 25.1 | Probe and decide: what an account is, a Pane's account, `env` on start, herdr's hook per account; ADR 0011 | `deep-reasoner` | Batch 5 |
+| 25.2 | Hub: accounts, a Pane's account, reads from that account, `env` on create, quota per account | `glm-run` | Batch 6 |
+| 25.3 | UI: the account picker, Add account, hook state, a meter per account, a colour dot | `frontend` | with 25.2 |
+
+**25.1 brief.** On a throwaway herdr 0.9.3 with an isolated `HOME` that holds two account
+folders, find out:
+
+- whether `env` on `tab.create` reaches the Claude process that `agent.start` launches in
+  that Tab (read `/proc/<pid>/environ`), and whether tmux `new-window -e` and
+  `split-window -e` do the same;
+- whether `herdr integration install claude` installs into the folder `CLAUDE_CONFIG_DIR`
+  names, and what herdr reports (`agent`, `agent_session`, Status) for a Claude without the
+  hook;
+- how to read a Pane's account: its conversation id found in exactly one account's
+  `projects/` folder (ADR 0005's exact-id rule), and on Linux `CLAUDE_CONFIG_DIR` from
+  `/proc/<pid>/environ` through `pane.process_info`. On a macOS remote Host, only the id
+  lookup works. Two folders that hold the same id leave the Chat view unavailable, as
+  herdr-web-ui 0.4.6 does;
+- what marks a folder as an account: a login file, a `projects/` folder, or either. On
+  macOS the login can be in the Keychain, not in the folder.
+
+Name each account from its folder suffix (`~/.claude` is **default**), and give it a colour
+from a fixed list by order. Record the decisions as ADR 0011. The probe never writes to the
+user's real account folders; a probe that needs a logged-in Claude runs in a throwaway tmux
+with the real `HOME` and only reads.
+
+**25.2 brief.** A new `server/accounts.ts` lists a Host's accounts, locally and over SSH,
+with a TTL cache, and resolves a Pane's account as 25.1 decides. `server/chat.ts` and
+`server/complete.ts` take the Pane's account folder in place of `~/.claude`. The new Tab,
+Split and New Workspace routes take an optional `account` and pass `CLAUDE_CONFIG_DIR` as
+herdr's `env` or tmux's `-e`. An account name must match a found account, or the route
+answers 400. **Add account** takes a new name (letters, digits and `-`) and opens a Tab that
+runs Claude with `CLAUDE_CONFIG_DIR=~/.claude-<name>`. The quota route reads each account
+with `quota-axi --provider claude --profile-only`. The state carries each Claude Pane's
+account name, and each account's hook state and install command. Tests: two account folders
+in an isolated `HOME`; a Pane resolved by its id; two folders that hold one id; a new Tab's
+`env`; an unknown account name.
+
+**25.3 brief.** When a Host has two or more accounts, the New Tab, Split and New Workspace
+sheets show an account picker for Claude. The default is the account of the Workspace's other
+Claude Panes, otherwise **default**. Each account's colour shows as a dot on the Pane row,
+the Agent row and the Pane header. Settings lists each Host's accounts: name, folder, signed
+in or not, herdr's hook state with Copy for its install command, and a usage meter. **Add
+account** asks for a name and opens the sign-in Tab.
+
+**Verify:** on the phone, add an account with **Add account** and sign in with `/login` on
+the Screen. Start a Claude Tab on it: the Chat view shows its conversation, `/` lists that
+account's commands, and its dot colour differs from a Pane on **default**. Settings shows a
+meter for each account. A Claude started in herdr's own window with
+`CLAUDE_CONFIG_DIR=~/.claude-<name> claude` also gets its Chat view.
+
+---
+
 ## Final qa
 
-After Batch 5, `qa` drives the built app on a throwaway herdr and a throwaway tmux at
+After Batch 6, `qa` drives the built app on a throwaway herdr and a throwaway tmux at
 390 × 844 and 1440 × 900, over every screen these waves touched, and lists the Verify steps
 for the user's real devices. `scribe` updates `docs/UI.md`, `docs/ARCHITECTURE.md` and the
 ROADMAP phases.
