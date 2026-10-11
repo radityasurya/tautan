@@ -45,7 +45,7 @@ describe('write routes', () => {
         tab.workspaceId = workspace.id; tree.workspaces.push(workspace); tree.tabs.push(tab);
         pane.workspaceId = workspace.id; pane.tabId = tab.id; pane.id = `moved-${id}`; return pane.id; // ids change across Workspaces (herdr)
       },
-      resize: async () => { fail(); }, close: () => {},
+      resize: async () => { fail(); }, moveWorkspace: async () => { fail(); }, moveTab: async () => { fail(); }, close: () => {},
     };
     hub = new Hub({ refreshMs: 0, suggest: null }); hub.add('local', mux); await hub.state();
     const serve = Bun.serve;

@@ -57,6 +57,11 @@ export interface Mux {
   move(paneId: string, destination: { tabId: string; split: 'right' | 'down'; ratio?: number } | { newTab: true } | { newWorkspace: true; label?: string }): Promise<string>;
   /** grow the Pane `cells` whole cells in `direction` */
   resize(paneId: string, direction: 'left' | 'right' | 'up' | 'down', cells: number): Promise<void>;
+  // ADR 0009 order writes; herdr ≥ 0.8 and tmux Tabs (a tmux Workspace throws `unsupported`).
+  // `index` is the pre-move splice index within the Workspace: final position `index` moving
+  // up, `index − 1` moving down past its own slot, the count appends.
+  moveWorkspace(workspaceId: string, index: number): Promise<void>;
+  moveTab(tabId: string, index: number): Promise<void>;
   explain(paneId: string): Promise<Explain | null>;
   close(): void;
 }

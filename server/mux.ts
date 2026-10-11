@@ -432,6 +432,23 @@ export class Hub {
     await this.refreshAfterWrite(muxKey);
   }
 
+  /** ADR 0009: reorder a Workspace's own slot or a Tab's, then refresh so the reply carries it. */
+  async moveWorkspace(muxKey: string, workspaceId: string, index: number): Promise<void> {
+    const entry = this.entries.get(muxKey);
+    if (!entry) throw new Error('mux not found');
+    if (!entry.tree?.workspaces.some(w => w.id === workspaceId)) throw new Error('workspace not found');
+    await entry.mux.moveWorkspace(workspaceId, index);
+    await this.refreshAfterWrite(muxKey);
+  }
+
+  async moveTab(muxKey: string, tabId: string, index: number): Promise<void> {
+    const entry = this.entries.get(muxKey);
+    if (!entry) throw new Error('mux not found');
+    if (!entry.tree?.tabs.some(t => t.id === tabId)) throw new Error('tab not found');
+    await entry.mux.moveTab(tabId, index);
+    await this.refreshAfterWrite(muxKey);
+  }
+
   // ponytail: the write already happened; a failed receipt must not trigger a duplicate Retry.
   private async refreshAfterWrite(muxKey: string): Promise<void> {
     try { await this.refresh(muxKey); } catch (error) { console.warn(`tautan: refresh after write failed for ${muxKey}`, error); }

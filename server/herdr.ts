@@ -19,8 +19,11 @@ export class HerdrMux implements Mux {
   private rows = new Map<string, number>();
   private listeners = new Set<(paneIds: string[] | 'all') => void>();
   private stream?: Socket;
-  // herdr 0.9 has the `layout.updated` event; 0.8 rejects the variant and closes the socket.
-  private layoutEvents = true;
+  // Optional event variants, newest herdr first: 0.9's `layout.updated`, 0.8's
+  // `workspace.reordered`, 0.7's `workspace.moved`/`tab.moved`/`pane.moved` (ADR 0009).
+  // Dropped newest-first when a subscription is refused, so a server below a variant's
+  // floor still subscribes to the rest.
+  private optionalEvents = ['layout.updated', 'workspace.reordered', 'tab.moved', 'workspace.moved', 'pane.moved'];
   private stopped = false;
   private retry?: ReturnType<typeof setTimeout>;
   private paneTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -269,6 +272,25 @@ export class HerdrMux implements Mux {
     await this.rpc('pane.resize', { pane_id: paneId, direction, amount: span > 0 ? cells / span : cells });
   }
 
+  /** ADR 0009: order writes need herdr 0.8 — the methods date to 0.7.2, but
+   *  `workspace.reordered` and tautan's floor are both 0.8. Gate on the version the snapshot
+   *  already carried, as `assertLayout` does; an unreadable or absent version attempts the call. */
+  private assertOrder(): void {
+    const [major, minor] = (this.cachedVersion() ?? '').split('.');
+    if (Number(major) === 0 && Number(minor) < 8) throw new Error('unsupported');
+  }
+
+  async moveWorkspace(workspaceId: string, index: number): Promise<void> {
+    this.assertOrder();
+    await this.rpc('workspace.move', { workspace_id: workspaceId, insert_index: index });
+  }
+
+  async moveTab(tabId: string, index: number): Promise<void> {
+    this.assertOrder();
+    // No workspace_id: tab.move cannot cross Workspaces, and extra params are silently ignored.
+    await this.rpc('tab.move', { tab_id: tabId, insert_index: index });
+  }
+
   private paneRecord(pane: Json): Pane {
     const agent = pane.display_agent ?? pane.agent;
     return { id: pane.pane_id, tabId: pane.tab_id, workspaceId: pane.workspace_id,
@@ -298,9 +320,10 @@ export class HerdrMux implements Mux {
     socket.on('connect', () => socket.write(`${JSON.stringify({ id: crypto.randomUUID(), method: 'events.subscribe', params: { subscriptions: [
       'pane.updated', 'pane.created', 'pane.closed', 'pane.exited', 'pane.agent_detected', 'workspace.created', 'workspace.updated',
       'workspace.renamed', 'workspace.closed', 'tab.created', 'tab.closed', 'tab.renamed',
-      // 0.9 fires `layout.updated` on zoom, split and resize. Without it a Mux-side layout
-      // change reaches the Hub only on its slow poll, so a zoomed Tab keeps its stale x/y.
-      ...(this.layoutEvents ? ['layout.updated'] : []),
+      // 0.9 fires `layout.updated` on zoom, split and resize; without it a Mux-side layout
+      // change reaches the Hub only on its slow poll. The 0.7/0.8 move events (ADR 0009)
+      // bring a reorder made in herdr's own window to the Hub the same way.
+      ...this.optionalEvents,
     ].map(type => ({ type })) } })}\n`));
     socket.on('data', chunk => {
       data += chunk;
@@ -310,10 +333,10 @@ export class HerdrMux implements Mux {
         try {
           const message = JSON.parse(line);
           if (message.error) {
-            // Any error reply refuses the subscription set: drop the 0.9-only `layout.updated`
-            // variant (0.8 answers `unknown variant …` and closes the socket) without matching
-            // the wording, so the reconnect subscribes without it instead of looping.
-            this.layoutEvents = false;
+            // Any error reply refuses the subscription set: drop the newest optional variant
+            // (0.8 answers `unknown variant …` and closes the socket) without matching the
+            // wording, so the reconnect subscribes without it instead of looping.
+            this.optionalEvents.shift();
             fail();
             continue;
           }

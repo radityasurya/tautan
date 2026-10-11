@@ -33,6 +33,13 @@ const plainObject = (value: unknown): value is Record<string, unknown> => typeof
 const validLabel = (value: unknown, required = false) => value === undefined ? !required : typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 80;
 const validCwd = (value: unknown) => value === undefined || typeof value === 'string' && isAbsolute(value);
 const nonEmpty = (value: unknown) => typeof value === 'string' && value.trim().length > 0;
+/** ADR 0009 move bodies: `index` is a non-negative integer splice index; anything else is a 400. */
+const moveIndex = async (req: Request): Promise<number | Response> => {
+  let body: { index?: unknown };
+  try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
+  if (!plainObject(body) || !Number.isInteger(body.index) || (body.index as number) < 0) return json({ error: 'body' }, 400);
+  return body.index as number;
+};
 type GitResult = { stdout: string; stderr: string; code: number; timedOut?: boolean };
 
 const maxFileBytes = () => {
@@ -214,6 +221,30 @@ export function startHttp(hub: Hub, opts: {
           const workspace = (await hub.state()).workspaces.find(item => item.key === key);
           if (!workspace) return json({ error: 'unknown-workspace' }, 404);
           await hub.closeWorkspace(workspace.muxKey, workspace.id);
+          return new Response(null, { status: 204 });
+        }
+        // ADR 0009 order writes: `index` is the pre-move splice index, passed to the Mux
+        // unchanged (final position: index moving up, index − 1 moving down, count appends).
+        const workspaceMove = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/move$/);
+        if (req.method === 'POST' && workspaceMove) {
+          let key: string;
+          try { key = decodeURIComponent(workspaceMove[1]!); } catch { return json({ error: 'unknown-workspace' }, 404); }
+          const index = await moveIndex(req);
+          if (index instanceof Response) return index;
+          const workspace = (await hub.state()).workspaces.find(item => item.key === key);
+          if (!workspace) return json({ error: 'unknown-workspace' }, 404);
+          await hub.moveWorkspace(workspace.muxKey, workspace.id, index);
+          return new Response(null, { status: 204 });
+        }
+        const tabMove = url.pathname.match(/^\/api\/tabs\/([^/]+)\/move$/);
+        if (req.method === 'POST' && tabMove) {
+          let key: string;
+          try { key = decodeURIComponent(tabMove[1]!); } catch { return json({ error: 'unknown-tab' }, 404); }
+          const index = await moveIndex(req);
+          if (index instanceof Response) return index;
+          const tab = (await hub.state()).tabs.find(item => item.key === key);
+          if (!tab) return json({ error: 'unknown-tab' }, 404);
+          await hub.moveTab(tab.muxKey, tab.id, index);
           return new Response(null, { status: 204 });
         }
         const workspaceDiff = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/diff$/);

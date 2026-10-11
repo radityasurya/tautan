@@ -383,6 +383,27 @@ export class TmuxMux implements Mux {
   async resize(paneId: string, direction: 'left' | 'right' | 'up' | 'down', cells: number): Promise<void> {
     await this.run(['resize-pane', '-t', paneId, { left: '-L', right: '-R', up: '-U', down: '-D' }[direction]!, String(cells)]);
   }
+  // tmux sessions have no order (ADR 0009): a Workspace keeps the UI's local order.
+  async moveWorkspace(_workspaceId: string, _index: number): Promise<void> { throw new Error('unsupported'); }
+  async moveTab(tabId: string, index: number): Promise<void> {
+    // herdr's index is a pre-move splice index within the Workspace (probed: per-Workspace,
+    // the count bounds it); tmux windows in index order are that list. `move-window -b`
+    // inserts before a window id (tmux 3.1+), and a free index past the last appends.
+    const windows = (await this.run(['list-windows', '-a', '-F', '#{session_id} #{window_index} #{window_id}']))
+      .split(/\r?\n/).filter(Boolean)
+      .map(line => { const [sessionId, windowIndex, id] = line.split(' '); return { sessionId, index: Number(windowIndex), id }; });
+    const mine = windows.find(window => window.id === tabId);
+    if (!mine) throw new Error('tab not found');
+    const session = windows.filter(window => window.sessionId === mine.sessionId).sort((a, b) => a.index - b.index);
+    const from = session.findIndex(window => window.id === tabId);
+    if (index > session.length) throw new Error(`tab_move_failed: insert_index ${index} is out of bounds`);
+    const at = index <= from ? index : index - 1; // final position, herdr's splice model
+    if (at === from) return; // a move to its own slot: success, no write, no event
+    const rest = session.filter(window => window.id !== tabId).map(window => window.id);
+    const successor = rest[at];
+    if (successor) await this.run(['move-window', '-b', '-s', tabId, '-t', successor]);
+    else await this.run(['move-window', '-s', tabId, '-t', `${mine.sessionId}:${Math.max(...session.map(window => window.index)) + 1}`]);
+  }
   async explain(_paneId: string): Promise<Explain | null> { return null; }
   close(): void {
     this.stopPolling(); this.listeners.clear(); this.revisions.clear(); this.lastReadAt.clear();

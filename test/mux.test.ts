@@ -24,7 +24,7 @@ test('Hub adds tabs, status timestamps, and cached agent last lines', async () =
     read: async (_paneId: string, mode: ScreenMode): Promise<Screen> => { reads++; return { text: 'first\n\x1b[31m last line \x1b[0m\n\n', ansi: true, revision: 1, mode }; },
     sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
     newTab: async (): Promise<Pane> => tree.panes[0]!, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
-    rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+    rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, moveWorkspace: async () => {}, moveTab: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
   };
   const hub = new Hub(); hub.add('local', mux);
   const first = await hub.state();
@@ -125,7 +125,7 @@ test('a working Pane re-reads its Screen on the poll even when the revision stan
     read: async (_paneId: string, mode: ScreenMode): Promise<Screen> => { reads++; return { text: `out ${reads}`, ansi: false, revision: 5, mode }; },
     sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
     newTab: async (): Promise<Pane> => tree.panes[0]!, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
-    rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+    rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, moveWorkspace: async () => {}, moveTab: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
   };
   const hub = new Hub({ refreshMs: 0, suggest: null }); hub.add('local', mux);
   try {
@@ -184,7 +184,7 @@ const watchFixture = () => {
     sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {},
     onChange: cb => { fire = cb; return () => {}; },
     newTab: async (): Promise<Pane> => tree.panes[0]!, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
-    rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
+    rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, moveWorkspace: async () => {}, moveTab: async () => {}, explain: async (): Promise<Explain | null> => null, close: () => {},
   };
   const hub = new Hub({ refreshMs: 0, suggest: null });
   hub.add('local', mux);
