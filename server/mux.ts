@@ -4,7 +4,7 @@ import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseAnsi } from '../shared/ansi.ts';
 import { inputBox, stripInvisible } from '../shared/inputbox.ts';
-import type { Explain, HostConfig, InputBody, MouseBody, MoveBody, Mux, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PushSubscriptionBody, RenameBody, Screen, ScreenEvent, ScreenMode, Settings, SplitBody, State, StateHost, StatePane, Tree } from '../shared/types.ts';
+import type { Explain, HostConfig, HostIntegrations, InputBody, MouseBody, MoveBody, Mux, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, PushSubscriptionBody, RenameBody, Screen, ScreenEvent, ScreenMode, Settings, SplitBody, State, StateHost, StatePane, Tree } from '../shared/types.ts';
 import { sendPush, type VapidKeys } from './push.ts';
 import { configureSuggest, type SuggestAdapter } from './suggest.ts';
 import { hostId as localHostId, hostsConfigPath } from './hosts.ts';
@@ -353,6 +353,13 @@ export class Hub {
   async rename(body: RenameBody): Promise<void> {
     const entry = this.entries.get(body.muxKey);
     if (!entry) throw new Error('mux not found');
+    // Wave 21: `agent: true` renames the Pane's Agent — an empty label clears the name.
+    if ('agent' in body && body.agent) {
+      if (!entry.tree?.panes.some(p => p.id === body.paneId)) throw new Error('pane not found');
+      await entry.mux.renameAgent(body.paneId, body.label.trim() || null);
+      await this.refreshAfterWrite(body.muxKey);
+      return;
+    }
     const target = 'workspaceId' in body ? { workspaceId: body.workspaceId }
       : 'tabId' in body ? { tabId: body.tabId } : { paneId: body.paneId };
     if ('workspaceId' in target && !entry.tree?.workspaces.some(w => w.id === target.workspaceId)) throw new Error('workspace not found');
@@ -450,6 +457,23 @@ export class Hub {
     await this.refreshAfterWrite(muxKey);
   }
 
+  /** Wave 21: herdr plugin actions for the Pane the key names (the list is Pane-independent;
+   *  the key check is the route's 404). */
+  async pluginActions(paneKey: string): Promise<PluginAction[]> {
+    await this.state();
+    const found = this.resolve(paneKey);
+    if (!found) throw new Error('pane not found');
+    return found.entry.mux.pluginActions();
+  }
+
+  async invokePluginAction(paneKey: string, actionId: string, pluginId?: string): Promise<void> {
+    await this.state();
+    const found = this.resolve(paneKey);
+    if (!found) throw new Error('pane not found');
+    await found.entry.mux.invokePluginAction(found.paneId, actionId, pluginId);
+    await this.refreshAfterWrite(found.muxKey);
+  }
+
   // ponytail: the write already happened; a failed receipt must not trigger a duplicate Retry.
   private async refreshAfterWrite(muxKey: string): Promise<void> {
     try { await this.refresh(muxKey); } catch (error) { console.warn(`tautan: refresh after write failed for ${muxKey}`, error); }
@@ -526,6 +550,17 @@ export class Hub {
       const readVersion = (entry.mux as Mux & { version?: () => Promise<string> }).version;
       const version = readVersion ? await readVersion.call(entry.mux).catch(() => 'unknown') : 'unknown';
       return { muxKey, label: entry.mux.id, version };
+    }));
+  }
+  /** One entry per herdr Mux (Wave 21); a Host whose call fails carries its herdr error
+   *  code — text before the first `: ` — instead of a list, and fails nobody else. */
+  async hostIntegrations(): Promise<HostIntegrations[]> {
+    return Promise.all([...this.entries].filter(([, entry]) => entry.mux.kind === 'herdr').map(async ([muxKey, entry]) => {
+      try { return { muxKey, label: entry.mux.id, integrations: await entry.mux.integrations() }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { muxKey, label: entry.mux.id, error: message.split(': ')[0] || message };
+      }
     }));
   }
   settings(): Settings {

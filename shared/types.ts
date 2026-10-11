@@ -8,6 +8,8 @@ export interface Tab { id: string; workspaceId: string; label: string }
 export interface Pane {
   id: string; tabId: string; workspaceId: string; title: string; cwd?: string;
   agent?: string; agentSession?: string; status: Status; revision: number; cols?: number; rows?: number;
+  /** the user's Agent name (herdr agent.rename); `agent` stays the Agent TYPE (`claude`, `codex`) */
+  agentName?: string;
   /** cell origin in cells, relative to the Tab (ADR 0006); both absent when the Tab's layout is zoomed */
   x?: number; y?: number;
   /** set only on the Pane that fills its zoomed Tab (herdr: the layout's focused Pane; tmux: the active Pane) */
@@ -27,6 +29,25 @@ export interface Explain {
   ruleId: string; state: Status; detection: string;
   hintKeys: { key: string; label: string }[];
 }
+
+// ---- herdr plugins, Agent names, integrations (Wave 21) ----
+export type PluginContext = 'pane' | 'tab' | 'workspace';
+export interface PluginAction {
+  pluginId: string;
+  /** the plugin's display name from plugin.list when it has one, else pluginId */
+  plugin: string;
+  actionId: string;
+  title: string;
+  description?: string;
+  /** never empty after filtering: an action with no contexts shows on the Pane menu */
+  contexts: PluginContext[];
+}
+export interface Integration {
+  target: string; label: string; command: string; available: boolean;
+  state: 'not_installed' | 'current' | 'outdated';
+}
+/** One herdr Mux's integration list; a Host whose call fails carries `error` instead */
+export interface HostIntegrations { muxKey: string; label: string; integrations?: Integration[]; error?: string }
 
 export interface Mux {
   readonly kind: 'herdr' | 'tmux';
@@ -62,6 +83,12 @@ export interface Mux {
   // up, `index − 1` moving down past its own slot, the count appends.
   moveWorkspace(workspaceId: string, index: number): Promise<void>;
   moveTab(tabId: string, index: number): Promise<void>;
+  // herdr ≥ 0.9 plugins, Agent names, and integrations (Wave 21); tmux throws `unsupported`.
+  pluginActions(): Promise<PluginAction[]>;
+  invokePluginAction(paneId: string, actionId: string, pluginId?: string): Promise<void>;
+  /** `name: null` clears the Agent's name; the Agent itself is untouched */
+  renameAgent(paneId: string, name: string | null): Promise<void>;
+  integrations(): Promise<Integration[]>;
   explain(paneId: string): Promise<Explain | null>;
   close(): void;
 }
@@ -93,6 +120,8 @@ export interface StatePane {
   key: string; muxKey: string; workspaceId: string; tabId: string; id: string; title: string;
   cwd?: string; agent?: string; status: Status; revision: number; seenRevision: number;
   cols?: number; rows?: number;
+  /** the user's Agent name (herdr agent.rename); `agent` stays the Agent TYPE (`claude`, `codex`) */
+  agentName?: string;
   /** cell origin in cells, relative to the Tab (ADR 0006); both absent when the Tab's layout is zoomed */
   x?: number; y?: number;
   /** set only on the Pane that fills its zoomed Tab; a Tab is zoomed when one of its Panes has it */
@@ -129,8 +158,9 @@ export interface NewTabResult { paneKey: string }
 /** POST /api/muxes/:key/workspaces → 201 NewWorkspaceResult; branch set → git worktree */
 export interface NewWorkspaceBody { cwd?: string; label?: string; branch?: string }
 export interface NewWorkspaceResult { workspaceKey: string }
-/** POST /api/rename → 204; exactly one of workspaceId | tabId | paneId */
-export type RenameBody = { muxKey: string; label: string } & ({ workspaceId: string } | { tabId: string } | { paneId: string });
+/** POST /api/rename → 204; exactly one of workspaceId | tabId | paneId. With `agent: true`
+ *  (and a paneId) the label renames the Pane's Agent instead — an empty label clears the name. */
+export type RenameBody = { muxKey: string; label: string } & ({ workspaceId: string } | { tabId: string } | { paneId: string; agent?: true });
 /** POST /api/panes/:key/zoom → 204. `zoomed: true` zooms this Pane; `false` unzooms its Tab. */
 export interface ZoomBody { zoomed: boolean }
 // ADR 0008 layout edits. `ratio` is the share the new or moved Pane takes (0–1 exclusive);
@@ -191,6 +221,8 @@ export interface Settings {
     herdr: { muxKey: string; label: string; version: string }[];
   };
   hosts: HostConfig[];
+  /** GET carries it: one entry per herdr Mux; a Host whose call fails keeps `error` instead */
+  integrations?: HostIntegrations[];
   /** Smart replies: provider/model absent when the Hub has no TAUTAN_SUGGEST; enabled is the persisted Hub flag */
   suggest: { provider?: string; model?: string; enabled: boolean };
 }

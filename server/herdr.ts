@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { createConnection, type Socket } from 'node:net';
 import { offeredKeys } from '../shared/blocked.ts';
-import type { Explain, Mux, Pane, Screen, ScreenMode, Status, Tree, Workspace } from '../shared/types.ts';
+import type { Explain, Integration, Mux, Pane, PluginAction, PluginContext, Screen, ScreenMode, Status, Tree, Workspace } from '../shared/types.ts';
 
 type Json = Record<string, any>;
 export interface HerdrProcessInfo {
@@ -12,6 +12,11 @@ const sessionValue = (value: unknown): string | undefined => typeof value === 's
   ? value : value && typeof value === 'object' && typeof (value as Json).value === 'string' ? (value as Json).value : undefined;
 const statuses = new Set<Status>(['idle', 'working', 'blocked', 'done', 'unknown']);
 const VERSION_TTL = 24 * 60 * 60 * 1_000;
+const ACTIONS_TTL = 30 * 1_000;
+const INTEGRATIONS_TTL = 60 * 1_000;
+/** process.platform → herdr's platform names (PluginActionInfo.platforms). */
+const PLUGIN_PLATFORM = { linux: 'linux', darwin: 'macos', win32: 'windows' } as const;
+const nonEmptyField = (value: Json, field: string) => typeof value[field] === 'string' && (value[field] as string).length > 0;
 
 export class HerdrMux implements Mux {
   readonly kind = 'herdr' as const;
@@ -29,6 +34,13 @@ export class HerdrMux implements Mux {
   private paneTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private serverVersion?: { value: string; at: number };
   private versionRequest?: Promise<string>;
+  private actionsCache?: { value: PluginAction[]; at: number };
+  private actionsRequest?: Promise<PluginAction[]>;
+  private integrationsCache?: { value: Integration[]; at: number };
+  private integrationsRequest?: Promise<Integration[]>;
+  /** Pane essentials from the last tree() read, so invokePluginAction builds herdr's
+   *  PluginInvocationContext from the tree the Hub already holds — no fresh RPC. */
+  private paneContexts = new Map<string, { workspaceId: string; tabId: string; cwd?: string; workspaceCwd?: string }>();
 
   constructor(readonly id: string, readonly socketPath: string) {}
 
@@ -72,6 +84,11 @@ export class HerdrMux implements Mux {
       sizes.set(item.pane_id, { cols: item.rect?.width, rows: item.rect?.height, ...place });
     }
     const rawPanes: Json[] = snap.panes ?? [];
+    // The pane record never carries the Agent name; the snapshot's separate `agents` array
+    // does (probed on 0.9.3), keyed by pane_id, absent entries while the name is unset.
+    const agentNames = new Map<string, string>((snap.agents ?? [])
+      .filter((a: Json) => typeof a.pane_id === 'string' && typeof a.name === 'string' && a.name)
+      .map((a: Json) => [a.pane_id, a.name]));
     const sessions = new Map(await Promise.all(rawPanes.map(async pane => {
       if (Object.hasOwn(pane, 'agent_session')) return [pane.pane_id, sessionValue(pane.agent_session)] as const;
       try {
@@ -89,19 +106,26 @@ export class HerdrMux implements Mux {
         id: pane.pane_id, tabId: pane.tab_id, workspaceId: pane.workspace_id,
         title: pane.terminal_title_stripped || pane.label || pane.terminal_title || (pane.cwd && basename(pane.cwd)) || pane.pane_id,
         ...(pane.cwd ? { cwd: pane.cwd } : {}), ...(agent ? { agent } : {}), ...(agentSession ? { agentSession } : {}),
+        ...(agentNames.has(pane.pane_id) ? { agentName: agentNames.get(pane.pane_id) } : {}),
         status: statuses.has(pane.agent_status) ? pane.agent_status : 'unknown',
         revision: pane.revision ?? 0, ...sizes.get(pane.pane_id),
       };
     });
+    const workspaces: Workspace[] = (snap.workspaces ?? []).map((w: Json) => {
+      // ponytail: no snapshot carries a workspace cwd. Probe 2026-10-07: herdr server
+      // 0.9.0, protocol 22 — session.snapshot, workspace.list, workspace.get, and the
+      // 0.9.2 bundled schema. Only linked worktrees report checkout_path, so the root
+      // pane's cwd stays the fallback. Re-probe workspace.get when herdr ships a plain cwd.
+      const cwd = w.worktree?.checkout_path ?? panes.find(p => p.workspaceId === w.workspace_id)?.cwd;
+      return { id: w.workspace_id, label: w.label || w.workspace_id, ...(cwd ? { cwd } : {}) };
+    });
+    this.paneContexts = new Map(panes.map(pane => [pane.id, {
+      workspaceId: pane.workspaceId, tabId: pane.tabId,
+      ...(pane.cwd ? { cwd: pane.cwd } : {}),
+      workspaceCwd: workspaces.find(w => w.id === pane.workspaceId)?.cwd,
+    }]));
     return {
-      workspaces: (snap.workspaces ?? []).map((w: Json) => {
-        // ponytail: no snapshot carries a workspace cwd. Probe 2026-10-07: herdr server
-        // 0.9.0, protocol 22 — session.snapshot, workspace.list, workspace.get, and the
-        // 0.9.2 bundled schema. Only linked worktrees report checkout_path, so the root
-        // pane's cwd stays the fallback. Re-probe workspace.get when herdr ships a plain cwd.
-        const cwd = w.worktree?.checkout_path ?? panes.find(p => p.workspaceId === w.workspace_id)?.cwd;
-        return { id: w.workspace_id, label: w.label || w.workspace_id, ...(cwd ? { cwd } : {}) };
-      }),
+      workspaces,
       tabs: (snap.tabs ?? []).map((t: Json) => ({ id: t.tab_id, workspaceId: t.workspace_id, label: t.label || t.tab_id })),
       panes,
     };
@@ -289,6 +313,76 @@ export class HerdrMux implements Mux {
     this.assertOrder();
     // No workspace_id: tab.move cannot cross Workspaces, and extra params are silently ignored.
     await this.rpc('tab.move', { tab_id: tabId, insert_index: index });
+  }
+
+  async pluginActions(): Promise<PluginAction[]> {
+    // ponytail: 30 s cache — a plugin linked in herdr's own window reaches the next menu
+    // open within 30 s. Force-refresh when a menu must reflect the link at once.
+    if (this.actionsCache && Date.now() - this.actionsCache.at < ACTIONS_TTL) return this.actionsCache.value;
+    if (!this.actionsRequest) this.actionsRequest = (async () => {
+      const [listed, plugins] = await Promise.all([
+        this.rpc('plugin.action.list', {}),
+        // Display names are a nicety: a failed plugin.list shows pluginIds, not an error.
+        this.rpc('plugin.list', {}).catch(() => ({ plugins: [] as Json[] })),
+      ]);
+      const names = new Map<string, string>((plugins.plugins ?? []).map((p: Json) =>
+        typeof p.plugin_id === 'string' && typeof p.name === 'string' ? [p.plugin_id, p.name] : [String(p.plugin_id), '']));
+      const platform = PLUGIN_PLATFORM[process.platform as keyof typeof PLUGIN_PLATFORM];
+      const actions: PluginAction[] = [];
+      for (const raw of listed.actions ?? []) {
+        if (typeof raw.plugin_id !== 'string' || !raw.plugin_id || typeof raw.action_id !== 'string' || !raw.action_id || typeof raw.title !== 'string') continue;
+        // Only pane/tab/workspace contexts (Wave 21 decision): global and selection drive
+        // herdr's own window. No contexts → pane; every context filtered out → hidden.
+        const declared = Array.isArray(raw.contexts) ? raw.contexts : [];
+        const contexts = declared.length
+          ? declared.filter((context: string): context is PluginContext => context === 'pane' || context === 'tab' || context === 'workspace')
+          : ['pane' as const];
+        if (!contexts.length) continue;
+        if (Array.isArray(raw.platforms) && raw.platforms.length && !(platform && raw.platforms.includes(platform))) continue;
+        actions.push({
+          pluginId: raw.plugin_id, plugin: names.get(raw.plugin_id) || raw.plugin_id, actionId: raw.action_id, title: raw.title,
+          ...(typeof raw.description === 'string' && raw.description ? { description: raw.description } : {}),
+          contexts,
+        });
+      }
+      this.actionsCache = { value: actions, at: Date.now() };
+      return actions;
+    })().finally(() => { this.actionsRequest = undefined; });
+    return this.actionsRequest;
+  }
+
+  async invokePluginAction(paneId: string, actionId: string, pluginId?: string): Promise<void> {
+    const pane = this.paneContexts.get(paneId);
+    const context: Json = {
+      focused_pane_id: paneId,
+      ...(pane ? {
+        workspace_id: pane.workspaceId, tab_id: pane.tabId,
+        ...(pane.cwd ? { focused_pane_cwd: pane.cwd } : {}),
+        ...(pane.workspaceCwd ? { workspace_cwd: pane.workspaceCwd } : {}),
+      } : {}),
+    };
+    await this.rpc('plugin.action.invoke', { action_id: actionId, ...(pluginId ? { plugin_id: pluginId } : {}), context });
+  }
+
+  /** herdr's target is "a unique live agent name or the pane ID that currently hosts the
+   *  agent" — the pane ID is what the Hub holds, and it cannot go stale into a name clash. */
+  async renameAgent(paneId: string, name: string | null): Promise<void> {
+    await this.rpc('agent.rename', { target: paneId, name });
+  }
+
+  async integrations(): Promise<Integration[]> {
+    // 60 s cache, the quotaReport() pattern: one Settings view per minute at most re-reads.
+    if (this.integrationsCache && Date.now() - this.integrationsCache.at < INTEGRATIONS_TTL) return this.integrationsCache.value;
+    if (!this.integrationsRequest) this.integrationsRequest = (async () => {
+      const result = await this.rpc('integration.list', {});
+      const states = new Set(['not_installed', 'current', 'outdated']);
+      const value: Integration[] = (result.integrations ?? [])
+        .filter((item: Json) => nonEmptyField(item, 'target') && nonEmptyField(item, 'label') && nonEmptyField(item, 'command') && typeof item.available === 'boolean' && states.has(item.state))
+        .map((item: Json) => ({ target: item.target, label: item.label, command: item.command, available: item.available, state: item.state }));
+      this.integrationsCache = { value, at: Date.now() };
+      return value;
+    })().finally(() => { this.integrationsRequest = undefined; });
+    return this.integrationsRequest;
   }
 
   private paneRecord(pane: Json): Pane {

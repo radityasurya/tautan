@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
-import type { Explain, Mux, Pane, Screen, ScreenMode, Tree, Workspace } from '../shared/types.ts';
+import type { Explain, Integration, Mux, Pane, PluginAction, Screen, ScreenMode, Tree, Workspace } from '../shared/types.ts';
 
 export type TmuxExec = (args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
 
@@ -385,6 +385,11 @@ export class TmuxMux implements Mux {
   }
   // tmux Workspaces have no order (ADR 0009): the UI keeps its own local order.
   async moveWorkspace(_workspaceId: string, _index: number): Promise<void> { throw new Error('unsupported'); }
+  // tmux has no plugin system, Agent names, or integration registry (Wave 21).
+  async pluginActions(): Promise<PluginAction[]> { throw new Error('unsupported'); }
+  async invokePluginAction(_paneId: string, _actionId: string, _pluginId?: string): Promise<void> { throw new Error('unsupported'); }
+  async renameAgent(_paneId: string, _name: string | null): Promise<void> { throw new Error('unsupported'); }
+  async integrations(): Promise<Integration[]> { throw new Error('unsupported'); }
   async moveTab(tabId: string, index: number): Promise<void> {
     // herdr's index is a pre-move splice index within the Workspace (probed: per-Workspace,
     // the count bounds it); tmux windows in index order are that list. `move-window -b`

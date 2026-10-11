@@ -351,6 +351,14 @@ export function startHttp(hub: Hub, opts: {
           try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
           if (!plainObject(body)) return json({ error: 'body' }, 400);
           if (typeof body.label === 'string') body.label = body.label.trim();
+          // Wave 21: `agent: true` + paneId renames the Pane's Agent. The label may be
+          // empty (that clears the name) but must still be a ≤ 80 string, and a target of
+          // its own (workspaceId/tabId) mixed in is a 400, as is any other `agent` value.
+          if (body.agent !== undefined) {
+            if (body.agent !== true || Object.hasOwn(body, 'workspaceId') || Object.hasOwn(body, 'tabId')
+              || !nonEmpty(body.muxKey) || !nonEmpty(body.paneId) || typeof body.label !== 'string' || body.label.length > 80) return json({ error: 'body' }, 400);
+            await hub.rename(body as unknown as RenameBody); return new Response(null, { status: 204 });
+          }
           const targetKeys = ['workspaceId', 'tabId', 'paneId'].filter(key => Object.hasOwn(body, key));
           if (!nonEmpty(body.muxKey) || !validLabel(body.label, true) || targetKeys.length !== 1 || !nonEmpty(body[targetKeys[0]!])) return json({ error: 'body' }, 400);
           await hub.rename(body as unknown as RenameBody); return new Response(null, { status: 204 });
@@ -362,6 +370,8 @@ export function startHttp(hub: Hub, opts: {
         if (req.method === 'GET' && url.pathname === '/api/settings') return json({
           ...hub.settings(), login: req.headers.get('tailscale-user-login') ?? undefined,
           version: { tautan: tautanVersion, herdr: await hub.herdrVersions() },
+          // Wave 21: one entry per herdr Host; a failed Host carries `error`, not a failure.
+          integrations: await hub.hostIntegrations(),
         });
         if (req.method === 'PUT' && url.pathname === '/api/settings') {
           let body: SettingsBody;
@@ -694,6 +704,33 @@ export function startHttp(hub: Hub, opts: {
           let key: string;
           try { key = decodeURIComponent(mouseMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           await hub.input(key, { raw: mouseBytes(body) }); return new Response(null, { status: 204 });
+        }
+        const actionsList = url.pathname.match(/^\/api\/panes\/([^/]+)\/actions$/);
+        if (req.method === 'GET' && actionsList) {
+          let key: string;
+          try { key = decodeURIComponent(actionsList[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
+          return json({ actions: await hub.pluginActions(key) });
+        }
+        // Wave 21: run one of the listed actions from this Pane. herdr's own message reaches
+        // the UI on failure (up to 1000 chars), unlike the code-only 502 the catch maps.
+        const actionInvoke = url.pathname.match(/^\/api\/panes\/([^/]+)\/actions\/([^/]+)$/);
+        if (req.method === 'POST' && actionInvoke) {
+          let key: string; let actionId: string;
+          try { key = decodeURIComponent(actionInvoke[1]!); actionId = decodeURIComponent(actionInvoke[2]!); }
+          catch { return json({ error: 'bad pane key' }, 400); }
+          if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
+          let body: { pluginId?: unknown };
+          try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
+          if (!plainObject(body) || body.pluginId !== undefined && typeof body.pluginId !== 'string') return json({ error: 'body' }, 400);
+          try { await hub.invokePluginAction(key, actionId, body.pluginId || undefined); }
+          catch (error) {
+            const message = errorMessage(error);
+            // the outer catch owns these two: 404 for the pane, 501 for tmux.
+            if (message === 'pane not found' || message === 'unsupported') throw error;
+            return json({ error: message.slice(0, 1000) }, 502);
+          }
+          return new Response(null, { status: 204 });
         }
         const match = url.pathname.match(/^\/api\/panes\/([^/]+)\/(screen|input|seen|explain|attach|suggest|close|zoom|split|swap|move|resize)$/);
         if (match) {

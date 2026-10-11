@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
-import type { Explain, Mux, Pane, Screen, State, Tree, Workspace } from '../shared/types.ts';
+import type { Explain, Integration, Mux, Pane, PluginAction, Screen, State, Tree, Workspace } from '../shared/types.ts';
 
 describe('write routes', () => {
   let dir: string;
@@ -16,10 +16,14 @@ describe('write routes', () => {
   let explainResponse: Explain | null = null;
   let visible: { text: string; ansi: boolean } = { text: '', ansi: false };
   let sent: string[] = [];
+  let actions: PluginAction[] = [];
+  let integrations: Integration[] = [];
+  let invoked: { paneId: string; actionId: string; pluginId?: string }[] = [];
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'tautan-write-'));
     cwd = join(dir, 'cwd'); mkdirSync(cwd);
+    actions = []; integrations = []; invoked = [];
     tree = {
       workspaces: [{ id: 'w1', label: 'Workspace', cwd }],
       tabs: [{ id: 't1', workspaceId: 'w1', label: 'Tab' }],
@@ -47,7 +51,12 @@ describe('write routes', () => {
         tab.workspaceId = workspace.id; tree.workspaces.push(workspace); tree.tabs.push(tab);
         pane.workspaceId = workspace.id; pane.tabId = tab.id; pane.id = `moved-${id}`; return pane.id; // ids change across Workspaces (herdr)
       },
-      resize: async () => { fail(); }, moveWorkspace: async () => { fail(); }, moveTab: async () => { fail(); }, close: () => {},
+      resize: async () => { fail(); }, moveWorkspace: async () => { fail(); }, moveTab: async () => { fail(); },
+      pluginActions: async () => { fail(); return actions; },
+      invokePluginAction: async (paneId, actionId, pluginId) => { fail(); invoked.push({ paneId, actionId, pluginId }); },
+      renameAgent: async (paneId, name) => { fail(); const pane = tree.panes.find(x => x.id === paneId)!; if (name) pane.agentName = name; else delete pane.agentName; },
+      integrations: async () => { fail(); return integrations; },
+      close: () => {},
     };
     hub = new Hub({ refreshMs: 0, suggest: null }); hub.add('local', mux); await hub.state();
     const serve = Bun.serve;
@@ -376,5 +385,59 @@ describe('write routes', () => {
     failure = 'agent_not_ready: x';
     const herdr = await request('/api/muxes/local%2Ffake/tabs', { workspaceId: 'w1' });
     expect(herdr.status).toBe(502); expect(await herdr.json()).toEqual({ error: 'agent_not_ready' });
+    failure = undefined;
+  });
+
+  test('lists, invokes, and maps errors for plugin actions', async () => {
+    const key = 'local%2Ffake%2Fp1';
+    actions = [{ pluginId: 'tautan.test', plugin: 'Tautan Test', actionId: 'mark', title: 'Mark', contexts: ['pane'] }];
+    const list = await handle(new Request(`http://tautan.test/api/panes/${key}/actions`, { headers: { host: 'tautan.test' } }));
+    expect(list.status).toBe(200); expect(await list.json()).toEqual({ actions });
+    expect((await handle(new Request('http://tautan.test/api/panes/local%2Ffake%2Fmissing/actions', { headers: { host: 'tautan.test' } }))).status).toBe(404);
+    // The invoke body is `{pluginId?}` only; the action id rides the path.
+    expect((await request(`/api/panes/${key}/actions/mark`, null)).status).toBe(400);
+    expect((await request(`/api/panes/${key}/actions/mark`, { pluginId: 5 })).status).toBe(400);
+    expect((await request(`/api/panes/${key}/actions/mark`, {})).status).toBe(204);
+    expect((await request(`/api/panes/${key}/actions/mark`, { pluginId: 'tautan.test' })).status).toBe(204);
+    expect(invoked).toEqual([{ paneId: 'p1', actionId: 'mark', pluginId: undefined }, { paneId: 'p1', actionId: 'mark', pluginId: 'tautan.test' }]);
+    expect((await request('/api/panes/local%2Ffake%2Fmissing/actions/mark', {})).status).toBe(404);
+    failure = 'unsupported';
+    expect((await request(`/api/panes/${key}/actions/mark`, {})).status).toBe(501);
+    failure = 'plugin_not_found: no plugin offers mark';
+    const herdrError = await request(`/api/panes/${key}/actions/mark`, {});
+    // Unlike other routes, the invoke answers herdr's own message, not just its code.
+    expect(herdrError.status).toBe(502);
+    expect(await herdrError.json()).toEqual({ error: 'plugin_not_found: no plugin offers mark' });
+    failure = undefined;
+  });
+
+  test('renames an Agent through /api/rename and reflects it in state', async () => {
+    tree.panes[0]!.agent = 'claude'; await hub.refreshHost('local');
+    const agentPane = async () => ((await (await handle(new Request('http://tautan.test/api/state'))).json()) as { panes: Pane[] }).panes[0]!;
+    // `agent` must be exactly true, alone with paneId; the label may be empty (that clears).
+    expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', label: 'x', agent: 'yes' })).status).toBe(400);
+    expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', label: 'x', agent: true, workspaceId: 'w1' })).status).toBe(400);
+    expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', label: 'x', agent: true, tabId: 't1' })).status).toBe(400);
+    expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', agent: true })).status).toBe(400); // no label
+    expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'missing', label: 'x', agent: true })).status).toBe(404);
+    failure = 'unsupported';
+    expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', label: 'x', agent: true })).status).toBe(501);
+    failure = undefined;
+    expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', label: ' reviewer ', agent: true })).status).toBe(204);
+    const renamed = await agentPane();
+    expect(renamed.agentName).toBe('reviewer'); // the user's Agent name lands in its own field
+    expect(renamed.agent).toBe('claude');       // the Agent TYPE is untouched
+    expect((await request('/api/rename', { muxKey: 'local/fake', paneId: 'p1', label: '  ', agent: true })).status).toBe(204);
+    expect((await agentPane()).agentName).toBeUndefined();
+  });
+
+  test('Settings carries each herdr Host integrations, or the error in their place', async () => {
+    integrations = [{ target: 'claude', label: 'claude', command: 'claude', available: true, state: 'current' }];
+    const settings = await (await handle(new Request('http://tautan.test/api/settings', { headers: { host: 'tautan.test' } }))).json() as { integrations: { muxKey: string; label: string; integrations?: Integration[]; error?: string }[] };
+    expect(settings.integrations).toEqual([{ muxKey: 'local/fake', label: 'fake', integrations }]);
+    failure = 'integration_unavailable: socket down';
+    const degraded = await (await handle(new Request('http://tautan.test/api/settings', { headers: { host: 'tautan.test' } }))).json() as typeof settings;
+    expect(degraded.integrations).toEqual([{ muxKey: 'local/fake', label: 'fake', error: 'integration_unavailable' }]);
+    failure = undefined;
   });
 });
