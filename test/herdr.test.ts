@@ -1,9 +1,12 @@
 import { createServer, type Server } from 'node:net';
-import { unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { HerdrMux } from '../server/herdr.ts';
+import { hostId } from '../server/hosts.ts';
+import { Hub } from '../server/mux.ts';
+import { startHttp } from '../server/http.ts';
 
 // A fake herdr: one request per connection, records every params object it saw.
 const socketPath = join(tmpdir(), `tautan-herdr-test-${process.pid}.sock`);
@@ -49,6 +52,15 @@ beforeAll(async () => {
         if (request.params.subscriptions.some((s: any) => s.type === 'layout.updated'))
           socket.end(`${JSON.stringify({ id: request.id, error: { code: -32602, message: 'nope' } })}\n`);
         else socket.write(`${JSON.stringify({ id: request.id, result: { type: 'subscription_started' } })}\n`);
+        return;
+      }
+      if (request.method === 'pane.get') {
+        socket.end(`${JSON.stringify({ id: request.id, result: { pane: { scroll: { max_offset_from_bottom: 5, viewport_rows: 24 } } } })}\n`);
+        return;
+      }
+      if (request.method === 'pane.selection.read') {
+        // A herdr older than the method answers serde's unknown variant with JSON-RPC -32602.
+        socket.end(`${JSON.stringify({ id: request.id, error: { code: -32602, message: 'unknown variant `pane.selection.read`' } })}\n`);
         return;
       }
       const result = request.method === 'session.snapshot' ? snapshot : { read: { text: 'hi\r\n', revision: 9, truncated: false } };
@@ -129,5 +141,26 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tr
     expect(zoomed.zoomed).toBe(true);
     expect(panes.find(pane => pane.id === 'w1:p1')!.zoomed).toBeUndefined();
     mux.close();
+  });
+});
+
+describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.history', () => {
+  test("maps an old server's unknown variant to unsupported, and the route answers 501", async () => {
+    const mux = new HerdrMux('test', socketPath);
+    // rpc() prefixes herdr's frame (`-32602: unknown variant …`), so the check must read
+    // inside the message, not at its start — otherwise this rejects with '-32602: …'.
+    await expect(mux.history('w1:p1')).rejects.toThrow('unsupported');
+
+    const hub = new Hub({ refreshMs: 0, suggest: null });
+    hub.add(hostId, mux);
+    await hub.state();
+    const dir = mkdtempSync(join(tmpdir(), 'tautan-history-route-'));
+    const server = startHttp(hub, { port: 0, hostname: '127.0.0.1', staticDir: dir, discover: async () => [] });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const response = await fetch(`${base}/api/panes/${encodeURIComponent(`${hostId}/test/w1:p1`)}/history?q=word`);
+      expect(response.status).toBe(501);
+      expect(await response.json()).toEqual({ error: 'unsupported' });
+    } finally { server.stop(); hub.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

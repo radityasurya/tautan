@@ -26,6 +26,7 @@ import { splitFloor } from './split-floor.ts';
 import { store } from './store.tsx';
 import { spliceIndex } from './order.ts';
 import { filesHash } from './folders-logic.ts';
+import { HistorySheet } from './history.tsx';
 
 // ---- themed terminal colours ----
 // A 256-colour or truecolour span carries the palette the agent picked, which is nobody's
@@ -109,7 +110,7 @@ export function spanStyle(s: Span): CSSProperties {
 }
 
 /** The spans of one line between two plain-text offsets, styles kept. */
-function sliceSpans(spans: Span[], start: number, end: number): Span[] {
+export function sliceSpans(spans: Span[], start: number, end: number): Span[] {
   const out: Span[] = [];
   let at = 0;
   for (const sp of spans) {
@@ -142,7 +143,7 @@ type LinkSpan = Span & { link?: string };
 
 /** The lines with every link's spans marked, a link the terminal wrapped joined back into one
  *  (`linksIn`). Only http(s) addresses become links, and they open in a new tab. */
-function withLinks(lines: Span[][], cols: number): Span[][] {
+export function withLinks(lines: Span[][], cols: number): Span[][] {
   const links = linksIn(lines.map(textOf), cols);
   if (!links.length) return lines;
   const out = lines.slice();
@@ -158,7 +159,7 @@ function withLinks(lines: Span[][], cols: number): Span[][] {
 }
 
 /** One span as the Screen draws it: a link opens in a new tab (Safari, from the phone app). */
-const spanNode = (sp: Span, key: number, style: CSSProperties) => {
+export const spanNode = (sp: Span, key: number, style: CSSProperties) => {
   const href = (sp as LinkSpan).link;
   return href ? (
     <a key={key} href={href} target="_blank" rel="noopener noreferrer" className={`underline decoration-dotted underline-offset-2 ${caretClass(sp) ?? ''}`} style={style}>
@@ -593,6 +594,8 @@ function PaneChips({ panes, paneKey, className, zoom }: {
 
 /** The shortcut hint shows on a Mac only: elsewhere Meta belongs to the OS. */
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+/** Find in terminal: ⌘⇧F on a Mac, Ctrl+Shift+F elsewhere. */
+const FIND_KEY = MAC ? '⌘⇧F' : 'Ctrl+Shift+F';
 
 function closeTabCost(panes: StatePane[], lastTab: boolean): string {
   const active = panes
@@ -1285,6 +1288,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const [agentRename, setAgentRename] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const moreOpener = useOpener(showMore);
+  /** Wave 22: Find in terminal, and where focus goes back when it closes. */
+  const [finding, setFinding] = useState(false);
+  const findOpener = useRef<HTMLElement | null>(null);
   const actions = actionsFor(usePluginActions(writable ? paneKey : undefined, showMore), 'pane');
   const [confirmClose, setConfirmClose] = useState(false);
   const [tabMenu, setTabMenu] = useState<string | null>(null);
@@ -1296,7 +1302,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const [zooming, setZooming] = useState(false);
   const [zoomFailed, setZoomFailed] = useState(false);
   /** ADR 0008 layout edits from the ⋯ menu: the picker or sheet open, the write in flight, the last failure (shown for 4 s). */
-  const [layoutSheet, setLayoutSheet] = useState<'move' | 'swap' | 'resize' | null>(null);
+  const [layoutSheet, setLayoutSheet] = useState<'menu' | 'move' | 'swap' | 'resize' | null>(null);
   const [editing, setEditing] = useState(false);
   const [editFailed, setEditFailed] = useState<{ verb: string; reason: string } | null>(null);
   const desktop = useDesktop();
@@ -1334,6 +1340,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     setAgentRename(false);
     setShowActions(false);
     setConfirmClose(false);
+    setFinding(false);
   }, [paneKey]);
 
   // ---- split view (ADR 0006) ----
@@ -1510,6 +1517,22 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     addEventListener('keydown', on);
     return () => removeEventListener('keydown', on);
   }, [desktop, tabs, writable, paneKey]);
+
+  // ⌘⇧F (Ctrl+Shift+F off a Mac) opens Find in terminal, at `lg` only. Caught before the
+  // composer: with Type directly on it would send the chord to the Pane as ctrl+f.
+  useEffect(() => {
+    if (!desktop) return;
+    const on = (e: KeyboardEvent) => {
+      if (e.code !== 'KeyF' || !e.shiftKey || e.altKey || (MAC ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (finding) return;
+      findOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setFinding(true);
+    };
+    addEventListener('keydown', on, true);
+    return () => removeEventListener('keydown', on, true);
+  }, [desktop, finding]);
 
   /** Zoom `key` to fill its Tab, or unzoom the Tab. The Hub refreshes before it replies, so
    *  the next `state` event already carries the change and the split follows it. Zooming a
@@ -1703,6 +1726,17 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
       : store.get(`tautan.mouse.${paneKey}`)
         ? 'overridden'
         : `from ${pane?.command ?? pane?.agent ?? 'the generic'} profile`;
+  // ADR 0008. Hidden while zoomed: the Tab shows one Pane, so an edit would be invisible.
+  // Both Muxes write layout; a herdr older than 0.9 answers 501 and the strip says so.
+  const layoutRows = active && !tabZoomed
+    ? [
+        { label: 'Split right', disabled: editing, onClick: () => void split('right') },
+        { label: 'Split down', disabled: editing, onClick: () => void split('down') },
+        ...(active.panes.length > 1 ? [{ label: 'Swap with…', onClick: () => setLayoutSheet('swap') }] : []),
+        { label: 'Move to…', onClick: () => setLayoutSheet('move') },
+        ...(active.panes.length > 1 ? [{ label: 'Resize…', hint: `${RESIZE_STEP} cells a step`, onClick: () => setLayoutSheet('resize') }] : []),
+      ]
+    : [];
 
   return (
     // On the phone the screen is the visual viewport (app.tsx sets --vv-h and --vv-top), so
@@ -1996,6 +2030,14 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
           // The Workspace's files and changes first: on a phone the end of this list is below the fold.
           { label: 'Files', sub: 'Browse, read and edit this Workspace', onClick: () => navigate(filesHash(paneKey), { transition: false }) },
           ...(ws ? [{ label: 'Diff', onClick: () => navigate(`#/diff/${encodeURIComponent(ws.key)}`, { transition: false }) }] : []),
+          {
+            label: 'Find in terminal',
+            hint: desktop ? FIND_KEY : undefined,
+            onClick: () => {
+              findOpener.current = moreOpener.current;
+              setFinding(true);
+            },
+          },
           ...(agent ? [{ label: 'Read aloud', onClick: speak }] : []),
           // herdr's plugins (Wave 21): listed only when one offers a Pane or Tab action.
           ...(actions.length ? [{ label: 'Plugin actions…', onClick: () => setShowActions(true) }] : []),
@@ -2026,17 +2068,10 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                   : { label: 'Zoom Pane', hint: 'this Pane fills the Tab', disabled: zooming, onClick: () => void zoomTo(paneKey, true) },
               ]
             : []),
-          // ADR 0008. Hidden while zoomed: the Tab shows one Pane, so an edit would be invisible.
-          // Both Muxes write layout; a herdr older than 0.9 answers 501 and the strip says so.
-          ...(active && !tabZoomed
-            ? [
-                { label: 'Split right', group: 'Layout', disabled: editing, onClick: () => void split('right') },
-                { label: 'Split down', group: 'Layout', disabled: editing, onClick: () => void split('down') },
-                ...(active.panes.length > 1 ? [{ label: 'Swap with…', group: 'Layout', onClick: () => setLayoutSheet('swap') }] : []),
-                { label: 'Move to…', group: 'Layout', onClick: () => setLayoutSheet('move') },
-                ...(active.panes.length > 1 ? [{ label: 'Resize…', group: 'Layout', hint: `${RESIZE_STEP} cells a step`, onClick: () => setLayoutSheet('resize') }] : []),
-              ]
-            : []),
+          // ADR 0008. On a phone the group folds into one row (Wave 22), so the menu stays short.
+          ...(desktop
+            ? layoutRows.map((row) => ({ ...row, group: 'Layout' }))
+            : layoutRows.length ? [{ label: 'Layout…', onClick: () => setLayoutSheet('menu') }] : []),
           { label: fit ? 'Fit to width: on' : 'Fit to width: off', hint: grid, onClick: () => setFit(!fit) },
           {
             label: themedOn ? 'Theme colors: on' : 'Theme colors: off',
@@ -2060,9 +2095,19 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                 { label: 'Close Pane', danger: true, onClick: () => setConfirmClose(true) },
               ]
             : []),
-          { label: 'Resize to phone', hint: 'v2', disabled: true },
+          // A placeholder for a later version: the phone, where Phone width already does it, drops it.
+          ...(desktop ? [{ label: 'Resize to phone', hint: 'v2', disabled: true }] : []),
         ]}
       />
+      <MenuSheet
+        open={layoutSheet === 'menu'}
+        title="Layout"
+        meta={pane?.title}
+        // A row that opens its own sheet has set `layoutSheet` already; keep that one.
+        onClose={() => setLayoutSheet((open) => (open === 'menu' ? null : open))}
+        items={layoutRows}
+      />
+      {finding && <HistorySheet paneKey={paneKey} title={pane?.title} opener={findOpener} onClose={() => setFinding(false)} />}
       <MoveSheet
         open={layoutSheet === 'move'}
         onClose={() => setLayoutSheet(null)}

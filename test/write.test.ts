@@ -19,6 +19,7 @@ describe('write routes', () => {
   let actions: PluginAction[] = [];
   let integrations: Integration[] = [];
   let invoked: { paneId: string; actionId: string; pluginId?: string }[] = [];
+  let fakeMux: Mux & { version(): Promise<string> };
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'tautan-write-'));
@@ -30,7 +31,7 @@ describe('write routes', () => {
       panes: [{ id: 'p1', tabId: 't1', workspaceId: 'w1', title: 'Pane', cwd, status: 'unknown', revision: 0 }],
     };
     const fail = () => { if (failure) throw new Error(failure); };
-    const mux: Mux & { version(): Promise<string> } = {
+    const mux = fakeMux = {
       kind: 'herdr', id: 'fake', version: async () => '9.9.9', tree: async () => structuredClone(tree),
       read: async (_id, mode): Promise<Screen> => ({ ...structuredClone(visible), revision: 0, mode }),
       sendText: async (_id, text) => { sent.push(text); }, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {}, explain: async (): Promise<Explain | null> => explainResponse,
@@ -410,6 +411,27 @@ describe('write routes', () => {
     expect(herdrError.status).toBe(502);
     expect(await herdrError.json()).toEqual({ error: 'plugin_not_found: no plugin offers mark' });
     failure = undefined;
+  });
+
+  test('history route: validates q and before, 404s an unknown pane, 501s a Mux without history', async () => {
+    const key = 'local%2Ffake%2Fp1';
+    const get = (query: string) => handle(new Request(`http://tautan.test/api/panes/${key}/history${query}`, { headers: { host: 'tautan.test' } }));
+    const missingQ = await get('');
+    expect(missingQ.status).toBe(400); expect(await missingQ.json()).toEqual({ error: 'q' });
+    const longQ = await get(`?q=${'x'.repeat(201)}`);
+    expect(longQ.status).toBe(400); expect(await longQ.json()).toEqual({ error: 'q' });
+    for (const bad of ['0', '-3', 'abc', '1.5']) {
+      const response = await get(`?q=alpha&before=${bad}`);
+      expect(response.status).toBe(400); expect(await response.json()).toEqual({ error: 'before' });
+    }
+    const unknownPane = await handle(new Request('http://tautan.test/api/panes/local%2Ffake%2Fmissing/history?q=alpha', { headers: { host: 'tautan.test' } }));
+    expect(unknownPane.status).toBe(404); expect(await unknownPane.json()).toEqual({ error: 'pane not found' });
+    const noMethod = await get('?q=alpha'); // this fake Mux carries no `history`
+    expect(noMethod.status).toBe(501); expect(await noMethod.json()).toEqual({ error: 'unsupported' });
+    fakeMux.history = async () => ['alpha one', 'filler', 'Alpha two'];
+    const ok = await get('?q=ALPHA&before=3');
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ lines: 3, total: 2, matches: [{ line: 1, text: 'alpha one', before: [], after: ['filler', 'Alpha two'] }] });
   });
 
   test('renames an Agent through /api/rename and reflects it in state', async () => {

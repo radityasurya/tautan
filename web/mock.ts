@@ -3,12 +3,27 @@
 // VITE_MOCK=1); it never loads for a real page.
 import type {
   BranchList, DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope, SwitchBody, Worktree,
-  Explain, HostIntegrations, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, PluginAction, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
+  Explain, HistoryMatch, HistoryResult, HostIntegrations, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, PluginAction, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
   ScreenMode, SeenBody, Settings, SettingsBody, State, StatePane, Status, SuggestSettingBody,
 } from '../shared/types.ts';
 import type { ChatResponse, Subagent, Turn } from '../shared/chat.ts';
 
 // ---- fixtures ----
+
+/** A Pane's scrollback for the history search: a build log that loops, with paths and links in it. */
+const MOCK_HISTORY = Array.from({ length: 1200 }, (_, i) => {
+  const run = Math.floor(i / 40) + 1;
+  return [
+    `$ pnpm test --filter server  # run ${run}`,
+    ` RUN  v3.2.4 ~/projects/tautan`,
+    ` ✓ test/mux.test.ts (24 tests) ${12 + (i % 7)}ms`,
+    ` ✓ test/herdr.test.ts (31 tests) ${40 + (i % 11)}ms`,
+    run % 6 === 0 ? ` ✗ test/history.test.ts > a match past the screen` : ` ✓ test/history.test.ts (5 tests) 8ms`,
+    run % 6 === 0 ? `   AssertionError: expected 3988 to be 4000 at /home/me/projects/tautan/server/herdr.ts:412:9` : `   (no output)`,
+    `warn: herdr 0.9.0 answers pane.selection.read with unknown variant`,
+    `see https://github.com/radityasurya/tautan/pull/${100 + run} for the change`,
+  ][i % 8]!;
+});
 
 const RESET = '\x1b[0m';
 const DIM = '\x1b[2m';
@@ -1509,6 +1524,28 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
       for (const es of sources) es.push(s, { state: true });
     }
     return noContent();
+  }
+
+  // Wave 22 history search, the way the Hub answers it: a literal, case-insensitive search of
+  // one read, newest first, 50 a page, 5 lines of context, `before` for the older pages. The
+  // scrollback is a made-up build log of 1,200 lines. A query of `unsupported` answers 501,
+  // which is how to reach the old-herdr message.
+  const history = url.pathname.match(/^\/api\/panes\/([^/]+)\/history$/);
+  if (history && method === 'GET') {
+    let key: string;
+    try { key = decodeURIComponent(history[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+    if (!s.state.panes.some((p) => p.key === key)) return json({ error: 'pane not found' }, 404);
+    const q = url.searchParams.get('q') ?? '';
+    if (!q || q.length > 200) return json({ error: 'q' }, 400);
+    if (q === 'unsupported') return json({ error: 'unsupported' }, 501);
+    const lines = MOCK_HISTORY;
+    const before = Number(url.searchParams.get('before')) || Infinity;
+    const all: HistoryMatch[] = [];
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i]!.toLowerCase().includes(q.toLowerCase())) continue;
+      all.push({ line: i + 1, text: lines[i]!, before: lines.slice(Math.max(0, i - 5), i), after: lines.slice(i + 1, i + 6) });
+    }
+    return json({ lines: lines.length, total: all.length, matches: all.filter((m) => m.line < before).slice(0, 50) } satisfies HistoryResult);
   }
 
   const wrote = write(s, url, method, body);

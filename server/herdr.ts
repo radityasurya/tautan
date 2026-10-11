@@ -144,6 +144,32 @@ export class HerdrMux implements Mux {
     return { text: result.text, ansi: mode === 'visible', revision: this.revisions.get(paneId) ?? result.revision, mode };
   }
 
+  /** ADR 0010: the whole kept scrollback as joined logical lines, oldest first. One
+   *  `pane.get` for the ring depth, one `pane.selection.read` at column 0 (a column past a
+   *  row's width fails `selection_unavailable`). The ring trims from the top while the Pane
+   *  prints, so a failed selection re-reads `pane.get` and retries once. */
+  async history(paneId: string): Promise<string[]> {
+    const read = async (): Promise<string> => {
+      const result = await this.rpc('pane.get', { pane_id: paneId });
+      const scroll = (result.pane ?? result).scroll ?? {};
+      const depth = Number(scroll.max_offset_from_bottom ?? 0) + Number(scroll.viewport_rows ?? 0);
+      const selection = await this.rpc('pane.selection.read', {
+        pane_id: paneId, anchor: { row: 0, col: 0 }, cursor: { row: Math.max(depth - 1, 0), col: 0 },
+      });
+      return typeof selection.text === 'string' ? selection.text : '';
+    };
+    try {
+      return (await read()).split('\n');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A server older than the method. The frame is JSON-RPC -32602 from serde, and rpc()
+      // prefixes the code, so the wording sits inside the message — never at its start.
+      if (message.includes('unknown variant')) throw new Error('unsupported');
+      if (!message.startsWith('selection_unavailable')) throw error; // the ring shifted: retry with fresh coordinates
+      return (await read()).split('\n');
+    }
+  }
+
   async version(): Promise<string> {
     if (this.serverVersion && Date.now() - this.serverVersion.at < VERSION_TTL) return this.serverVersion.value;
     if (!this.versionRequest) this.versionRequest = this.rpc('session.snapshot', {})

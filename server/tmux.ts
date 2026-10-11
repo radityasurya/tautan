@@ -163,6 +163,15 @@ export class TmuxMux implements Mux {
     return { text, ansi: mode === 'visible', revision: this.record(paneId, text), mode, ...(alt !== undefined ? { alt } : {}) };
   }
 
+  /** ADR 0010: the Pane's history as joined lines, oldest first. 10,000 lines is the Hub's
+   *  cap; tmux clamps the capture to the Pane's own `history-limit`. `-J` joins wrapped
+   *  lines; the trailing empty lines are the capture's padding, not history. */
+  async history(paneId: string): Promise<string[]> {
+    const lines = (await this.run(['capture-pane', '-p', '-J', '-S', '-10000', '-t', paneId])).split('\n');
+    while (lines.length && !lines.at(-1)) lines.pop();
+    return lines;
+  }
+
   async sendText(paneId: string, text: string): Promise<void> {
     if (!text) return;
     await this.run(['send-keys', '-t', paneId, '-l', '--', text]);

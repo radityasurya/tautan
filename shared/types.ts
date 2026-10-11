@@ -48,6 +48,17 @@ export interface Integration {
 }
 /** One herdr Mux's integration list; a Host whose call fails carries `error` instead */
 export interface HostIntegrations { muxKey: string; label: string; integrations?: Integration[]; error?: string }
+/** Wave 22: one match in a Pane's history. `line` counts from 1 at the oldest line read. */
+export interface HistoryMatch { line: number; text: string; /** up to 5 lines each side, from the same read */ before: string[]; after: string[] }
+/** `GET /api/panes/:key/history?q=&before=`: a literal, case-insensitive search of one read (ADR 0010) */
+export interface HistoryResult {
+  /** lines read: herdr's whole kept ring, or tmux's last 10,000 */
+  lines: number;
+  /** every match in the read, for the count */
+  total: number;
+  /** up to 50 matches, newest first; with `before`, only matches whose `line` is below it */
+  matches: HistoryMatch[];
+}
 
 export interface Mux {
   readonly kind: 'herdr' | 'tmux';
@@ -90,6 +101,8 @@ export interface Mux {
   renameAgent(paneId: string, name: string | null): Promise<void>;
   integrations(): Promise<Integration[]>;
   explain(paneId: string): Promise<Explain | null>;
+  /** Wave 22: the Pane's kept history as joined logical lines, oldest first. A Mux without it answers 501. */
+  history?(paneId: string): Promise<string[]>;
   close(): void;
 }
 

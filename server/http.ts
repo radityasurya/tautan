@@ -13,6 +13,7 @@ import { ChatLens } from './chat.ts';
 import { EmptyBody, sanitizeName, TooLarge, writeAttachment } from './attach.ts';
 import { CompleteError, paneCompletion } from './complete.ts';
 import { fileList, fileRaw, fileRead, fileSave, FilesError, PREVIEW_CSP, quoteShell } from './files.ts';
+import { searchHistory } from './history.ts';
 
 /** The Agents whose transcripts the ChatLens parses. */
 const CHAT_AGENTS = new Set(['claude', 'pi', 'omp', 'codex']);
@@ -711,6 +712,20 @@ export function startHttp(hub: Hub, opts: {
           try { key = decodeURIComponent(actionsList[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
           if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
           return json({ actions: await hub.pluginActions(key) });
+        }
+        // Wave 22 (ADR 0010): search one history read. `q` is used literally, never as a
+        // regex; `before` pages backwards from a line number.
+        const historyMatch = url.pathname.match(/^\/api\/panes\/([^/]+)\/history$/);
+        if (req.method === 'GET' && historyMatch) {
+          let key: string;
+          try { key = decodeURIComponent(historyMatch[1]!); } catch { return json({ error: 'bad pane key' }, 400); }
+          const q = url.searchParams.get('q') ?? '';
+          if (!q || q.length > 200) return json({ error: 'q' }, 400);
+          const beforeRaw = url.searchParams.get('before');
+          const before = beforeRaw === null ? undefined : Number(beforeRaw);
+          if (before !== undefined && (!Number.isInteger(before) || before < 1)) return json({ error: 'before' }, 400);
+          if (!await hub.hasPane(key)) return json({ error: 'pane not found' }, 404);
+          return json(searchHistory(await hub.history(key), q, before));
         }
         // Wave 21: run one of the listed actions from this Pane. herdr's own message reaches
         // the UI on failure (up to 1000 chars), unlike the code-only 502 the catch maps.

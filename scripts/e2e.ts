@@ -601,6 +601,8 @@ try {
     try {
       await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
       await page.getByRole('button', { name: 'More' }).click();
+      // The phone folds the Layout group into one row (Wave 22).
+      await page.getByRole('button', { name: 'Layout…' }).click();
       await page.getByRole('button', { name: 'Split right' }).click();
       let panes = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id);
       for (let i = 0; i < 20 && panes.length < 2; i++) { await Bun.sleep(250); panes = (await mux.tree()).panes.filter(p => p.workspaceId === workspace.id); }
@@ -613,7 +615,7 @@ try {
       await page.getByRole('button', { name: /^Zoom Pane/ }).click();
       await page.getByRole('button', { name: 'More' }).click();
       await page.getByRole('button', { name: /^Unzoom\s*show/ }).waitFor({ timeout: 8_000 });
-      assert(await page.getByRole('button', { name: 'Split right' }).count() === 0, 'no Split on a zoomed Tab');
+      assert(await page.getByRole('button', { name: 'Layout…' }).count() === 0, 'no Layout on a zoomed Tab');
       await page.getByRole('button', { name: /^Unzoom\s*show/ }).click();
       // Reorder (ADR 0009): one step from the Workspace menu (Move down when it already leads)
       // moves it in herdr; an order this device stored for the herdr Mux is dropped on sight.
@@ -759,6 +761,57 @@ try {
       await list.getByText('Copied').waitFor({ timeout: 4_000 });
       const copied = await page.evaluate(() => navigator.clipboard.readText());
       return assert(copied === installCommand(toCopy), `ordered, stated, copied ${copied}`);
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+  await flow('Find in terminal', async () => {
+    const id = await pane('e2e-find');
+    const key = `HireOpz/default/${id}`;
+    // The shell prints `needle<n+1>`, so the word is not on the command line, only in the
+    // output; 1,200 lines after it push it far past the Screen.
+    const n = Math.floor(Math.random() * 1e6);
+    const word = `needle${n + 1}`;
+    await mux.sendText(id, `clear; printf '%s\\n' find-ctx-above "needle$((${n}+1)) in /tmp/e2e-find.txt" find-ctx-below; seq 1 1200`);
+    await mux.sendKeys(id, ['enter']);
+    await Bun.sleep(1500);
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    try {
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      await page.getByRole('button', { name: 'More', exact: true }).click();
+      await page.getByRole('button', { name: 'Find in terminal' }).click();
+      const dialog = page.getByRole('dialog', { name: 'Find in terminal' });
+      const field = dialog.getByRole('textbox', { name: 'Text to find' });
+      await field.fill(word);
+      await field.press('Enter');
+      const count = dialog.locator('[aria-live=polite]');
+      for (let i = 0; i < 40 && (await count.textContent()) !== '1 of 1'; i++) await Bun.sleep(250);
+      assert(await count.textContent() === '1 of 1', `count=${await count.textContent()}`);
+      // On screen means inside the list's scroller, not only rendered somewhere in it.
+      const list = await dialog.locator('header + div').boundingBox();
+      const onScreen = async (l: any) => {
+        const box = await l.boundingBox();
+        return !!box && !!list && box.y >= list.y && box.y + box.height <= list.y + list.height;
+      };
+      const current = dialog.locator('[aria-current=true]');
+      assert(await onScreen(current.locator('mark', { hasText: word })), 'the match is marked and on screen');
+      for (const line of ['find-ctx-above', 'find-ctx-below']) assert(await onScreen(dialog.getByText(line, { exact: true })), `context ${line} on screen`);
+      // The path is the Screen's path Affordance: a tap copies, a hold opens it.
+      assert(await current.getByRole('button', { name: /^\/tmp\/e2e-find\.txt, copies it/ }).count() === 1, 'the path is a button');
+      const tail = Number((await dialog.getByText(/lines to the end$/).textContent() ?? '').replace(/\D/g, ''));
+      // The count starts after the block, whose 5 lines of context follow the match.
+      assert(tail >= 1200 - 5, `the match is ${tail} lines up, past the Screen`);
+      await page.waitForTimeout(300); // the push-in
+      await page.screenshot({ path: '/tmp/tautan-find/find-light.png' });
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: '/tmp/tautan-find/find-dark.png' });
+      await page.emulateMedia({ colorScheme: 'light' });
+      // Escape closes it and gives focus back to the ⋯ button.
+      await page.keyboard.press('Escape');
+      await dialog.waitFor({ state: 'detached', timeout: 4_000 });
+      const now = await page.evaluate(() => `${document.activeElement?.tagName} ${document.activeElement?.getAttribute('aria-label') ?? ''}`);
+      return assert(now === 'BUTTON More', `counted, marked in context past the Screen, closed, focus back on More (focus: ${now})`);
     } finally {
       await page.close().catch(() => {});
     }

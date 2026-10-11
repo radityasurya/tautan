@@ -534,6 +534,13 @@ export class Hub {
     if (!found) throw new Error('pane not found');
     return found.entry.mux.explain(found.paneId);
   }
+  /** Wave 22: the Pane's kept history for the search route; a Mux without it answers 501. */
+  async history(paneKey: string): Promise<string[]> {
+    await this.state(); const found = this.resolve(paneKey);
+    if (!found) throw new Error('pane not found');
+    if (!found.entry.mux.history) throw new Error('unsupported');
+    return found.entry.mux.history(found.paneId);
+  }
   async hasPane(paneKey: string): Promise<boolean> { await this.state(); return Boolean(this.resolve(paneKey)); }
   async paneHost(paneKey: string): Promise<string> {
     await this.state(); const found = this.resolve(paneKey);

@@ -64,7 +64,7 @@ function sendAction(paneKey: string, a: Action): void {
 }
 
 /** 500 ms, cancelled by 10 px of movement, the same gesture as the Agents screen headers. */
-function useHold(fn: () => void) {
+export function useHold(fn: () => void) {
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const from = useRef({ x: 0, y: 0 });
   const held = useRef(false);
