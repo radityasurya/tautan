@@ -138,6 +138,9 @@ const WHY: Record<string, string> = {
   branch: 'That branch is gone',
   'not-a-repo': 'Not a git repository',
   'unknown-workspace': 'Workspace is gone',
+  'unknown-tab': 'Tab is gone',
+  tab_move_failed: 'The order changed. Try again',
+  workspace_move_failed: 'The order changed. Try again',
   worktree: 'That worktree is gone',
 };
 export const why = (code: string) => WHY[code] ?? `That did not work · ${code}`;

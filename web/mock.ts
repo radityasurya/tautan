@@ -1206,6 +1206,24 @@ function write(s: Store, url: URL, method: string, body: unknown): Response | un
     return noContent();
   }
 
+  // ADR 0009 order writes: `index` is the pre-move splice index, scoped to the Mux for
+  // Workspaces and to the Workspace for Tabs. tmux Workspaces keep this device's own order.
+  const move = url.pathname.match(/^\/api\/(workspaces|tabs)\/([^/]+)\/move$/);
+  if (move) {
+    const index = (body as { index?: unknown } | undefined)?.index;
+    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) return json({ error: 'body' }, 400);
+    if (move[1] === 'workspaces') {
+      const ws = s.state.workspaces.find((w) => w.key === decodeURIComponent(move[2]!));
+      if (!ws) return json({ error: 'unknown-workspace' }, 404);
+      const bad = writableMux(s, ws.muxKey);
+      if (bad) return bad;
+      return spliceMove(s, s.state.workspaces, (w) => w.muxKey === ws.muxKey, ws, index, 'workspace_move_failed') ?? noContent();
+    }
+    const tab = s.state.tabs.find((t) => t.key === decodeURIComponent(move[2]!));
+    if (!tab) return json({ error: 'unknown-tab' }, 404);
+    return spliceMove(s, s.state.tabs, (t) => t.muxKey === tab.muxKey && t.workspaceId === tab.workspaceId, tab, index, 'tab_move_failed') ?? noContent();
+  }
+
   const mux = url.pathname.match(/^\/api\/muxes\/([^/]+)\/(tabs|workspaces)$/);
   if (mux) {
     const muxKey = decodeURIComponent(mux[1]!);
@@ -1252,6 +1270,26 @@ function write(s: Store, url: URL, method: string, body: unknown): Response | un
   else (target as { label: string }).label = o.label;
   for (const es of sources) es.push(s, { state: true });
   return noContent();
+}
+
+/**
+ * ADR 0009's move, in place: `item` to the pre-move index `index` inside the subsequence
+ * `of` matches, every other item keeping its slot. An index past the count answers the
+ * move's own error; a move whose final slot is the item's own changes nothing and emits
+ * nothing, like herdr.
+ */
+function spliceMove<T>(s: Store, all: T[], of: (item: T) => boolean, item: T, index: number, failed: string): Response | undefined {
+  const scoped = all.filter(of);
+  if (index > scoped.length) return json({ error: failed }, 502);
+  const from = scoped.indexOf(item);
+  const at = index <= from ? index : index - 1; // final position, herdr's splice model
+  if (at === from) return undefined;
+  const next = scoped.filter((x) => x !== item);
+  next.splice(at, 0, item);
+  let n = 0;
+  for (let i = 0; i < all.length; i++) if (of(all[i]!)) all[i] = next[n++]!;
+  for (const es of sources) es.push(s, { state: true });
+  return undefined;
 }
 
 async function readBody(input: RequestInfo | URL, init?: RequestInit): Promise<unknown> {
