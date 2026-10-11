@@ -682,6 +682,31 @@ Verify: on the phone, an approval from Claude Code 2.1.296 with a long option la
 that label whole on its card, and a reply holding a long minified log keeps the Chat view
 responsive.
 
+## Phase 36 — herdr plugin actions, Agent names, integrations
+
+Wave 21 ([WAVES-PARITY-2](./WAVES-PARITY-2.md#wave-21--herdrs-own-features-plugin-actions-agent-names-integrations)).
+
+- [ ] `GET /api/panes/:key/actions` and `POST /api/panes/:key/actions/:actionId` on herdr's
+      `plugin.action.list` and `plugin.action.invoke`; `/api/rename` with `agent: true` on
+      `agent.rename`; `integrations` per herdr Host in `GET /api/settings`; tmux answers 501 —
+      `server/herdr.ts`, `server/mux.ts`, `server/http.ts`
+- [ ] **Plugin actions…** in the Pane and Workspace ⋯ menus opens a sheet grouped by plugin;
+      a Pane that appears within 5 s opens — `web/plugins.ts`, `web/pane.tsx`, `web/home.tsx`, `web/sheets.tsx`
+- [ ] The Agent name leads the Pane header, the Home and sidebar rows, the Needs you cards,
+      the Switch drawer and a push; **Rename Agent** and **Clear name** in the Pane ⋯ menu —
+      `web/header.tsx`, `web/pane.tsx`, `web/home.tsx`, `web/sheets.tsx`, `server/mux.ts`
+- [ ] **Settings › About › Agent integrations** per herdr Host, with a Copy button for the
+      install command — `web/settings.tsx`
+
+Verify: on the phone, tap **Plugin actions…** in a Pane's ⋯ menu; the list groups actions by
+plugin and shows no Vim navigation action. Run **Hunk worktree diff in tab**; a new Tab opens
+within 5 s, and the Workspace ⋯ menu lists the same action. Rename a Claude Agent; the name
+leads the Pane header and the Home row, and `herdr agent list` shows it. **Clear name**
+removes it in both places. Settings › About lists each herdr Host's Agents, found first, with
+Current, Outdated or Not installed; **Copy** on an Outdated row puts `herdr integration
+install <target>` on the clipboard. A named Agent that asks for input while the phone is
+locked sends a push that names it.
+
 ## Later (explicitly out of v1)
 
 - Per-agent prompt grammars (native widgets for select lists)

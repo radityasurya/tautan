@@ -114,14 +114,15 @@ once; GLM lanes are not capped.
 | 23 | `web/markdown.tsx`, `server/complete.ts`, `web/complete.tsx`, `web/composer.tsx` |
 | 24 | `test/` only, plus a fix in `web/markdown.tsx` or `shared/blocked.ts` if a test fails |
 
-**Progress (2026-10-11).** Batches 1–3 are built and committed on `main`; nothing is
-pushed, and no ROADMAP phase is added yet. Batches 4 and 5 are open.
+**Progress (2026-10-12).** Batches 1–4 are built and committed on `main`; nothing is
+pushed. ROADMAP has Phases 32–36. Batch 5 is open.
 
 | Batch | Commits | Checks on the final tree |
 |---|---|---|
 | 1 | `6a6f532`, `0d794ab`, `41eb642`, `2b715cb` | typecheck clean, `bun test` 504 pass |
 | 2 | `eb66354`…`9d20b66` (10 commits) | typecheck clean, `bun test` 531 pass, qa 8 of 8 on throwaway servers |
 | 3 | `52ad7b1` (e2e), `5a8479e` (Wave 20) | typecheck clean, `bun test` 560 pass, `pnpm e2e` 19 of 19 |
+| 4 | `da1bb62`, `02d96be`, `89c66c3`, `cf3bf42` | typecheck clean, `bun test` 573 pass, `pnpm e2e` 22 of 22, qa spec check 5 of 5 (one defect, fixed in `cf3bf42`) |
 
 **The e2e suite is green again (`52ad7b1`).** Before Batch 3 it failed 8 of 18 flows, from
 before Batch 2. Each failing flow checked behaviour a later commit changed on purpose, so
@@ -136,7 +137,7 @@ only `scripts/e2e.ts` changed:
 | Chat view approval row | The menu reads as numbered rows | Uses the numbered radios; checks `["down","enter"]` and a `promptId` |
 | Split view | The view choice lives in `localStorage`; the fallback saves nothing | Uses `localStorage`; checks the choice stays `chat` |
 
-The suite has 19 flows now, with the order flow from Wave 19. The browser closing after the
+The suite has 22 flows now, with the order flow from Wave 19 and Wave 21's three. The browser closing after the
 chat view flow did not come back in 7 runs, and nothing fixed it on purpose. If it returns,
 diagnose it as a new failure.
 
@@ -366,6 +367,106 @@ command with Copy for the last two.
 Tab open. Rename an Agent and see the name in `herdr agent list`. Settings › About shows each
 integration's state, and Copy puts the install command on the clipboard.
 
+**Done (2026-10-12), `da1bb62`…`cf3bf42`:**
+
+- `da1bb62` (21.1, glm-5.3), `02d96be` (21.2 prep, glm-5.3), `89c66c3` (21.2, frontend),
+  `cf3bf42` (review and qa fixes).
+- Hub: `GET /api/panes/:key/actions` answers `{actions}`. `POST
+  /api/panes/:key/actions/:actionId` with `{pluginId}` answers 204 after a tree refresh,
+  `502 {error}` with herdr's whole message on a refusal, and 400 for an empty `pluginId`.
+  `/api/rename` takes `agent: true`, only with `paneId`; an empty label clears the name.
+  `GET /api/settings` carries `integrations: HostIntegrations[]` per herdr Host, and a failed
+  Host carries `error`. tmux answers 501. The Hub caches per Mux: 30 s for actions, 60 s for
+  integrations. It never caches a rejection.
+- The tree's `agent` stays the Agent type. The name is in `agentName`.
+- UI: **Plugin actions…** is in the Pane ⋯ menu (actions with `pane` or `tab`) and the
+  Workspace ⋯ menu (actions with `workspace`). One sheet serves both widths, grouped by plugin.
+  The running row says "Starting…", and herdr's refusal shows above the list. After a 204, a
+  Pane that appears in that Workspace within 5 s opens. The Agent name leads the Pane header,
+  the Home and sidebar rows, the Needs you cards and the Switch drawer, and a push names the
+  Agent. **Rename Agent** is in the Pane ⋯ menu on herdr Panes with an Agent; an empty field
+  turns the button into **Clear name**. **Settings › About › Agent integrations** lists each
+  herdr Host, Agents found first.
+
+Facts found:
+
+- herdr's snapshot carries Agent names in a top-level `agents` array keyed by `pane_id`. The
+  Pane record has no `name`.
+- The `target` of `agent.rename` takes a Pane id or a unique Agent name. The Hub passes the
+  Pane id.
+- A plugin manifest is TOML: `id`, `name`, `version`, `min_herdr_version`, top-level
+  `platforms`, and `[[actions]]` with `id`, `title`, `description`, `contexts`, `command`. A
+  plugin command gets `HERDR_PLUGIN_CONTEXT_JSON`, `HERDR_WORKSPACE_ID` and `HERDR_BIN_PATH`.
+- herdr 0.9.3 runs a plugin command asynchronously: `plugin.action.invoke` answers
+  `status: "running"`. A 204 means "started". herdr does not report a command that exits
+  non-zero. The only failure the UI shows is herdr's refusal (for example
+  `plugin_action_not_found`).
+- `PluginInvocationContext` has no field that names the invoking context, so the invoke route
+  takes `pluginId` only.
+- Live actions carry `platforms`. herdr refuses a platform-incompatible invoke, and the Hub
+  also hides one. Only `linux` is probed.
+- In `integration.list`, `command` is the Agent's executable (`claude`, `cursor-agent`), not
+  an install command. The UI shows `herdr integration install <target>` with `_` mapped to
+  `-`, because herdr lists `antigravity_cli` but its CLI takes `antigravity-cli`. The CLI has
+  `herdr integration status`, not `list`.
+- On this machine, "Hunk worktree diff in tab" (`hunk.diff`) has the contexts `pane` and
+  `workspace`, so it shows in both ⋯ menus. The 4 Vim navigation actions are `global` and
+  hidden. Several Herdr Plus and file viewer actions have no contexts and show on the Pane
+  menu.
+
+Four changes from the briefs:
+
+1. **Copy and the install command show only for Agents found on the Host** (`available:
+   true`). On this machine that is 2 rows of 17 (droid, hermes); the brief's rule gives 11.
+   Agents not found show "not found". The orchestrator accepted this. To follow the brief,
+   remove `i.available &&` in the `Integrations` list in `web/settings.tsx`.
+2. **A Workspace action runs through the Workspace's first Pane** in herdr's order.
+   `StateWorkspace` has no active Tab.
+3. **The Tab context folds into the Pane ⋯ menu.** tautan has no Tab ⋯ menu.
+4. **A push for a named Agent uses the name.** This was a review finding.
+
+Tests: `test/plugins.contract.test.ts` (a throwaway herdr with `linkTestPlugin` from
+`test/harness.ts`: two plugins, the actions `mark`, `global-only`, `plain`, `scratch`,
+`boom`), `test/plugin-actions.test.ts`, route cases in `test/write.test.ts`, and a case in
+`test/push.test.ts`. `scripts/e2e.ts` links the same plugins and has three new flows (Plugin
+actions, Rename Agent, Settings › About): 22 flows in all.
+
+Checks on the final tree (`cf3bf42`): `pnpm typecheck` clean; `bun test` 573 pass, 0 fail
+(2707 assertions; 560 before Wave 21); `pnpm e2e` 22 of 22 (was 19). A `qa` spec check passed
+5 of 5 with one defect (the `antigravity_cli` target), fixed in `cf3bf42`. A GLM review found
+two low-severity issues (the empty `pluginId`, the push title), both fixed in `cf3bf42`.
+
+**Gaps.**
+
+- A freshly linked plugin can take up to 30 s to show (the action cache).
+- A rename made in herdr's own window shows on the next tree read.
+- Focus goes back to the ⋯ button after the sheet closes, but not on iOS Safari, where a tap
+  does not focus a button.
+- Copy is hidden over plain http (the existing `CopyButton` behaviour). The command stays
+  selectable.
+- `macos` and `windows` platform names are not probed.
+- The Pane ⋯ menu asks for the action list when the Pane opens, so each Pane view costs one
+  GET (cached 30 s by the Hub).
+- No step ran on a real device.
+
+**Verify** (replaces the plan's one-line wording):
+
+1. On the phone, open a Pane's ⋯ menu and tap **Plugin actions…**. The list groups actions by
+   plugin, and no Vim navigation action shows.
+2. Run **Hunk worktree diff in tab**. herdr opens a new Tab, and within 5 s tautan opens its
+   Pane.
+3. Open a Workspace's ⋯ menu. **Plugin actions…** lists **Hunk worktree diff in tab** there
+   too.
+4. Tap **Rename Agent** in a Claude Pane's ⋯ menu and set a name. The name leads the Pane
+   header and the Home row, and `herdr agent list` shows it.
+5. Rename it again with an empty field and tap **Clear name**. The name goes away in tautan
+   and in `herdr agent list`.
+6. Open Settings › About. **Agent integrations** lists each herdr Host, Agents found first,
+   each with Current, Outdated or Not installed.
+7. Tap **Copy** on an Outdated row (droid or hermes on this machine). The clipboard holds
+   `herdr integration install <target>`.
+8. Let a named Agent ask for input while the phone is locked. The push names the Agent.
+
 ---
 
 # Wave 22 — Search a Pane's terminal history
@@ -377,6 +478,16 @@ integration's state, and Copy puts the install command on the clipboard.
 | 22.1 | Decide the history source | `deep-reasoner` | Batch 1 |
 | 22.2 | Hub: a history search route | `glm-run` | Batch 5 |
 | 22.3 | UI: Find in the Pane, and a history view | `frontend` | with 22.2 |
+
+**From Batch 4.** Three facts for 22.2 and 22.3:
+
+- The Pane ⋯ menu now holds **Plugin actions…** (after Read aloud) and **Rename Agent**.
+  **Find in terminal** joins the same menu. Keep the menu short on a phone.
+- The `Mux` interface gained four methods, and 13 fake-Mux test files needed stubs. Wave 22's
+  history read adds another. Expect the same stub churn, or make the new method optional on
+  `Mux`.
+- `test/harness.ts` has `linkTestPlugin`, and `scripts/e2e.ts` links the test plugins. The
+  e2e suite has 22 flows.
 
 **22.1 brief.** Compare, on a throwaway herdr 0.9.2:
 
