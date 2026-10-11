@@ -52,8 +52,8 @@ when the user runs those agents).
   `tab.move {tab_id, insert_index}`, `agent.rename {target, name|null}`, `integration.list`,
   `plugin.list`, `plugin.action.list`, `plugin.action.invoke`, `pane.copy_search`, and
   `pane.scroll {pane_id, offset_from_bottom}`. Its events include `workspace.reordered`,
-  `workspace.moved`, `tab.moved` and `pane.moved`. tautan subscribes to none of these
-  (`server/herdr.ts:298`).
+  `workspace.moved`, `tab.moved` and `pane.moved`. Wave 19 subscribes to all four
+  (`server/herdr.ts:320`).
 - This fact replaces one in WAVES-PARITY.md and [ADR 0008](./adr/0008-layout-editing.md):
   "herdr has no command to reorder Workspaces" is no longer true. Wave 19.1 found the
   versions ([ADR 0009](./adr/0009-reordering-workspaces-and-tabs.md)): `pane.move` and
@@ -78,8 +78,10 @@ when the user runs those agents).
 - Held replies go out when the Pane turns `idle` or `done` (`web/pending.ts`,
   `autoDeliver`). Nothing reads Claude's input box first. `InputBody` already carries
   `promptId` for the blocked card's 409 (`shared/types.ts:110`).
-- `server/complete.ts:115` ranks slash commands: a label prefix, then a label substring.
-  `web/composer.tsx:48` sends `/effort` to the Screen.
+- `server/complete.ts:128` ranks slash commands in five tiers: label prefix, word start in
+  the label, label substring, description substring, then label letters in order. A bare
+  `/effort` opens the effort card, and `effort` stays in `SCREEN_COMMAND`
+  (`web/composer.tsx:48`), so the text sent as typed goes to the Screen.
 - The editor (Phase 31) installed `@lezer/highlight` and seven `@codemirror/lang-*` packages,
   loaded as lazy chunks outside the precache. They can highlight static code with no new
   dependency.
@@ -110,6 +112,13 @@ once; GLM lanes are not capped.
 | 22 | `server/herdr.ts` and `server/tmux.ts` read paths, a history route in `server/http.ts`, `web/history.tsx` (new), the Pane ⋯ menu |
 | 23 | `web/markdown.tsx`, `server/complete.ts`, `web/complete.tsx`, `web/composer.tsx` |
 | 24 | `test/` only, plus a fix in `web/markdown.tsx` or `shared/blocked.ts` if a test fails |
+
+**Before Batch 3:** `pnpm e2e` fails 8 of 18 flows on `main` at `28eddda`, before Batch 2.
+The wrap guard, held messages queue and flush, chat lens falls back to the Screen, file
+viewer folder view, and chat view approval row flows fail on their own assertions. After the
+chat view flow the browser closes, so the split view, zoom and layout flows fail with
+`Target page, context or browser has been closed`. Wave 20 owns the held-message path, so
+its e2e flow is no gate until that flow passes on `main`.
 
 ---
 
@@ -169,6 +178,19 @@ route answers 501). **Move up** sends `index: from − 1`; **Move down** sends
 Tabs: drag in the Tab strip on desktop;
 **Move left** / **Move right** in the Tab menu on every width (a touch drag fights scrolling,
 see ADR 0008). Wait for the `state` event; do not reorder locally first.
+
+**Done (2026-10-11):** the routes are `POST /api/workspaces/:key/move {index}` and `POST
+/api/tabs/:key/move {index}`. They answer 204; 400 `body` when `index` is not a non-negative
+integer; 404 `unknown-workspace`/`unknown-tab`; 501 `unsupported`; 502 with herdr's own code.
+Contract tests: `test/reorder.contract.test.ts`. The subscription now carries
+`workspace.moved`, `workspace.reordered`, `tab.moved` and `pane.moved`; a refused subscription
+drops the newest variant and reconnects. tmux moves a Tab with `move-window -b` (tmux 3.1 or
+later); `swap-window` is unused. The UI has no herdr version gate: on herdr older than 0.8 the
+Move controls still show, and the 501 reads "Move failed · This Mux does not support that".
+Home deletes a herdr Mux's stored `tautan.workspaceOrder` entry; tmux entries stay, and the
+Switch drawer ignores herdr entries too (`web/switch.tsx`). Tab menus open on tmux as well
+when a Workspace has two or more Tabs, with **Move left** and **Move right** only. `?mock`
+answers both move routes.
 
 **Verify:** on the phone, move a Workspace up; see the same order on the desktop and in
 herdr's own window. On desktop, drag a Tab to the first slot; see herdr's window follow.
@@ -378,6 +400,22 @@ like the `/model` card; a pick sends `/effort <level>`. Remove `effort` from `SC
 label substring, description substring, then label letters in order. Tests for each tier and
 for the order between tiers. Serve the effort levels the way the `/model` card's models are
 served, from Claude Code's own list (check the installed version's `/effort`).
+
+**Done (2026-10-11), Claude Code 2.1.296:** ranking runs in five tiers: label prefix, word
+start in the label, label substring, description substring, then label letters in order. A
+slash command that reaches no tier drops out of the list, and a leading `/` in the query is
+ignored. The effort levels come from Claude Code 2.1.296's own bundle: low, medium, high,
+xhigh, max, auto (`kind=effort` on the complete route; `[]` for every other Agent). `/review`
+is not in tautan's built-in list, so `/rvw` finds it only when the user's Claude Code has a
+`/review` command or skill. One deviation from the brief: `effort` stays in `SCREEN_COMMAND`.
+A user who closes the card with Esc and sends `/effort` gets Claude Code's own menu, and
+without the entry the Chat view would not switch to the Screen to show it; `/model` keeps its
+entry for the same reason. The card still opens for `/effort ` (the text the box then holds).
+Highlighting lives in `web/highlight.ts`: a `lazy-highlight-*` chunk outside the precache,
+reusing the editor's language chunks — the first TypeScript block costs about 120 kB gzip.
+The labels js, jsx, ts, tsx, json, css, html, md, py and yaml, and their aliases, load a
+parser; other labels and blocks over 100,000 characters stay plain. The colours are the
+palette's ANSI hues mixed 60/40 with `--fg`.
 
 **Verify:** on the phone, a reply with a TypeScript block shows colours in light and dark.
 Type `/rvw`: `/review` is in the list. Type `/effort`, pick a level, and see Claude's footer
