@@ -124,7 +124,7 @@ describe.skipIf(!canListen)('web push', () => {
     const tree: Tree = { workspaces: [{ id: 'w', label: 'Fix' }], tabs: [{ id: 't', workspaceId: 'w', label: 'T' }], panes: [pane] };
     const mux: Mux = {
       kind: 'herdr', id: 'fresh', tree: async () => tree,
-      read: async (_id: string, mode: ScreenMode): Promise<Screen> => ({ text: `${pane.revision === 1 ? 'old output' : 'Run pnpm test?'}\n❯\n`, ansi: false, revision: pane.revision, mode }),
+      read: async (_id: string, mode: ScreenMode): Promise<Screen> => ({ text: `${pane.revision === 1 ? 'old output' : pane.revision < 4 ? 'Run pnpm test?' : 'Run pnpm lint?'}\n❯\n`, ansi: false, revision: pane.revision, mode }),
       sendText: async () => {}, sendKeys: async () => {}, sendRaw: async () => {}, onChange: () => () => {},
       newTab: async (): Promise<Pane> => pane, newWorkspace: async (): Promise<Workspace> => tree.workspaces[0]!,
       rename: async () => {}, closePane: async () => {}, zoom: async () => {}, closeWorkspace: async () => {}, split: async () => '', swap: async () => {}, move: async () => '', resize: async () => {}, moveWorkspace: async () => {}, moveTab: async () => {}, pluginActions: async () => [], invokePluginAction: async () => {}, renameAgent: async () => {}, integrations: async () => [], explain: async (): Promise<Explain | null> => null, close: () => {},
@@ -148,6 +148,11 @@ describe.skipIf(!canListen)('web push', () => {
       await eventually(() => received.filter(item => item.path === '/fresh').length === 2);
       const named = received.filter(item => item.path === '/fresh')[1]!.body;
       expect(JSON.parse(await decrypt(named, pair, auth, subscriberPublic)).title).toBe('Reviewer needs you');
+      // Out of blocked for one poll and back with the same question: the same ask, no push.
+      pane.status = 'working'; pane.revision = 5; await hub.refreshHost('local');
+      pane.status = 'blocked'; pane.revision = 6; await hub.refreshHost('local');
+      await Bun.sleep(200);
+      expect(received.filter(item => item.path === '/fresh')).toHaveLength(2);
     } finally { hub.close(); }
   });
 

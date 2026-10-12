@@ -3,6 +3,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import os from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseAnsi } from '../shared/ansi.ts';
+import { readBox } from '../shared/blocked.ts';
 import { inputBox, stripInvisible } from '../shared/inputbox.ts';
 import type { Explain, HostConfig, HostIntegrations, InputBody, MouseBody, MoveBody, Mux, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, PluginRun, PushSubscriptionBody, RenameBody, Screen, ScreenEvent, ScreenMode, Settings, SplitBody, State, StateHost, StatePane, Tree } from '../shared/types.ts';
 import { sendPush, type VapidKeys } from './push.ts';
@@ -99,7 +100,9 @@ export class Hub {
   private suggestionTriggers = new Set<string>();
   private suggestionRequests = new Set<string>();
   /** Pushes queued by a transition, sent once the Screens they quote are fresh (flushPushes). */
-  private pushes: { key: string; agent?: string; agentName?: string; label: string; title: string }[] = [];
+  private pushes: { key: string; agent?: string; agentName?: string; label: string; title: string; brief: boolean }[] = [];
+  /** The question each Pane's last blocked push was for: head and option labels (readBox). */
+  private asked = new Map<string, string>();
   private lastLineReads = 0;
   private lastLineWaiters: (() => void)[] = [];
   private seen: Record<string, number> = {};
@@ -237,6 +240,15 @@ export class Hub {
   /** Send the pushes a transition queued, after fillLastLines made the lines they quote fresh. */
   private flushPushes(): void {
     for (const item of this.pushes.splice(0)) {
+      // One read that misses the form (or one herdr tick) drops a Pane out of blocked for a
+      // poll; when it comes back moments later with the same question, it is the same ask.
+      // ponytail: two different prompts with the same head and labels inside 60 s of each
+      // other share one push; key on the whole box if that ever shows up.
+      const box = readBox(this.lastLines.get(item.key)?.excerpt ?? '');
+      const question = [box.head, ...box.menu.map(option => option.label)].join('\n');
+      if (item.brief && this.asked.get(item.key) === question) continue;
+      this.asked.set(item.key, question);
+      console.log(`tautan: ${item.key} → blocked`);
       const payload = JSON.stringify({
         title: `${item.agentName?.trim() || item.agent?.trim() || 'Agent'} needs you`,
         body: `${item.label} · ${this.lastLines.get(item.key)?.line || item.title}`,
@@ -283,11 +295,11 @@ export class Hub {
         if (previous?.status !== live && this.suggestEnabled && this.suggestAdapter && pane.agent && (live === 'blocked' || live === 'done'))
           this.suggestionTriggers.add(requestKey);
         if (live === 'blocked' && previous?.status !== 'blocked') {
-          console.log(`tautan: ${key} → blocked`);
           const workspace = entry.tree.workspaces.find(item => item.id === pane.workspaceId);
           // Queued, not sent: fillLastLines re-reads this Pane's Screen after recompute, and
           // the push must quote the fresh line, not the one before the transition.
-          this.pushes.push({ key, agent: pane.agent, agentName: pane.agentName, label: workspace?.label ?? pane.workspaceId, title: pane.title });
+          this.pushes.push({ key, agent: pane.agent, agentName: pane.agentName, label: workspace?.label ?? pane.workspaceId, title: pane.title,
+            brief: Boolean(previous && Date.now() - previous.at < 60_000) });
         }
         const status = previous?.status === live ? previous : { status: live, at: Date.now() };
         if (status !== previous) this.statusesDirty = true;

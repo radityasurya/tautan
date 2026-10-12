@@ -45,9 +45,10 @@ export function configureSuggest(env: Record<string, string | undefined> = proce
         const response = await fetch(`${base.replace(/\/$/, '')}/v1/messages`, {
           method: 'POST', signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
           headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-          // glm-5.3 spends its budget on a thinking block before the text one; 120 tokens died
-          // inside thinking, answered no text block, and read as "nothing usable".
-          body: JSON.stringify({ model, max_tokens: 300, system: SUGGEST_SYSTEM, messages: [{ role: 'user', content: text }] }),
+          // glm-5.3 thinks by default: 4.4 s a call on 2026-10-12, and past the 10 s timeout
+          // when z.ai is busy. With thinking off it answers in 1.3–2.7 s with one text block.
+          body: JSON.stringify({ model, max_tokens: 300, system: SUGGEST_SYSTEM, messages: [{ role: 'user', content: text }],
+            ...(provider === 'zai' ? { thinking: { type: 'disabled' } } : {}) }),
         });
         if (!response.ok) throw new Error(String(response.status));
         const body = await response.json() as { content?: { type?: string; text?: string }[] };

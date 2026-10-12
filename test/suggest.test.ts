@@ -47,7 +47,7 @@ describe.skipIf(!canListen)('suggest adapter HTTP', () => {
     expect(captured!.headers.get('x-api-key')).toBe('test-key');
     expect(captured!.headers.get('anthropic-version')).toBe('2023-06-01');
     expect(captured!.headers.get('content-type')).toBe('application/json');
-    expect(body).toEqual({ model: 'test-model', max_tokens: 300, system: SUGGEST_SYSTEM, messages: [{ role: 'user', content: 'visible output' }] });
+    expect(body).toEqual({ model: 'test-model', max_tokens: 300, system: SUGGEST_SYSTEM, messages: [{ role: 'user', content: 'visible output' }], thinking: { type: 'disabled' } });
   });
 
   test('times out without throwing and warns only once', async () => {
