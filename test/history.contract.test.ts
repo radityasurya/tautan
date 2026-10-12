@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { searchHistory } from '../server/history.ts';
 import { TmuxMux } from '../server/tmux.ts';
-import { herdrAvailable, herdrMux, startThrowawayHerdr } from './harness.ts';
+import { herdrAvailable, herdrMux, herdrRpc, startThrowawayHerdr } from './harness.ts';
 
 const tmuxAvailable = Bun.which('tmux') !== null && process.env.CODEX_SANDBOX_NETWORK_DISABLED !== '1';
 const WORD = 'TAUTAN-HISTORY-WORD';
@@ -46,6 +46,19 @@ describe.skipIf(!herdrAvailable)('herdr history contract', () => {
     const lines = await mux.history(paneId);
     expect(searchHistory(lines, 'tautan-no-such-word')).toEqual({ lines: lines.length, total: 0, matches: [] });
   });
+
+  test('a live read shows the bottom while the herdr client scrolls the Pane back', async () => {
+    await mux.sendText(paneId, `seq 1 200; echo ${WORD}-BOTTOM`);
+    await mux.sendKeys(paneId, ['enter']);
+    const atBottom = (text: string) => text.split('\n').some(line => line.trim() === `${WORD}-BOTTOM`);
+    expect(atBottom((await eventually(() => mux.read(paneId, 'visible'), screen => atBottom(screen.text), 10_000)).text)).toBe(true);
+    await herdrRpc(fixture.sock, 'pane.scroll', { pane_id: paneId, offset_from_bottom: 100 });
+    // herdr's `visible` follows the client's scroll; the Hub's status read must not
+    expect(atBottom((await mux.read(paneId, 'visible')).text)).toBe(false);
+    const live = await mux.read(paneId, 'visible', { live: true });
+    expect(atBottom(live.text)).toBe(true);
+    expect(live.ansi).toBe(false);
+  }, 20_000);
 });
 
 describe.skipIf(!tmuxAvailable)('tmux history contract', () => {

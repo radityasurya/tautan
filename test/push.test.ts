@@ -148,11 +148,15 @@ describe.skipIf(!canListen)('web push', () => {
       await eventually(() => received.filter(item => item.path === '/fresh').length === 2);
       const named = received.filter(item => item.path === '/fresh')[1]!.body;
       expect(JSON.parse(await decrypt(named, pair, auth, subscriberPublic)).title).toBe('Reviewer needs you');
-      // Out of blocked for one poll and back with the same question: the same ask, no push.
+      // Out of blocked for one poll and back with the same question: the same ask, no push,
+      // and the Pane keeps the blocked time it had.
+      const since = (await hub.state()).panes[0]!.statusChangedAt;
+      await Bun.sleep(5);
       pane.status = 'working'; pane.revision = 5; await hub.refreshHost('local');
       pane.status = 'blocked'; pane.revision = 6; await hub.refreshHost('local');
       await Bun.sleep(200);
       expect(received.filter(item => item.path === '/fresh')).toHaveLength(2);
+      expect((await hub.state()).panes[0]!.statusChangedAt).toBe(since);
     } finally { hub.close(); }
   });
 

@@ -71,7 +71,9 @@ export interface Mux {
   /** last-known version for the state stream (herdr's snapshot, `tmux -V`); absent until learned */
   cachedVersion?(): string | undefined;
   tree(): Promise<Tree>;
-  read(paneId: string, mode: ScreenMode): Promise<Screen>;
+  /** `live`: the bottom of the Screen even while the Mux's own client scrolls the Pane back
+   *  (herdr's `visible` follows that scroll; tmux's capture never does). Plain text on herdr. */
+  read(paneId: string, mode: ScreenMode, opts?: { live?: boolean }): Promise<Screen>;
   sendText(paneId: string, text: string): Promise<void>;
   sendKeys(paneId: string, keys: string[]): Promise<void>; // herdr key names are canonical
   /** write bytes to the pty untouched (escape sequences included) */

@@ -40,12 +40,15 @@ const isNotice = (line: string) => { const indent = line.length - line.trimStart
  * herdr's `live_blocked_form`, read by the Hub: a question or permission footer after the
  * Screen's last full-width rule. herdr can take well over a minute to turn a working Claude
  * blocked (100 s on a question, 2026-10-10), and the Hub re-reads a working Agent's Screen on
- * every poll anyway, so its Status turns blocked at the next read.
+ * every poll anyway, so its Status turns blocked at the next read. A permission box whose
+ * footer is `Esc to cancel · Tab to amend` or `Esc to cancel` alone reads by its `1. Yes` row,
+ * as herdr's `generic_permission_prompt` does.
  */
 export function asksOnScreen(rows: string[]): boolean {
   const tail = rows.slice(rows.map(row => /^\s*─{20,}\s*$/.test(row)).lastIndexOf(true) + 1).join('\n').toLowerCase();
   return tail.includes('esc to cancel')
-    && (tail.includes('enter to confirm') || (tail.includes('enter to select') && /(?:arrow keys|arrows|↑\/?↓) to navigate/.test(tail)));
+    && (tail.includes('enter to confirm') || (tail.includes('enter to select') && /(?:arrow keys|arrows|↑\/?↓) to navigate/.test(tail))
+      || /^\s*❯?\s*1\.\s*yes\b/m.test(tail));
 }
 
 export function previewLine(lines: string[]): string | undefined {
@@ -101,8 +104,9 @@ export class Hub {
   private suggestionRequests = new Set<string>();
   /** Pushes queued by a transition, sent once the Screens they quote are fresh (flushPushes). */
   private pushes: { key: string; agent?: string; agentName?: string; label: string; title: string; brief: boolean }[] = [];
-  /** The question each Pane's last blocked push was for: head and option labels (readBox). */
-  private asked = new Map<string, string>();
+  /** The question each Pane's last blocked push was for (readBox head and option labels),
+   *  and when that ask began. */
+  private asked = new Map<string, { question: string; since: number }>();
   private lastLineReads = 0;
   private lastLineWaiters: (() => void)[] = [];
   private seen: Record<string, number> = {};
@@ -223,7 +227,7 @@ export class Hub {
         const command = pane.agent || !commandLookup ? pane.command : await commandLookup.call(entry.mux, pane.id);
         if (command) pane.command = command;
         if (pane.agent) {
-          const screen = await entry.mux.read(pane.id, 'visible');
+          const screen = await entry.mux.read(pane.id, 'visible', { live: true });
           const rows = parseAnsi(screen.text).map(spans => spans.map(span => span.text).join('').trimEnd());
           const lines = rows.map(row => row.trim()).filter(Boolean);
           const line = previewLine(rows)?.slice(0, 200); // untrimmed: a notice reads by its indent
@@ -239,6 +243,7 @@ export class Hub {
 
   /** Send the pushes a transition queued, after fillLastLines made the lines they quote fresh. */
   private flushPushes(): void {
+    let restored = false;
     for (const item of this.pushes.splice(0)) {
       // One read that misses the form (or one herdr tick) drops a Pane out of blocked for a
       // poll; when it comes back moments later with the same question, it is the same ask.
@@ -246,8 +251,17 @@ export class Hub {
       // other share one push; key on the whole box if that ever shows up.
       const box = readBox(this.lastLines.get(item.key)?.excerpt ?? '');
       const question = [box.head, ...box.menu.map(option => option.label)].join('\n');
-      if (item.brief && this.asked.get(item.key) === question) continue;
-      this.asked.set(item.key, question);
+      const last = this.asked.get(item.key);
+      const status = this.statuses.get(item.key);
+      if (item.brief && last?.question === question) {
+        // The same ask keeps its start, so the Pane's blocked time does not restart either.
+        if (status?.status === 'blocked' && status.at !== last.since) {
+          this.statuses.set(item.key, { status: 'blocked', at: last.since });
+          this.statusesDirty = restored = true;
+        }
+        continue;
+      }
+      this.asked.set(item.key, { question, since: status?.status === 'blocked' ? status.at : Date.now() });
       console.log(`tautan: ${item.key} → blocked`);
       const payload = JSON.stringify({
         title: `${item.agentName?.trim() || item.agent?.trim() || 'Agent'} needs you`,
@@ -260,6 +274,7 @@ export class Hub {
         else if (!response.ok) console.warn(`tautan: push ${response.status} ${subscription.endpoint}`);
       }).catch(error => console.warn(`tautan: push failed ${subscription.endpoint}`, error));
     }
+    if (restored) { this.recompute(); this.emitState(); }
   }
 
   private async acquireLastLineRead(): Promise<void> {
@@ -609,7 +624,7 @@ export class Hub {
     const found = this.resolve(paneKey)!;
     const pane = found.entry.tree!.panes.find(item => item.id === found.paneId)!;
     try {
-      const screen = await found.entry.mux.read(found.paneId, 'visible');
+      const screen = await found.entry.mux.read(found.paneId, 'visible', { live: true });
       const lines = parseAnsi(screen.text).map(spans => spans.map(span => span.text).join('').trim()).filter(Boolean);
       const values = await this.suggestAdapter.suggest(lines.slice(-40).join('\n'));
       // A failed call caches nothing: the pane keeps whatever it had, and a later ask retries.

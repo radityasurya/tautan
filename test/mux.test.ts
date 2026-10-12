@@ -277,4 +277,9 @@ test('asksOnScreen reads a question or permission footer after the last rule, ne
   expect(asksOnScreen(readFileSync(join(import.meta.dir, 'fixtures/claude-screen.txt'), 'utf8').split('\n'))).toBe(false);
   // the footer quoted above a later rule (a transcript that mentions it) is not a live box
   expect(asksOnScreen(['esc to cancel · enter to confirm', rule, '❯ ', rule, '  ⏵⏵ auto mode on'])).toBe(false);
+  // Claude 2.1.296 permission boxes end in `Esc to cancel · Tab to amend` or `Esc to cancel`
+  for (const name of ['approval-background-agents', 'approval-long-command', 'approval-dont-ask-again'])
+    expect(asksOnScreen(readFileSync(join(import.meta.dir, `fixtures/claude-2.1.296/${name}.txt`), 'utf8').split('\n'))).toBe(true);
+  // a typed draft that starts like a Yes row is not a box without the cancel footer
+  expect(asksOnScreen([rule, '❯ 1. yes please', rule, '  ⏵⏵ auto mode on'])).toBe(false);
 });

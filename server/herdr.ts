@@ -22,6 +22,7 @@ export class HerdrMux implements Mux {
   readonly kind = 'herdr' as const;
   private revisions = new Map<string, number>();
   private rows = new Map<string, number>();
+  private noDetection = false;
   private listeners = new Set<(paneIds: string[] | 'all') => void>();
   private stream?: Socket;
   // Optional event variants, newest herdr first: 0.9's `layout.updated`, 0.8's
@@ -133,7 +134,18 @@ export class HerdrMux implements Mux {
     };
   }
 
-  async read(paneId: string, mode: ScreenMode): Promise<Screen> {
+  async read(paneId: string, mode: ScreenMode, opts: { live?: boolean } = {}): Promise<Screen> {
+    // `detection` is the Screen herdr's own rules read: the live bottom, never the client's
+    // scrollback view. A server that predates it refuses the variant once; then `visible`.
+    if (mode === 'visible' && opts.live && !this.noDetection) {
+      try {
+        const result = (await this.rpc('pane.read', { pane_id: paneId, source: 'detection', format: 'text', strip_ansi: true })).read;
+        return { text: result.text, ansi: false, revision: this.revisions.get(paneId) ?? result.revision, mode };
+      } catch (error) {
+        if (!(error instanceof Error && error.message.includes('unknown variant'))) throw error;
+        this.noDetection = true;
+      }
+    }
     const params = mode === 'visible'
       ? { pane_id: paneId, source: 'visible', format: 'ansi', strip_ansi: false }
       // ponytail: herdr 0.8.0 costs ~30 ms per requested line once `lines` reaches the pane

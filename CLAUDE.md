@@ -46,16 +46,22 @@ behind the two irreversible choices live in `docs/adr/`.
   once). A watched Pane is therefore polled by the Hub, fast after a change and backing off
   to 2 s while quiet. There is no surface-stream subscription in either version.
 - The Hub never calls any `*.focus` method. Seen is tautan's own flag, never written to a Mux.
-- A real Claude Code permission box matches `live_blocked_form`, not `bash_permission_prompt`.
-  `live_blocked_form` has priority 980 and reads `after_last_horizontal_rule`;
-  `bash_permission_prompt` has 850. Every real box ends in a rule plus
-  `esc to cancel · enter to confirm`, so the first rule always wins. Never key behaviour off
-  `ruleId.includes('permission')`; `shared/blocked.ts` reads the box instead.
+- A Claude Code permission box ending in `esc to cancel · enter to confirm` matches
+  `live_blocked_form` (priority 980, `after_last_horizontal_rule`) before
+  `bash_permission_prompt` (850). Claude 2.1.296 boxes also end in `Esc to cancel · Tab to
+  amend` or `Esc to cancel` alone; `live_blocked_form` misses those, so `asksOnScreen` reads
+  their `1. Yes` row. Never key behaviour off `ruleId.includes('permission')`;
+  `shared/blocked.ts` reads the box instead.
 - herdr can take well over a minute to turn a working Claude blocked (100 s on an
-  AskUserQuestion form, 2026-10-10), though its `live_blocked_form` rule matches at once.
-  The Hub reads the same footer on each poll of a working Agent (`asksOnScreen`) and reports
-  blocked itself. Claude writes that question's assistant message to the transcript only
-  after it is answered, so the Chat view can show the question through Explain alone.
+  AskUserQuestion form, 2026-10-10): `osc_title_working` (1100) outranks
+  `live_blocked_form` while Claude's title spinner runs. The Hub reads the footer on each poll
+  of a working Agent (`asksOnScreen`) and reports blocked itself. Claude writes that
+  question's assistant message to the transcript only after it is answered, so the Chat view
+  can show the question through Explain alone.
+- herdr's `pane.read` with source `visible` returns what the herdr client scrolled to, not the
+  live bottom. Source `detection` (plain text, the Screen herdr's own rules read) stays at the
+  live bottom; the Hub's status read uses it through `read(..., { live: true })`. tmux's
+  `capture-pane` reads the live grid even in copy mode.
 - Claude's question form draws a second full-width rule inside its menu (between
   `Type something.` and `Chat about this`); `readBox` in `shared/blocked.ts` skips a rule a
   numbered row follows, or the card reads only the last option.
