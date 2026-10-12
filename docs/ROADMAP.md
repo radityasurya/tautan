@@ -2,7 +2,7 @@
 
 **Status (2026-09-12):** every phase through 23 is built; 0.1.1 is released. Phases 24–30,
 the [parity waves](./WAVES-PARITY.md), are built and await verification on a real device.
-Phases 32–35, from the [second parity round](./WAVES-PARITY-2.md) (2026-10-11), are built and
+Phases 32–37, from the [second parity round](./WAVES-PARITY-2.md) (2026-10-11), are built and
 await verification too.
 `[~]` marks work that is built and verified in an emulated phone but not yet on a real
 device.
@@ -697,6 +697,12 @@ Wave 21 ([WAVES-PARITY-2](./WAVES-PARITY-2.md#wave-21--herdrs-own-features-plugi
       `web/header.tsx`, `web/pane.tsx`, `web/home.tsx`, `web/sheets.tsx`, `server/mux.ts`
 - [ ] **Settings › About › Agent integrations** per herdr Host, with a Copy button for the
       install command — `web/settings.tsx`
+- [ ] A plugin command that fails shows its exit code and last error line in the sheet, or in
+      a notice when the sheet has closed — `server/herdr.ts`, `server/http.ts`, `web/sheets.tsx`, `web/app.tsx`
+- [ ] A plugin linked while the Hub runs shows when the sheet opens, because the sheet reads
+      fresh — `server/herdr.ts`, `server/http.ts`, `web/sheets.tsx`, `web/pane.tsx`, `web/home.tsx`
+- [ ] **Copy** works over plain HTTP, and focus returns to the ⋯ button after a sheet closes —
+      `web/markdown.tsx`, `web/sheets.tsx`
 
 Verify: on the phone, tap **Plugin actions…** in a Pane's ⋯ menu; the list groups actions by
 plugin and shows no Vim navigation action. Run **Hunk worktree diff in tab**; a new Tab opens
@@ -705,7 +711,27 @@ leads the Pane header and the Home row, and `herdr agent list` shows it. **Clear
 removes it in both places. Settings › About lists each herdr Host's Agents, found first, with
 Current, Outdated or Not installed; **Copy** on an Outdated row puts `herdr integration
 install <target>` on the clipboard. A named Agent that asks for input while the phone is
-locked sends a push that names it.
+locked sends a push that names it. Run a plugin action that exits non-zero; the sheet shows
+"failed · exit N" and the last error line. After `herdr plugin link` of a new plugin, reopen
+the sheet and see it. Open tautan over `http://<LAN IP>:7715` and tap **Copy**; it copies. On
+an iPhone, close a sheet and see focus return to the ⋯ button.
+
+## Phase 37 — search a Pane's terminal history
+
+Wave 22 ([WAVES-PARITY-2](./WAVES-PARITY-2.md#wave-22--search-a-panes-terminal-history)).
+
+- [ ] `GET /api/panes/:key/history?q=&before=` answers `{lines, total, matches}` from one
+      read: herdr `pane.get` and `pane.selection.read`, tmux `capture-pane`; 400, 404 and 501
+      errors — `server/history.ts`, `server/herdr.ts`, `server/tmux.ts`, `server/http.ts`
+- [ ] **Find in terminal** in the Pane ⋯ menu, and ⌘⇧F on desktop, opens a search with a match
+      count, **Older match** and **Newer match**, context blocks and links — `web/history.tsx`,
+      `web/history-logic.ts`, `web/pane.tsx`
+- [ ] On a phone, the Pane ⋯ menu folds the Layout rows into one **Layout…** row — `web/pane.tsx`
+
+Verify: in a shell Pane, print a word, then 1,000 more lines. On the phone, open ⋯ › **Find in
+terminal**, find the word, and read the lines around it. Do the same in a tmux Pane. On
+desktop, ⌘⇧F opens Find, and **Older match** and **Newer match** step through matches. The
+phone ⋯ menu fits one screen, and **Layout…** holds the layout rows.
 
 ## Later (explicitly out of v1)
 

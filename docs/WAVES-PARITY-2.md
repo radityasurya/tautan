@@ -106,7 +106,8 @@ limit is on the ROADMAP's "Later" list, optional.
   --profile-only --json`. The Hub runs plain `quota-axi --json` (`server/http.ts:69`).
 - tautan reads `~/.claude` in `server/chat.ts:58` and `:63` (transcripts) and in
   `server/complete.ts:236`, `:237` and `:262` (settings, plugins, commands and skills). No
-  `~/.claude-*` folder exists on this machine yet (checked 2026-10-11).
+  `~/.claude-*` folder exists on this machine yet (checked 2026-10-11). The accounts are in
+  `~/.config/claude-profiles/<name>` (found 2026-10-12, ADR 0011).
 - Write tests and probes run only on throwaway servers from `test/harness.ts`. A probe that
   needs a logged-in Claude Code runs it in a throwaway tmux (`tmux -f /dev/null -S <sock>`),
   which keeps the real `HOME`. The live herdr socket never receives a write.
@@ -135,8 +136,8 @@ once; GLM lanes are not capped.
 | 24 | `test/` only, plus a fix in `web/markdown.tsx` or `shared/blocked.ts` if a test fails |
 | 25 | `server/accounts.ts` (new), the account reads in `server/chat.ts` and `server/complete.ts`, `env` on create in `server/herdr.ts` and `server/tmux.ts`, the create routes and the quota route in `server/http.ts`, the create sheets in `web/sheets.tsx`, `web/settings.tsx`, `web/usage.tsx` |
 
-**Progress (2026-10-12).** Batches 1–4 are built and committed on `main`; nothing is
-pushed. ROADMAP has Phases 32–36. Batches 5 and 6 are open.
+**Progress (2026-10-12).** Batches 1–5 are built and committed on `main`; nothing is
+pushed. ROADMAP has Phases 32–37. Batch 6 is open.
 
 | Batch | Commits | Checks on the final tree |
 |---|---|---|
@@ -144,6 +145,7 @@ pushed. ROADMAP has Phases 32–36. Batches 5 and 6 are open.
 | 2 | `eb66354`…`9d20b66` (10 commits) | typecheck clean, `bun test` 531 pass, qa 8 of 8 on throwaway servers |
 | 3 | `52ad7b1` (e2e), `5a8479e` (Wave 20) | typecheck clean, `bun test` 560 pass, `pnpm e2e` 19 of 19 |
 | 4 | `da1bb62`, `02d96be`, `89c66c3`, `cf3bf42` | typecheck clean, `bun test` 573 pass, `pnpm e2e` 22 of 22, qa spec check 5 of 5 (one defect, fixed in `cf3bf42`) |
+| 5 | `3c95711` (Wave 22), `a4afd48` (21.4), `60d6177` (25.1), this docs commit | typecheck clean, `bun test` 604 pass, `pnpm e2e` 23 of 23 (was 22), qa spec check 11 of 11 |
 
 **The e2e suite is green again (`52ad7b1`).** Before Batch 3 it failed 8 of 18 flows, from
 before Batch 2. Each failing flow checked behaviour a later commit changed on purpose, so
@@ -421,7 +423,7 @@ Facts found:
 - herdr 0.9.3 runs a plugin command asynchronously: `plugin.action.invoke` answers
   `status: "running"`. A 204 means "started". herdr does not report a command that exits
   non-zero. The only failure the UI shows is herdr's refusal (for example
-  `plugin_action_not_found`).
+  `plugin_action_not_found`). 21.4.1 now reports a command that fails.
 - `PluginInvocationContext` has no field that names the invoking context, so the invoke route
   takes `pluginId` only.
 - Live actions carry `platforms`. herdr refuses a platform-incompatible invoke, and the Hub
@@ -459,15 +461,20 @@ two low-severity issues (the empty `pluginId`, the push title), both fixed in `c
 
 **Gaps.**
 
-- A freshly linked plugin can take up to 30 s to show (the action cache).
-- A rename made in herdr's own window shows on the next tree read.
+- A freshly linked plugin can take up to 30 s to show (the action cache). **Fixed (21.4.2):**
+  the sheet reads fresh when it opens.
+- A rename made in herdr's own window shows on the next tree read. **Fixed (21.4.3):** herdr
+  fires `pane_updated` on `agent.rename`, and the Hub already re-reads the tree on it.
 - Focus goes back to the ⋯ button after the sheet closes, but not on iOS Safari, where a tap
-  does not focus a button.
+  does not focus a button. **Fixed in code (21.4.4):** the Sheet keeps the last-pressed
+  element. A real iPhone check remains, because Linux WebKit cannot show iOS tap behaviour.
 - Copy is hidden over plain http (the existing `CopyButton` behaviour). The command stays
-  selectable.
-- `macos` and `windows` platform names are not probed.
+  selectable. **Fixed (21.4.5):** `copyText()` falls back to `execCommand('copy')`.
+- `macos` and `windows` platform names are not probed. **Recorded limit (21.4.7):** a unit
+  test covers every name, but herdr 0.9.3 does not report its OS, so the Hub filters by its
+  own `process.platform`.
 - The Pane ⋯ menu asks for the action list when the Pane opens, so each Pane view costs one
-  GET (cached 30 s by the Hub).
+  GET (cached 30 s by the Hub). **Fixed (21.4.2):** the sheet asks when it opens.
 - No step ran on a real device.
 
 **Verify** (replaces the plan's one-line wording):
@@ -502,6 +509,56 @@ updating its line in the Gaps list above, as fixed or as a recorded limit.
 | 21.4.5 | Copy is hidden over plain HTTP | `CopyButton` falls back to a hidden `textarea` and `document.execCommand('copy')` when the Clipboard API is missing, and hides only when both fail. | `frontend` |
 | 21.4.6 | `test/blocked.contract.test.ts`, "a stale prompt id is refused", fails on timing now and then | Find the race and fix it at its root, not with a longer timeout or a retry. | `glm-run` |
 | 21.4.7 | `macos` and `windows` platform names not probed | Resolved without a probe: herdr 0.9.3's schema lists `PluginPlatform` as `linux`, `macos`, `windows`. Add a unit test for the filter on each name. | `glm-run` |
+
+**Done (2026-10-12), `a4afd48`:**
+
+- **21.4.1, fixed.**
+  - Before the invoke, the Hub reads `plugin.log.list` and keeps the set of log ids. After the
+    invoke, it polls every 250 ms, for at most 10 s, for an entry with an unseen log id and
+    the same action. It does not match on start time, because a remote Host's clock can
+    differ. Each poll's RPC timeout is the remaining budget, so the whole call ends near 10 s.
+    An unknown settled status reads `unknown`.
+  - The route answers 200 with `PluginRun {status, exitCode?, message?}` instead of 204.
+  - UI: the row shows "Running…". On failure, the sheet shows "<action> failed · exit N" and
+    the last stderr line. If the sheet has closed, a new RunNotice at the top shows it for
+    8 s, with Dismiss. The new-Pane window starts at the tap.
+  - Probe: log entries are oldest first, and `limit` keeps the newest.
+  - Limits: two runs of the same action at once can match each other's log entries. A run
+    that opens a Pane more than 5 s after the tap does not navigate to it. RunNotice and the
+    needs-you card share the top slot.
+- **21.4.2, fixed.**
+  - `GET …/actions?fresh=1` skips the 30 s cache.
+  - The Pane sheet asks when it opens, never when a Pane opens. **Plugin actions…** shows on
+    every herdr Pane, never on tmux, with an empty state.
+  - The Workspace ⋯ menu reads fresh once when it opens and hands its list to the sheet. The
+    row shows only when an action fits.
+  - qa: a plugin linked while the Hub ran showed within 925 ms when the sheet reopened.
+- **21.4.3, fixed, with no product change.** A probe showed that `agent.rename` (set and
+  clear) fires one `pane_updated`. The Hub already subscribes to it and re-reads the tree, so
+  a rename in herdr's own window shows in about 400 ms. A contract case proves it within 1 s.
+  The gap line was stale for herdr 0.9.3.
+- **21.4.4, fixed in code.** The shared Sheet keeps the last-pressed element, from a document
+  listener, and focuses it on close. Follow-up sheets (⋯ › Rename) return focus to ⋯. Checks
+  passed in WebKit 26.0 and in Chromium with an iOS tap emulation; qa passed in Chromium.
+  Linux WebKit cannot show real iOS tap behaviour, so a real iPhone check remains.
+- **21.4.5, fixed.**
+  - `copyText()` tries the Clipboard API first. It then falls back to a hidden read-only
+    textarea and `execCommand('copy')`. The textarea sits inside the topmost open `<dialog>`,
+    so a modal does not make it inert. `execCommand` runs only when the textarea has focus.
+  - The UI shows "Not copied" on failure. Every copy in `web/` goes through `copyText()`:
+    CopyButton, the terminal chip, the editor and the Find path chip.
+  - qa: Copy worked over `http://<LAN IP>:7715`, where `isSecureContext` is false.
+- **21.4.6, fixed at the root.** herdr's screen shows the shell's echo of the typed command
+  for 0.5–1 s. The echo holds the whole prompt text, so it explains as blocked and carries a
+  prompt id. The test's wait passed on that echo. The test now waits for the executed box (no
+  `printf` left on the screen) and sets `PROMPT=`. It passed 30 of 30 runs; before, it failed
+  about 2 in 30.
+- **21.4.7, test added, plus a recorded limit.** The unit test covers linux, macos, windows,
+  absent and empty platforms, and an unmapped platform. Probe: herdr 0.9.3 does not filter
+  `plugin.action.list` by platform, and refuses `platforms = []` at link time. Its API does
+  not report the server's OS. The Hub filters by its own `process.platform`, which is wrong
+  for a remote macOS Host seen from a Linux Hub. This stays a recorded limit until herdr
+  reports its OS.
 
 **Verify:** after `herdr plugin link` of a new plugin, its actions show the next time
 **Plugin actions…** opens. A test action that exits non-zero shows its exit code and last
@@ -593,8 +650,64 @@ field with a match count and previous/next. The history view is read-only text w
 matches highlighted, rendered as spans from `shared/ansi.ts`. Paths and links in it open as
 they do on the Screen. On a phone it is a full-height sheet.
 
-**Verify:** in a shell Pane, print a word, then 1,000 more lines. On the phone, find the word
-and read the lines around it.
+**Done (2026-10-12), `3c95711`:**
+
+- Hub: `GET /api/panes/:key/history?q=&before=` answers `{lines, total, matches}`. The code is
+  in the new `server/history.ts`.
+  - herdr: one `pane.get`, then one `pane.selection.read` over the whole ring at column 0,
+    retried once on `selection_unavailable` (ADR 0010). tmux: `capture-pane -p -J -S -10000`.
+  - Search is literal and case-insensitive, with the same escaped RegExp as the client
+    highlight. The route returns at most 50 matches, newest first, with 5 context lines each
+    side. `total` counts every match in the read. `before` pages to older matches.
+  - Errors: `q` must be 1–200 characters, else 400 `q`. A bad `before` is 400. An unknown Pane
+    is 404. A Mux without history, or a herdr older than the method, is 501.
+  - `Mux.history` is optional, so the fake-Mux test files needed no stubs.
+- UI (`web/history.tsx`, `web/history-logic.ts`):
+  - **Find in terminal** is in the Pane ⋯ menu. ⌘⇧F (Ctrl+Shift+F off a Mac) opens it on
+    desktop. With Type directly on, the chord opens Find and does not reach the Pane.
+  - On a phone it is a full-height native `<dialog>`. On desktop it is a 640 px panel on the
+    right, because the kit sheet is 320 px.
+  - The field shows a count such as "3 of 41", with **Older match** and **Newer match**
+    buttons. Enter steps older, and Shift+Enter steps newer.
+  - Matches run oldest at the top. Touching contexts merge into one block, and gap markers
+    count the hidden lines. The newest page loads first, and stepping past 50 loads the next
+    page.
+  - Links open as on the Screen. A tap on a path copies it, and a hold opens it in Files.
+  - Empty states: no match ("No match in the last N lines"), and a 501 message. The last
+    search per Pane is kept for the page's life.
+  - On a phone, the Pane ⋯ menu folds the Layout rows into one **Layout…** row. The disabled
+    "Resize to phone" placeholder shows on desktop only. qa measured 11 rows plus Close on a
+    shell Pane, which fits one 390 × 844 screen.
+- Review fixes:
+  - An old herdr answers `-32602: unknown variant`. The old check used `startsWith` and
+    answered 502. It now answers 501.
+  - The count and the highlight now agree on `İ` and `ſ`.
+  - The dialog opened from an inline ref, which re-ran `showModal()` on a state event and lost
+    focus. It now opens once on mount.
+- Tests: `test/history.test.ts`; `test/history.contract.test.ts` (a throwaway herdr and tmux,
+  a word past the screen, no match); cases in `test/write.test.ts` and `test/herdr.test.ts`
+  (the old-server 501); `test/history-logic.test.ts`; and the e2e flow "Find in terminal".
+- qa passed on a throwaway herdr and tmux, on the phone and desktop: find in herdr, find in
+  tmux, desktop stepping and focus, no match, and the menu length.
+
+**Gaps.**
+
+- Paging can skip or repeat a few matches if herdr trims its ring between two reads (a
+  `ponytail:` comment).
+- `FullPreview` in `web/preview.tsx` opens its dialog the way the Find dialog did, so it may
+  lose focus the same way. It is not fixed.
+- `docs/UI.md` does not yet describe Find in terminal or the phone **Layout…** fold. Final qa
+  after Batch 6 covers it.
+- Escape does not close the Rename sheet on a phone (seen by qa; it existed before).
+- No step ran on a real device.
+
+**Verify** (real device):
+
+1. In a shell Pane, print a word, then 1,000 more lines. On the phone, open ⋯ › **Find in
+   terminal**, find the word, and read the lines around it.
+2. Do the same in a tmux Pane.
+3. On desktop, ⌘⇧F opens Find, and **Older match** and **Newer match** step through matches.
+4. The phone ⋯ menu fits one screen, and **Layout…** holds the layout rows.
 
 ---
 
@@ -725,6 +838,54 @@ Name each account from its folder suffix (`~/.claude` is **default**), and give 
 from a fixed list by order. Record the decisions as ADR 0011. The probe never writes to the
 user's real account folders; a probe that needs a logged-in Claude runs in a throwaway tmux
 with the real `HOME` and only reads.
+
+**Done (2026-10-12), `60d6177`:** [ADR 0011](./adr/0011-claude-accounts.md), with status
+**Proposed**. Its account roots extend the user's 2026-10-11 decision, so it needs the user's
+yes. The ADR holds the details.
+
+- **Main finding.** This machine already has three more accounts at
+  `~/.config/claude-profiles/{hello,raditya,shapi}`, made by the user's dotfiles helper
+  `claude-profile`. None is at `~/.claude-*`. They link `projects/`, `settings.json`, hooks,
+  skills and plugins back to `~/.claude`, so a conversation id is in every account and an id
+  lookup cannot tell them apart.
+- Probes:
+  - `env` on `tab.create`, `pane.split` and `workspace.create` reaches the process
+    `agent.start` launches. It is per Pane. `worktree.create` has no `env`.
+  - tmux `-e` is per Pane. `new-session -e` sets the environment for later windows.
+  - `herdr integration install claude` honours `CLAUDE_CONFIG_DIR`. `integration.list`
+    reports only the server's own folder.
+  - A Claude without the hook has `agent_session: null`.
+  - Claude 2.1.296 writes `<folder>/sessions/<pid>.json` with the live conversation id.
+  - herdr's reported conversation id was stale on 2 of 23 live Claude Panes.
+  - Signed in means the config file has `oauthAccount`.
+- Decisions in the ADR:
+  - Accounts are `~/.claude` (default), `~/.config/claude-profiles/<name>` and
+    `~/.claude-<name>`, each when it holds `.claude.json` or `projects/`.
+  - **Add account** creates `~/.config/claude-profiles/<name>`.
+  - Six fixed colours, assigned by order.
+  - A Pane's account resolves in this order: the pid file, then `/proc` environ, then the id
+    lookup.
+  - `env` is an absolute folder, and default sends no `env`.
+  - The hook state comes from each folder's `settings.json`.
+
+**From Batch 5.** The 25.2 and 25.3 briefs below stay as written until the user accepts ADR
+0011. Then apply these changes. Confirm the account roots and the **Add account** folder with
+the user first.
+
+- 25.2:
+  - Send `CLAUDE_CONFIG_DIR` as an absolute path, and send no `env` for default.
+  - A New Workspace request with both a branch and an account answers 400.
+  - tmux takes `-e` on Split only. tmux Panes stay on default.
+  - Read the pid file before herdr's id. This is a behaviour change for every Claude Pane.
+  - Clear the account cache after **Add account**.
+  - In `server/complete.ts`, replace only the user root.
+  - Test fixtures: a pid file, a linked `projects/` against a copied one, and the environ
+    step.
+- 25.3:
+  - The Split and New Workspace pickers set the shell's account.
+  - The Workspace default comes from the resolved accounts.
+  - Consider a ring rather than a filled dot, because orange and indigo sit near Status
+    colours.
 
 **25.2 brief.** A new `server/accounts.ts` lists a Host's accounts, locally and over SSH,
 with a TTL cache, and resolves a Pane's account as 25.1 decides. `server/chat.ts` and
