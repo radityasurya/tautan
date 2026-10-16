@@ -1065,23 +1065,26 @@ export function Chat({
   }, [prompt]);
 
   // A delivered reply shows the dots before the Status catches up: from the send until the
-  // Status turns working (it then speaks for itself), an assistant turn arrives, or AWAIT_MS.
+  // Status turns working (it then speaks for itself), an assistant turn arrives, the
+  // conversation is a new one (`/clear` answers nothing), or AWAIT_MS.
   const mainTurns = data && !data.agent ? data.chat.turns : null;
-  const [awaiting, setAwaiting] = useState<number | null>(null);
+  const mainSession = data && !data.agent ? data.chat.sessionId : undefined;
+  const [awaiting, setAwaiting] = useState<{ turns: number; session?: string } | null>(null);
   const counted = useRef(new Set<number>());
   useEffect(() => {
     const fresh = waiting.filter((p) => p.state === 'sent' && !counted.current.has(p.id));
     if (!fresh.length) return;
     fresh.forEach((p) => counted.current.add(p.id));
-    setAwaiting(mainTurns?.length ?? 0);
+    setAwaiting({ turns: mainTurns?.length ?? 0, session: mainSession });
   }, [sentIds]);
   useEffect(() => {
     if (awaiting === null) return;
-    if (status === 'working' || mainTurns?.slice(awaiting).some((t) => t.role === 'assistant' && !t.from)) return setAwaiting(null);
+    if (status === 'working' || (mainSession && awaiting.session && mainSession !== awaiting.session)
+      || mainTurns?.slice(awaiting.turns).some((t) => t.role === 'assistant' && !t.from)) return setAwaiting(null);
     // ponytail: a fixed cap for a Mux that never reports working (tmux); a Status event would be exact.
     const t = setTimeout(() => setAwaiting(null), AWAIT_MS);
     return () => clearTimeout(t);
-  }, [awaiting, status, mainTurns]);
+  }, [awaiting, status, mainTurns, mainSession]);
 
   const spinner = useMemo(
     () => (lines && status === 'working' ? toolbarFromScreen(profile, lines.map((spans) => spans.map((s) => s.text).join(''))).spinner : undefined),

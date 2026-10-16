@@ -452,6 +452,15 @@ describe('resolveSession', () => {
     await expect(resolveSession(sessionHub(id, [{ name: 'claude', argv: ['claude', '--resume', '22222222-2222-2222-2222-222222222222'] }]), paneKey)).resolves.toEqual({ agent: 'claude', sessionId: id });
   });
 
+  test("asks the Pane for its session first: a `/clear` reports a new one without an event", async () => {
+    const fresh = '33333333-3333-3333-3333-333333333333';
+    const hub = (read: () => Promise<string | undefined>): SessionHub => ({
+      resolvePane: () => ({ paneId: 'pane', entry: { mux: { kind: 'herdr', agentSession: read }, tree: { panes: [{ id: 'pane', agentSession: id }] } } }),
+    });
+    await expect(resolveSession(hub(async () => fresh), paneKey)).resolves.toEqual({ agent: 'claude', sessionId: fresh });
+    await expect(resolveSession(hub(async () => { throw new Error('gone'); }), paneKey)).resolves.toEqual({ agent: 'claude', sessionId: id }); // the tree's copy stands in
+  });
+
   test('finds a Claude resume descriptor in the foreground processes', async () => {
     await expect(resolveSession(sessionHub(undefined, [
       { pid: 1, name: 'zsh', argv: ['zsh'] },

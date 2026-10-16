@@ -37,7 +37,7 @@ type Process = { pid?: number; name?: string; argv?: string[] };
 type ProcessInfo = { foregroundProcessGroupId?: number; foregroundProcesses: Process[] };
 type ResolvedPane = {
   paneId: string;
-  entry: { mux: { kind: 'herdr' | 'tmux'; processInfo?: (paneId: string) => Promise<ProcessInfo> }; tree?: { panes: { id: string; agent?: string; agentSession?: string }[] } };
+  entry: { mux: { kind: 'herdr' | 'tmux'; processInfo?: (paneId: string) => Promise<ProcessInfo>; agentSession?: (paneId: string) => Promise<string | undefined> }; tree?: { panes: { id: string; agent?: string; agentSession?: string }[] } };
 };
 export interface SessionHub { resolvePane(paneKey: string): ResolvedPane | undefined }
 export interface ChatHub extends SessionHub {
@@ -383,7 +383,8 @@ export async function resolveSession(hub: SessionHub, paneKey: string, io?: Tran
   const found = hub.resolvePane(paneKey);
   if (!found || found.entry.mux.kind !== 'herdr') return undefined;
   const pane = found.entry.tree?.panes.find(pane => pane.id === found.paneId);
-  const known = pane?.agentSession;
+  // The tree's copy waits for the next Status change or poll after a `/clear`: ask the Pane.
+  const known = (await found.entry.mux.agentSession?.(found.paneId).catch(() => undefined)) ?? pane?.agentSession;
   if (pane?.agent === 'pi') return piSession(known, found.entry.mux.processInfo?.(found.paneId), io, home, target, piFiles);
   // omp (Wave 12.3): the Herdr path report only — an id-only report would need the cwd/profile
   // root scans ADR 0005 forbids, so it stays unresolved.

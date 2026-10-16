@@ -231,6 +231,13 @@ export class HerdrMux implements Mux {
     };
   }
 
+  /** The Pane's reported conversation, read now: a hook's `pane.report_agent_session` (a
+   *  `/clear`, a `/resume`) fires no event (probed on 0.9.3), so the tree's copy lags. */
+  async agentSession(paneId: string): Promise<string | undefined> {
+    const result = await this.rpc('pane.get', { pane_id: paneId });
+    return sessionValue(result.pane?.agent_session ?? result.agent_session);
+  }
+
   async foregroundCommand(paneId: string): Promise<string | undefined> {
     const info = await this.processInfo(paneId);
     const known = new Set(['claude', 'pi', 'codex', 'k9s', 'htop', 'btop', 'lazygit', 'nvim', 'vim', 'less']);
