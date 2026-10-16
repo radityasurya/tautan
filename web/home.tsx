@@ -1,5 +1,5 @@
 import { TopBar } from './header.tsx';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { DragEvent, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type {
   NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, RenameBody, State, StatePane, StateWorkspace, Status,
@@ -641,7 +641,7 @@ export function PinnedHeader({ label, count, open, compact, onToggle }: { label:
 /** A small section heading. It sits above its section's own scroller, so it never moves. */
 function SectionHead({ id, label, count, compact, children }: { id: string; label: string; count?: number; compact?: boolean; children?: ReactNode }) {
   return (
-    <div className={`flex shrink-0 items-center gap-2 pr-2 pl-4 ${compact ? 'h-9' : 'h-10'}`}>
+    <div className={`flex shrink-0 items-center gap-2 pr-2 pl-[var(--row-inset,1rem)] ${compact ? 'h-9' : 'h-10'}`}>
       <h2 id={id} className="min-w-0 truncate text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">
         {label}
       </h2>
@@ -693,7 +693,7 @@ function SpaceRow({
   return (
     <li
       {...drag}
-      className={`group/space flex items-center ${dropShadow(drop)} ${onMenu ? 'pr-1.5' : 'pr-4'} ${
+      className={`group/space flex items-center ${dropShadow(drop)} ${onMenu ? 'pr-1.5' : 'pr-[var(--row-inset,1rem)]'} ${
         selected ? `${compact ? 'bg-bg' : 'bg-surface'} shadow-[inset_2px_0_0_var(--accent)]` : compact ? 'hover:bg-bg' : 'hover:bg-surface'
       }`}
     >
@@ -704,7 +704,7 @@ function SpaceRow({
         title={path}
         onClick={onSelect}
         {...(onMenu ? press : {})}
-        className={`flex min-w-0 flex-1 items-center gap-2.5 self-stretch pl-4 text-left [-webkit-touch-callout:none] ${RING} ${
+        className={`flex min-w-0 flex-1 items-center gap-2.5 self-stretch pl-[var(--row-inset,1rem)] text-left [-webkit-touch-callout:none] ${RING} ${
           compact ? 'min-h-11 py-1.5' : 'min-h-11 py-2'
         }`}
       >
@@ -931,6 +931,168 @@ function SpacesView({ hiddenCount, compact }: { hiddenCount: number; compact?: b
   );
 }
 
+/** `Workspace › Tab · Host`, for a Needs you card; the Host only when there are several. */
+function whereOf(p: StatePane, state: State | null): string | undefined {
+  const ws = state?.workspaces.find((w) => w.muxKey === p.muxKey && w.id === p.workspaceId)?.label;
+  const tab = state?.tabs.find((t) => t.muxKey === p.muxKey && t.workspaceId === p.workspaceId && t.id === p.tabId)?.label;
+  const hostId = state?.muxes.find((m) => m.key === p.muxKey)?.hostId;
+  const host = (state?.hosts.length ?? 0) > 1 ? state?.hosts.find((h) => h.id === hostId)?.label : undefined;
+  return [[ws, tab].filter(Boolean).join(' › '), host].filter(Boolean).join(' · ') || undefined;
+}
+
+/**
+ * The herdr list: Spaces over Agents, each its own scroller under a heading that stays put.
+ * Spaces takes up to 40 % of the height, Agents the rest. Home draws it, and so does the
+ * Switch drawer when the herdr list is chosen, so both follow the same view options. The
+ * Switch drawer passes no actions: a tap there only picks.
+ */
+export function SpacesAgents({ state, ordered, host, q, space, onSpace, compact, current, actions, onMenu, drag, drop, pad = 'pb-4' }: {
+  state: State;
+  /** The Workspaces in the list's order. */
+  ordered: StateWorkspace[];
+  host: string | null;
+  q: string;
+  /** The picked Space's key; null is All Spaces. */
+  space: string | null;
+  onSpace: (key: string | null) => void;
+  compact?: boolean;
+  /** The Pane on screen behind the Switch drawer. */
+  current?: string;
+  actions?: (p: StatePane) => RowActions | undefined;
+  onMenu?: (w: StateWorkspace) => void;
+  drag?: (w: StateWorkspace) => HTMLAttributes<HTMLElement> | undefined;
+  drop?: (w: StateWorkspace) => DropMark;
+  /** The Agents list's end padding: the phone pads it past the floating tab bar. */
+  pad?: string;
+}) {
+  const group = usePref(getAgentGroup);
+  const sort = usePref(getAgentSort);
+  const shells = usePref(getShowShells);
+  const spaceSort = usePref(getSpaceSort);
+  const spaceAgentsOnly = usePref(getSpaceAgentsOnly);
+  // The desktop sidebar and the Switch drawer can both be open, so the heading ids are per list.
+  const id = useId();
+  const hostOf = (muxKey: string) => state.muxes.find((m) => m.key === muxKey)?.hostId;
+  const visible = (muxKey: string) => !host || hostOf(muxKey) === host;
+  const many = state.hosts.length > 1;
+  const needle = q.trim().toLowerCase();
+  const hit = (p: StatePane) => matchPane(p, needle, state);
+  const panesOf = (w: StateWorkspace) => state.panes.filter((p) => p.muxKey === w.muxKey && p.workspaceId === w.id).sort(comparePanes);
+
+  const spacesFound = ordered
+    .filter((w) => visible(w.muxKey))
+    .map((w) => ({ w, all: panesOf(w) }))
+    .filter(({ w, all }) => !needle || w.key === space || w.label.toLowerCase().includes(needle) || all.some(hit));
+  // The picked Space stays listed even when the filter would hide it, so the Agents below keep a heading.
+  const spaces = sortSpaces(
+    spaceAgentsOnly ? spacesFound.filter(({ w, all }) => w.key === space || all.some((p) => p.agent)) : spacesFound,
+    { sort: spaceSort, unseen },
+  );
+  const picked = spaces.find((s) => s.w.key === space)?.w;
+  const scope = state.panes.filter(
+    (p) => visible(p.muxKey) && (!picked || (p.muxKey === picked.muxKey && p.workspaceId === picked.id)),
+  );
+  const agents = agentRows(scope.filter(hit), { shells, unseen, sort });
+  const shellCount = scope.filter((p) => !p.agent).length;
+  // One Space picked is one group already, so Spaces grouping only applies to All Spaces.
+  const grouped = group === 'spaces' && !picked ? bySpace(agents, spaces.map((s) => s.w)) : null;
+  /** Agent rows, blocked as cards. `where` names the Space on a row when no heading does. */
+  const agentItems = (rows: StatePane[], where: boolean) =>
+    rows.map((p, i) =>
+      p.status === 'blocked' ? (
+        <NeedsYouCard key={p.key} pane={p} where={whereOf(p, state)} compact={compact} />
+      ) : (
+        <Row
+          key={p.key}
+          pane={p}
+          first={i === 0 || rows[i - 1]!.status === 'blocked'}
+          actions={actions?.(p)}
+          context={where ? placeOf(p, state) : undefined}
+          compact={compact}
+          current={p.key === current}
+        />
+      ),
+    );
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <section aria-labelledby={`${id}spaces`} className="flex max-h-[40%] shrink-0 flex-col border-b border-border pt-1">
+        <SectionHead id={`${id}spaces`} label="Spaces" count={spaces.length} compact={compact}>
+          <SpacesView hiddenCount={spacesFound.length - spaces.length} compact={compact} />
+        </SectionHead>
+        <ul className="min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain pb-1.5">
+          <SpaceRow
+            label="All Spaces"
+            panes={state.panes.filter((p) => visible(p.muxKey))}
+            selected={!picked}
+            compact={compact}
+            onSelect={() => onSpace(null)}
+          />
+          {spaces.map(({ w, all }) => {
+            const h = state.hosts.find((x) => x.id === hostOf(w.muxKey));
+            return (
+              <SpaceRow
+                key={w.key}
+                label={w.label}
+                host={many ? h?.label : undefined}
+                path={w.cwd && tildePath(w.cwd)}
+                panes={all}
+                offline={h?.online === false}
+                selected={picked?.key === w.key}
+                compact={compact}
+                onSelect={() => onSpace(picked?.key === w.key ? null : w.key)}
+                onMenu={onMenu && (() => onMenu(w))}
+                // A sorted list has no drag order to change: Manual brings the handles back.
+                drag={spaceSort === 'manual' ? drag?.(w) : undefined}
+                drop={spaceSort === 'manual' ? drop?.(w) : undefined}
+              />
+            );
+          })}
+        </ul>
+      </section>
+      <section aria-labelledby={`${id}agents`} className="flex min-h-0 flex-1 flex-col pt-1">
+        <SectionHead id={`${id}agents`} label={picked ? `Agents · ${picked.label}` : 'Agents'} count={agents.length} compact={compact}>
+          <AgentsView shellCount={shellCount} compact={compact} />
+        </SectionHead>
+        <ul className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain ${pad}`}>
+          {agents.length === 0 ? (
+            <li className={`${INSET} py-3 text-caption text-muted`}>
+              {needle
+                ? `Nothing matches “${q.trim()}”`
+                : picked
+                  ? 'No Agents running in this Space'
+                  : 'No Agents running'}
+              {!needle && !shells && shellCount > 0 && (
+                <span className="text-muted/70"> · {shellCount} shell{shellCount === 1 ? '' : 's'} hidden</span>
+              )}
+            </li>
+          ) : grouped ? (
+            grouped.map(({ space: s, rows }) => (
+              <li key={s.key}>
+                <h3
+                  id={`${id}in-${s.key}`}
+                  className={`flex items-baseline gap-1.5 ${INSET} text-[12px] font-medium text-muted ${compact ? 'pt-2.5 pb-1' : 'pt-4 pb-1.5'}`}
+                >
+                  <span className="min-w-0 truncate">{s.label}</span>
+                  {many && (
+                    <span className="max-w-[45%] shrink-0 truncate font-normal text-muted/70">
+                      {state.hosts.find((h) => h.id === hostOf(s.muxKey))?.label}
+                    </span>
+                  )}
+                  <span className="shrink-0 font-normal tabular-nums text-muted/70">{rows.length}</span>
+                </h3>
+                <ul aria-labelledby={`${id}in-${s.key}`}>{agentItems(rows, false)}</ul>
+              </li>
+            ))
+          ) : (
+            agentItems(agents, !picked)
+          )}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
 // ---- screen ----
 
 const COLLAPSED = 'tautan.collapsed';
@@ -951,11 +1113,6 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const setHost = (h: string | null) => { hostFilter = h; setHostState(h); };
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const layout = usePref(getPaneList);
-  const group = usePref(getAgentGroup);
-  const sort = usePref(getAgentSort);
-  const shells = usePref(getShowShells);
-  const spaceSort = usePref(getSpaceSort);
-  const spaceAgentsOnly = usePref(getSpaceAgentsOnly);
   const [space, setSpaceState] = useState<string | null>(spaceFilter);
   const setSpace = (k: string | null) => { spaceFilter = k; setSpaceState(k); };
   const [newWorkspace, setNewWorkspace] = useState(() => opensWith('newworkspace'));
@@ -1062,15 +1219,9 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const needle = q.trim().toLowerCase();
   const hit = (p: StatePane) => matchPane(p, needle, state);
   const wsLabel = (p: StatePane) => state?.workspaces.find((w) => w.muxKey === p.muxKey && w.id === p.workspaceId)?.label;
-  const many = (state?.hosts.length ?? 0) > 1;
   const needsYou = (state?.panes ?? [])
     .filter((p) => visible(p.muxKey) && unseen(p) && (p.status === 'blocked' || p.status === 'done') && hit(p))
     .sort(comparePanes); // blocked cards first, then the done rows
-  /** `Workspace › Tab · Host`, for a Needs you card; the Host only when there are several. */
-  const whereOf = (p: StatePane) => {
-    const tab = state?.tabs.find((t) => t.muxKey === p.muxKey && t.workspaceId === p.workspaceId && t.id === p.tabId)?.label;
-    return [[wsLabel(p), tab].filter(Boolean).join(' › '), many ? hostLabel(p.muxKey) : undefined].filter(Boolean).join(' · ') || undefined;
-  };
   /** Working Panes pinned beside Needs you, most recently changed first. */
   const running = (state?.panes ?? [])
     .filter((p) => visible(p.muxKey) && p.status === 'working' && hit(p))
@@ -1255,7 +1406,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                 <ul>
                   {needsYou.map((p, i) =>
                     p.status === 'blocked' ? (
-                      <NeedsYouCard key={p.key} pane={p} where={whereOf(p)} compact={compact} />
+                      <NeedsYouCard key={p.key} pane={p} where={whereOf(p, state)} compact={compact} />
                     ) : (
                       <Row
                         key={p.key}
@@ -1340,119 +1491,23 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
 
   // ---- the herdr list: Spaces over Agents ----
   const herdr = layout === 'herdr' && !!state && state.workspaces.some((w) => visible(w.muxKey));
-  const spacesFound = ordered
-    .filter((w) => visible(w.muxKey))
-    .map((w) => ({ w, all: panesOf(w) }))
-    .filter(({ w, all }) => !needle || w.key === space || w.label.toLowerCase().includes(needle) || all.some(hit));
-  // The picked Space stays listed even when the filter would hide it, so the Agents below keep a heading.
-  const spaces = sortSpaces(
-    spaceAgentsOnly ? spacesFound.filter(({ w, all }) => w.key === space || all.some((p) => p.agent)) : spacesFound,
-    { sort: spaceSort, unseen },
-  );
-  const picked = spaces.find((s) => s.w.key === space)?.w;
-  const scope = (state?.panes ?? []).filter(
-    (p) => visible(p.muxKey) && (!picked || (p.muxKey === picked.muxKey && p.workspaceId === picked.id)),
-  );
-  const agents = agentRows(scope.filter(hit), { shells, unseen, sort });
-  const shellCount = scope.filter((p) => !p.agent).length;
-  // One Space picked is one group already, so Spaces grouping only applies to All Spaces.
-  const grouped = group === 'spaces' && !picked ? bySpace(agents, spaces.map((s) => s.w)) : null;
-  /** Agent rows, blocked as cards. `where` names the Space on a row when no heading does. */
-  const agentItems = (rows: StatePane[], where: boolean) =>
-    rows.map((p, i) =>
-      p.status === 'blocked' ? (
-        <NeedsYouCard key={p.key} pane={p} where={whereOf(p)} compact={compact} />
-      ) : (
-        <Row
-          key={p.key}
-          pane={p}
-          first={i === 0 || rows[i - 1]!.status === 'blocked'}
-          actions={rowActions(p)}
-          context={where ? placeOf(p, state) : undefined}
-          compact={compact}
-        />
-      ),
-    );
-
-  // Two scrollers under a top that stays put, on the phone as in the sidebar: Spaces takes up
-  // to 40 % of the height left, Agents the rest. On the phone the Agents list runs on under
-  // the floating tab bar and pads its end by the bar's height, so the last row clears it.
+  // On the phone the Agents list runs on under the floating tab bar and pads its end by the
+  // bar's height, so the last row clears it.
   const herdrBody = herdr && (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <section aria-labelledby="spaces-title" className="flex max-h-[40%] shrink-0 flex-col border-b border-border pt-1">
-        <SectionHead id="spaces-title" label="Spaces" count={spaces.length} compact={compact}>
-          <SpacesView hiddenCount={spacesFound.length - spaces.length} compact={compact} />
-        </SectionHead>
-        <ul className="min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain pb-1.5">
-          <SpaceRow
-            label="All Spaces"
-            panes={(state?.panes ?? []).filter((p) => visible(p.muxKey))}
-            selected={!picked}
-            compact={compact}
-            onSelect={() => setSpace(null)}
-          />
-          {spaces.map(({ w, all }) => {
-            const h = state?.hosts.find((x) => x.id === hostOf(w.muxKey));
-            return (
-              <SpaceRow
-                key={w.key}
-                label={w.label}
-                host={many ? h?.label : undefined}
-                path={w.cwd && tildePath(w.cwd)}
-                panes={all}
-                offline={h?.online === false}
-                selected={picked?.key === w.key}
-                compact={compact}
-                onSelect={() => setSpace(picked?.key === w.key ? null : w.key)}
-                onMenu={() => setMenu(w)}
-                // A sorted list has no drag order to change: Manual brings the handles back.
-                drag={spaceSort === 'manual' ? dragProps(w) : undefined}
-                drop={spaceSort === 'manual' ? dropAt(w) : undefined}
-              />
-            );
-          })}
-        </ul>
-      </section>
-      <section aria-labelledby="agents-title" className="flex min-h-0 flex-1 flex-col pt-1">
-        <SectionHead id="agents-title" label={picked ? `Agents · ${picked.label}` : 'Agents'} count={agents.length} compact={compact}>
-          <AgentsView shellCount={shellCount} compact={compact} />
-        </SectionHead>
-        <ul
-          className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain ${
-            compact ? 'pb-4' : 'pb-[calc(env(safe-area-inset-bottom)+76px)]'
-          }`}
-        >
-          {agents.length === 0 ? (
-            <li className="px-4 py-3 text-caption text-muted">
-              {needle
-                ? `Nothing matches “${q.trim()}”`
-                : picked
-                  ? 'No Agents running in this Space'
-                  : 'No Agents running'}
-              {!needle && !shells && shellCount > 0 && (
-                <span className="text-muted/70"> · {shellCount} shell{shellCount === 1 ? '' : 's'} hidden</span>
-              )}
-            </li>
-          ) : grouped ? (
-            grouped.map(({ space, rows }) => (
-              <li key={space.key}>
-                <h3
-                  id={`agents-in-${space.key}`}
-                  className={`flex items-baseline gap-1.5 px-4 text-[12px] font-medium text-muted ${compact ? 'pt-2.5 pb-1' : 'pt-4 pb-1.5'}`}
-                >
-                  <span className="min-w-0 truncate">{space.label}</span>
-                  {many && <span className="max-w-[45%] shrink-0 truncate font-normal text-muted/70">{hostLabel(space.muxKey)}</span>}
-                  <span className="shrink-0 font-normal tabular-nums text-muted/70">{rows.length}</span>
-                </h3>
-                <ul aria-labelledby={`agents-in-${space.key}`}>{agentItems(rows, false)}</ul>
-              </li>
-            ))
-          ) : (
-            agentItems(agents, !picked)
-          )}
-        </ul>
-      </section>
-    </div>
+    <SpacesAgents
+      state={state}
+      ordered={ordered}
+      host={host}
+      q={q}
+      space={space}
+      onSpace={setSpace}
+      compact={compact}
+      actions={rowActions}
+      onMenu={setMenu}
+      drag={dragProps}
+      drop={dropAt}
+      pad={compact ? 'pb-4' : 'pb-[calc(env(safe-area-inset-bottom)+76px)]'}
+    />
   );
 
   return (

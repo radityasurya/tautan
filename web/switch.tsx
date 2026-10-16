@@ -1,9 +1,9 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
 import type { State, StatePane } from '../shared/types.ts';
 import { FLUSH_BODY, Sheet } from './sheets.tsx';
-import { GroupHeader, matchPane, PinnedHeader, placeOf, Row, unseen } from './home.tsx';
+import { GroupHeader, matchPane, PinnedHeader, placeOf, Row, SpacesAgents, unseen } from './home.tsx';
 import { dropMuxOrders, orderWorkspaces, readOrder } from './order.ts';
-import { agentRows, getAgentSort, getSpaceSort, sortSpaces, tildePath, usePref } from './spaces.ts';
+import { agentRows, getAgentSort, getPaneList, getSpaceSort, sortSpaces, tildePath, usePref } from './spaces.ts';
 import { Chip, SearchInput } from './halaska-kit';
 
 /** A Switch row runs edge to edge; the inset is its own padding, so the scroller has none. */
@@ -22,7 +22,8 @@ const RUNNING = '@running';
  * the Spaces sort and rows the Agents sort, so the drawer reads in Home's order. A header
  * folds its section, a search opens every fold, and a pick closes the drawer. Opened from the
  * Pane status line. The Tab picker opens it at Tab level: `head` lists the Workspace's Tabs
- * above the Pane sections, and stays out of the way while a search is typed.
+ * above the Pane sections, and stays out of the way while a search is typed. With the herdr
+ * list chosen, it draws Home's Spaces over Agents instead, under the same view options.
  */
 export function SwitchDrawer({
   open,
@@ -48,12 +49,20 @@ export function SwitchDrawer({
   const [shut, setShut] = useState<string[]>([]);
   const spaceSort = usePref(getSpaceSort);
   const sort = usePref(getAgentSort);
+  const layout = usePref(getPaneList);
+  // ponytail: the picked Space is the drawer's own, so it opens on every Space; share Home's
+  // if the two should move together.
+  const [space, setSpace] = useState<string | null>(null);
 
   const hostOf = (muxKey: string) => state?.muxes.find((m) => m.key === muxKey)?.hostId;
   const needle = q.trim().toLowerCase();
   const pick = () => {
     onPick?.();
     onClose();
+  };
+  /** Home's rows are links, so a tap that reaches a link is a pick. */
+  const pickLink = (e: MouseEvent) => {
+    if ((e.target as Element).closest('a')) pick();
   };
   const toggle = (key: string) => setShut(shut.includes(key) ? shut.filter((k) => k !== key) : [...shut, key]);
   const unfolded = (key: string) => !!needle || !shut.includes(key);
@@ -70,8 +79,10 @@ export function SwitchDrawer({
     .filter((p) => p.status === 'working')
     .sort((a, b) => (b.statusChangedAt ?? 0) - (a.statusChangedAt ?? 0));
   const pinned = new Set([...needsYou, ...running]);
+  const ordered = orderWorkspaces(state?.workspaces ?? [], dropMuxOrders(readOrder(), state?.muxes ?? []));
+  const herdr = layout === 'herdr' && !!state && ordered.some((w) => !host || hostOf(w.muxKey) === host);
   const groups = sortSpaces(
-    orderWorkspaces(state?.workspaces ?? [], dropMuxOrders(readOrder(), state?.muxes ?? []))
+    ordered
       .filter((w) => !host || hostOf(w.muxKey) === host)
       .map((w) => ({ w, all: (state?.panes ?? []).filter((p) => p.muxKey === w.muxKey && p.workspaceId === w.id) })),
     { sort: spaceSort, unseen },
@@ -114,46 +125,53 @@ export function SwitchDrawer({
           )}
         </div>
 
-        {/* Home's rows are links, so a tap that reaches a link here is a pick; the rows run
-            in the sheet's 24 px inset instead of Home's 16. */}
-        <div
-          className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-6 [--row-inset:1.5rem]"
-          style={{ scrollbarGutter: 'stable' }}
-          onClick={(e) => {
-            if ((e.target as Element).closest('a')) pick();
-          }}
-        >
-          {head && !needle && head}
-          {matches.length === 0 && (
-            <p className="px-6 py-6 text-body text-muted">{needle ? `Nothing matches “${q.trim()}”.` : 'No panes yet.'}</p>
-          )}
-          {needsYou.length > 0 && (
-            <section>
-              <PinnedHeader label="Needs you" count={needsYou.length} compact open={unfolded(NEEDS)} onToggle={() => toggle(NEEDS)} />
-              {unfolded(NEEDS) && rows(needsYou, true)}
-            </section>
-          )}
-          {running.length > 0 && (
-            <section>
-              <PinnedHeader label="Running" count={running.length} compact open={unfolded(RUNNING)} onToggle={() => toggle(RUNNING)} />
-              {unfolded(RUNNING) && rows(running, true)}
-            </section>
-          )}
-          {groups.map(({ w, all, panes }) => (
-            <section key={w.key}>
-              <GroupHeader
-                label={w.label}
-                host={state?.hosts.find((h) => h.id === hostOf(w.muxKey))?.label}
-                path={w.cwd && tildePath(w.cwd)}
-                panes={all}
-                compact
-                open={unfolded(w.key)}
-                onToggle={() => toggle(w.key)}
-              />
-              {unfolded(w.key) && rows(panes)}
-            </section>
-          ))}
-        </div>
+        {/* The rows run in the sheet's 24 px inset instead of Home's 16. */}
+        {herdr ? (
+          <div
+            className="flex min-h-0 flex-1 flex-col pb-2 [--row-inset:1.5rem]"
+            onClick={pickLink}
+          >
+            {head && !needle && <div className="max-h-[30%] shrink-0 overflow-y-auto border-b border-border pb-2">{head}</div>}
+            <SpacesAgents state={state} ordered={ordered} host={host} q={q} space={space} onSpace={setSpace} compact current={currentKey} />
+          </div>
+        ) : (
+          <div
+            className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pb-6 [--row-inset:1.5rem]"
+            style={{ scrollbarGutter: 'stable' }}
+            onClick={pickLink}
+          >
+            {head && !needle && head}
+            {matches.length === 0 && (
+              <p className="px-6 py-6 text-body text-muted">{needle ? `Nothing matches “${q.trim()}”.` : 'No panes yet.'}</p>
+            )}
+            {needsYou.length > 0 && (
+              <section>
+                <PinnedHeader label="Needs you" count={needsYou.length} compact open={unfolded(NEEDS)} onToggle={() => toggle(NEEDS)} />
+                {unfolded(NEEDS) && rows(needsYou, true)}
+              </section>
+            )}
+            {running.length > 0 && (
+              <section>
+                <PinnedHeader label="Running" count={running.length} compact open={unfolded(RUNNING)} onToggle={() => toggle(RUNNING)} />
+                {unfolded(RUNNING) && rows(running, true)}
+              </section>
+            )}
+            {groups.map(({ w, all, panes }) => (
+              <section key={w.key}>
+                <GroupHeader
+                  label={w.label}
+                  host={state?.hosts.find((h) => h.id === hostOf(w.muxKey))?.label}
+                  path={w.cwd && tildePath(w.cwd)}
+                  panes={all}
+                  compact
+                  open={unfolded(w.key)}
+                  onToggle={() => toggle(w.key)}
+                />
+                {unfolded(w.key) && rows(panes)}
+              </section>
+            ))}
+          </div>
+        )}
       </div>
     </Sheet>
   );
