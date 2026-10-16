@@ -823,11 +823,16 @@ function longOutput(): { result: string; resultLines: number } {
 }
 
 /** Claude Code's subagents for the transcript below; `a3` was started by `a2`. The states
- *  are the Hub's judgement: `a1` finished, the other two still run. */
+ *  are the Hub's judgement: `a1` finished, the next two still run, `a4` was stopped, `a5`
+ *  failed, and the rest are the long history an old conversation keeps. */
 const MOCK_SUBAGENTS: Subagent[] = [
   { id: 'a1', type: 'Explore', description: 'Find where SSE events are routed', toolUseId: 'toolu_a1', at: ago(5), updatedAt: ago(4.8), state: 'done' },
   { id: 'a2', type: 'general-purpose', description: 'Write the SGR 22 regression test', toolUseId: 'toolu_a2', at: ago(4.5), updatedAt: ago(0.2), state: 'running' },
   { id: 'a3', type: 'Explore', description: 'Read the old ANSI fixtures', toolUseId: 'toolu_a3', parentId: 'a2', at: ago(4), updatedAt: ago(0.1), state: 'running' },
+  { id: 'a4', type: 'qa', description: 'Click through the Chat view', at: ago(40), updatedAt: ago(30), state: 'done', ended: 'stopped' },
+  { id: 'a5', type: 'frontend', description: 'Restyle the tool rows', at: ago(55), updatedAt: ago(50), state: 'done', ended: 'failed' },
+  ...['Map the herdr events', 'Port the tmux adapter', 'Review the lease code', 'Find the slow test', 'Draft the ADR', 'Check the SSE reconnect']
+    .flatMap((description, n) => [0, 1].map((half): Subagent => ({ id: `h${n}${half}`, type: half ? 'Explore' : 'recon', description, at: ago(120 + (n * 2 + half) * 30), updatedAt: ago(110 + (n * 2 + half) * 30), state: 'done' }))),
 ];
 
 /** Each subagent's own turns, as `?agent=<id>` returns them. */

@@ -590,8 +590,9 @@ function Working({ agent, status, spinner, onReview }: {
  * The Agents of this Pane's chat: the main Agent first, with the Pane's Status, then every
  * subagent, running ones first and then newest, each nested one after its parent. One row of
  * chips that scrolls sideways; the list button on its left opens them all as rows above the
- * strip, each with its description, state and start time. Choosing a row switches and closes
- * it; Esc and a click outside close it too.
+ * strip, each with its description, state and start time: Running as a tree, then Ended
+ * flat and newest first, its oldest behind a button. Choosing a row switches and closes it;
+ * Esc and a click outside close it too.
  */
 function Switcher({ agent, status, subagents, running, selected, onPick }: {
   agent: string;
@@ -601,9 +602,21 @@ function Switcher({ agent, status, subagents, running, selected, onPick }: {
   selected?: string;
   onPick: (id?: string) => void;
 }) {
-  const chips = useMemo(() => subagentChips(subagents, running), [subagents, running]);
-  const rows = useMemo(() => subagentRows(subagents, running), [subagents, running]);
-  const busy = rows.filter((r) => r.running).length;
+  // A long conversation keeps every subagent it ever started (118 in one real one). The strip
+  // holds what matters now — running, just finished, the one on screen — and the list button
+  // opens the whole history.
+  const chips = useMemo(() => {
+    const since = Date.now() - RECENT_MS;
+    const at = new Map(subagents.map((s) => [s.id, s.updatedAt ?? 0]));
+    return subagentChips(subagents, running).filter((c) => c.running || c.id === selected || at.get(c.id)! > since);
+  }, [subagents, running, selected]);
+  // One orchestrator can hold 50 finished children (a real one), so only running ones keep
+  // the tree; the ended ones list flat, newest first, and fold after ENDED_SHOWN.
+  const live = useMemo(() => subagentRows(subagents.filter(running), running), [subagents, running]);
+  const ended = useMemo(() => subagents.filter((s) => !running(s)).sort((a, b) => (b.at ?? 0) - (a.at ?? 0)), [subagents, running]);
+  const busy = live.length;
+  const [all, setAll] = useState(false);
+  const cut = all || ended.findIndex((s) => s.id === selected) >= ENDED_SHOWN ? ended.length : ENDED_SHOWN;
   const current = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
@@ -634,7 +647,7 @@ function Switcher({ agent, status, subagents, running, selected, onPick }: {
     trigger.current?.focus();
   };
   const mainState = word(status);
-  const row = (id: string | undefined, depth: number, name: string, detail: string | undefined, dot: Status, seen: boolean, state: string, live: boolean, at?: number) => {
+  const row = (id: string | undefined, depth: number, name: string, detail: string | undefined, dot: Status, seen: boolean, state: string, tone: string, at?: number) => {
     const on = selected === id;
     return (
       <li key={id ?? ''}>
@@ -651,7 +664,7 @@ function Switcher({ agent, status, subagents, running, selected, onPick }: {
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-baseline gap-2">
               <span className={`truncate text-[13px] text-fg ${on ? 'font-semibold' : 'font-medium'}`}>{name}</span>
-              <span className={`shrink-0 text-[11px] ${live ? 'font-medium text-accent' : 'text-muted'}`}>{state}</span>
+              <span className={`shrink-0 text-[11px] ${tone}`}>{state}</span>
             </span>
             {detail && <span className="block truncate text-[12px] text-muted">{detail}</span>}
           </span>
@@ -683,13 +696,20 @@ function Switcher({ agent, status, subagents, running, selected, onPick }: {
       </button>
     );
   };
+  const heading = (label: string) => (
+    <li key={label} aria-hidden className="px-2.5 pt-2.5 pb-1 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">{label}</li>
+  );
+  const sub = (r: { agent: Subagent; depth: number; running: boolean }) => {
+    const state = ending(r.running, r.agent.ended);
+    return row(r.agent.id, r.depth, r.agent.type?.trim() || 'Subagent', r.agent.description?.trim(), dotOf(r.running, r.agent.ended), !r.running, state, TONE[state], r.agent.at);
+  };
   return (
     <div className="shrink-0 px-4 pt-1 pb-2">
       <div ref={box} className="relative flex gap-1.5 lg:mx-auto lg:max-w-5xl">
         <button
           ref={trigger}
           type="button"
-          aria-label={`All Agents, ${rows.length + 1}${busy ? `, ${busy} running` : ''}`}
+          aria-label={`All Agents, ${subagents.length + 1}${busy ? `, ${busy} running` : ''}`}
           title="All Agents"
           aria-haspopup="dialog"
           aria-expanded={open}
@@ -708,7 +728,7 @@ function Switcher({ agent, status, subagents, running, selected, onPick }: {
           style={{ maskImage: FADE_END, WebkitMaskImage: FADE_END }}
         >
           {chip('', `${agent} · main`, status, false, mainState)}
-          {chips.map((c) => chip(c.id, c.label, c.running ? 'working' : 'done', !c.running, c.running ? 'running' : 'done'))}
+          {chips.map((c) => chip(c.id, c.label, dotOf(c.running, c.ended), !c.running, ending(c.running, c.ended)))}
         </div>
         {open && (
           <div
@@ -720,12 +740,22 @@ function Switcher({ agent, status, subagents, running, selected, onPick }: {
             <p className="flex shrink-0 items-baseline justify-between px-3.5 pt-2.5 pb-1 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">
               Agents
               <span className="font-normal tracking-normal normal-case tabular-nums">
-                {busy ? `${busy} running · ` : ''}{rows.length + 1}
+                {busy ? `${busy} running · ` : ''}{subagents.length + 1}
               </span>
             </p>
             <ul className="min-h-0 overflow-y-auto overscroll-contain px-1.5 pb-1.5">
-              {row(undefined, 0, agent, 'main', status, false, mainState, status === 'working' || status === 'blocked')}
-              {rows.map((r) => row(r.agent.id, r.depth, r.agent.type?.trim() || 'Subagent', r.agent.description?.trim(), r.running ? 'working' : 'done', !r.running, r.running ? 'running' : 'done', r.running, r.agent.at))}
+              {row(undefined, 0, agent, 'main', status, false, mainState, status === 'working' || status === 'blocked' ? TONE.running : TONE.finished)}
+              {live.length > 0 && heading(`Running · ${busy}`)}
+              {live.map(sub)}
+              {ended.length > 0 && heading(`Ended · ${ended.length}`)}
+              {ended.slice(0, cut).map((agent) => sub({ agent, depth: 0, running: false }))}
+              {cut < ended.length && (
+                <li>
+                  <button type="button" onClick={() => setAll(true)} className="press flex min-h-11 w-full items-center rounded-lg px-2.5 text-left text-[13px] font-medium text-accent hover:bg-fg/6 lg:min-h-9">
+                    Show {count(ended.length - cut, 'earlier agent')}
+                  </button>
+                </li>
+              )}
             </ul>
           </div>
         )}
@@ -733,6 +763,17 @@ function Switcher({ agent, status, subagents, running, selected, onPick }: {
     </div>
   );
 }
+
+/** How long a finished subagent keeps its chip in the strip. */
+const RECENT_MS = 5 * 60_000;
+/** How many ended subagents the list shows before `Show N earlier agents`. */
+const ENDED_SHOWN = 8;
+
+/** A subagent's state in the list's words, and its colour. */
+const ending = (running: boolean, ended?: Subagent['ended']) => (running ? 'running' : ended ?? 'finished');
+const TONE: Record<ReturnType<typeof ending>, string> = { running: 'font-medium text-accent', finished: 'text-muted', stopped: 'text-warn', failed: 'text-danger' };
+/** Green only for a finished run; one that stopped or failed keeps a grey ring. */
+const dotOf = (running: boolean, ended?: Subagent['ended']): Status => (running ? 'working' : ended ? 'idle' : 'done');
 
 /** The main Agent's state in the switcher, in the header's words. */
 const word = (s: Status) => (s === 'blocked' ? 'needs you' : s);

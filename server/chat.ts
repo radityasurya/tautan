@@ -426,7 +426,7 @@ const print = (turn: Turn) => Bun.hash(JSON.stringify(turn)).toString(36);
 
 /** The subagents' states and mtimes, which ride the ETag: they move while the transcript
  *  stands still. */
-const subagentsDigest = (list: Subagent[]) => list.map((item) => `${item.id}\u0001${item.state ?? ''}\u0001${item.updatedAt ?? ''}`).join('\u0002');
+const subagentsDigest = (list: Subagent[]) => list.map((item) => `${item.id}\u0001${item.state ?? ''}${item.ended ?? ''}\u0001${item.updatedAt ?? ''}`).join('\u0002');
 /** A Pane's subagent tree, re-listed only when the `subagents` directory's mtime moves. */
 type Subagents = { sessionId: string; signature: string; list: Subagent[] };
 
@@ -455,11 +455,12 @@ function subagentsOf(agents: SubagentDir['agents']): Subagent[] {
 }
 
 /** What the parent transcript records about its subagents: the Task tool_use ids that
- *  finished, and every id a background task's `<task-notification>` named. A foreground
+ *  finished, and every id a background task's `<task-notification>` named, with the
+ *  notification's `<status>` (`completed`, `failed`, `killed`). A foreground
  *  Task's result arrives when it ends; a background Task's arrives at once, so only its
  *  later notification — which carries the tool-use id, and the agent id as its task id —
  *  says it ended. The notification rides any entry kind, so this scans the raw lines. */
-export interface ParentDone { finished: Set<string>; notified: Set<string> }
+export interface ParentDone { finished: Set<string>; notified: Map<string, string> }
 
 /** A background Task's launch receipt: the tool_result Claude returns at once when the child
  *  starts, whose text begins "Async agent launched". The real finish rides a later
@@ -474,7 +475,7 @@ function launched(content: unknown): boolean {
 export function parentFinished(jsonl: string): ParentDone {
   const calls = new Map<string, boolean>(); // Task tool_use id → started with run_in_background
   const results = new Set<string>();
-  const notified = new Set<string>();
+  const notified = new Map<string, string>();
   const notification = (value: unknown): string | undefined => {
     if (typeof value === 'string') return value.includes('<task-notification>') && value.includes('<tool-use-id>') ? value : undefined;
     if (!value || typeof value !== 'object') return undefined;
@@ -495,8 +496,9 @@ export function parentFinished(jsonl: string): ParentDone {
     if (note) {
       const toolUseId = note.match(/<tool-use-id>([^<]+)<\/tool-use-id>/)?.[1];
       const taskId = note.match(/<task-id>([^<]+)<\/task-id>/)?.[1];
-      if (toolUseId) notified.add(toolUseId);
-      if (taskId) notified.add(taskId); // a background subagent's task id is its agent id
+      const status = note.match(/<status>([^<]+)<\/status>/)?.[1] ?? 'completed';
+      if (toolUseId) notified.set(toolUseId, status);
+      if (taskId) notified.set(taskId, status); // a background subagent's task id is its agent id
       continue;
     }
     const content = (entry.message as Record<string, unknown> | undefined)?.content;
@@ -521,10 +523,15 @@ export function parentFinished(jsonl: string): ParentDone {
 /** The stop reasons of a final message: a subagent may end on a stop sequence, not end_turn. */
 const FINAL_STOPS = new Set(['end_turn', 'stop_sequence']);
 
-/** Whether a conversation's tail ends with a final assistant message, Claude Code's own
- *  end-of-run record. Most finished subagents miss it — the answer goes to the parent as the
- *  Task result — so this is one signal beside the parent's records and the file's freshness. */
-function endsDone(tail: string): boolean {
+/** Claude Code 2.1.2xx ends every subagent run with this call: the report its caller gets. */
+const HANDBACK = 'SubagentHandback';
+
+/** How a conversation's tail ends its run: `handback` when its last call is a
+ *  `SubagentHandback`, `final` when its last message is final — which a parent waiting on
+ *  background children also writes, so a running child overrides it. Results after a call are
+ *  skipped, so the call itself decides; a later prompt (a resume) means it runs again.
+ *  `undefined` when the window cut the line that would decide. */
+function endsDone(tail: string): 'handback' | 'final' | false | undefined {
   const lines = tail.split('\n');
   for (let index = lines.length - 1; index >= 0; index--) {
     const line = lines[index];
@@ -534,11 +541,19 @@ function endsDone(tail: string): boolean {
       const value: unknown = JSON.parse(line);
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
       entry = value as Record<string, unknown>;
-    } catch { continue; } // a line the tail window cut
+    } catch {
+      if (index === 0) return undefined; // the line the tail window cut
+      continue;
+    }
     if (entry.type !== 'assistant' && entry.type !== 'user') continue; // reminders and attachments ride last
-    const message = entry.message;
-    return entry.type === 'assistant' && !!message && typeof message === 'object' && !Array.isArray(message)
-      && FINAL_STOPS.has((message as Record<string, unknown>).stop_reason as string);
+    const message = entry.message && typeof entry.message === 'object' && !Array.isArray(entry.message) ? entry.message as Record<string, unknown> : {};
+    const blocks = Array.isArray(message.content) ? message.content as Record<string, unknown>[] : [];
+    if (entry.type === 'user') {
+      if (blocks.length && blocks.every(block => block?.type === 'tool_result')) continue;
+      return false;
+    }
+    if (blocks.some(block => block?.type === 'tool_use' && block.name === HANDBACK)) return 'handback';
+    return FINAL_STOPS.has(message.stop_reason as string) && 'final';
   }
   return false;
 }
@@ -546,7 +561,13 @@ function endsDone(tail: string): boolean {
 // A file this quiet reads done: its process most likely died. A tool silent longer than this
 // (a slow build) reads done until its next write or the parent's record corrects it.
 const STALE_MS = 90_000;
+// Claude's subagents say when they end (HANDBACK), so quiet is only the crash ceiling: one Bash
+// call may run 10 minutes, and a parent waits silently on its children.
+const CLAUDE_STALE_MS = 600_000;
 const TAIL_BYTES = 16_384;
+// A handback carries the whole report on one line (p99 62 KB, max 91 KB across 1 614 local
+// runs, 2026-10-13): a tail that cuts it is read once more at this size.
+const TAIL_MAX = 131_072;
 
 /** What a pi parent transcript records about one `Agent` tool call (pi-agents' subagents). */
 export interface PiAgentCall {
@@ -715,7 +736,7 @@ export class ChatLens {
   private parents = new Map<string, { sessionId: string; parent: ParentDone }>();
   /** Each subagent file's judged ending per Pane; the cached mtime says when to read again.
    *  `recordedAt` is the mtime the parent's finish record stamped (fix 2's resume rule). */
-  private tails = new Map<string, { sessionId: string; tails: Map<string, { mtime: number; done: boolean; recordedAt?: number }> }>();
+  private tails = new Map<string, { sessionId: string; tails: Map<string, { mtime: number; done: boolean; soft?: boolean; recordedAt?: number }> }>();
   private reads = new Map<string, Promise<Cached | undefined>>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -1043,9 +1064,9 @@ export class ChatLens {
   }
 
   /** The tree with each subagent judged `running` or `done`: done when the parent's records
-   *  name it, or its own file ends with a final assistant message; else done once its file
-   *  has been quiet past STALE_MS, running until then. One mtime round trip per refresh; a
-   *  tail is re-read only when its file moved. */
+   *  name it, or its own file ends with a handback or a final assistant message; else done
+   *  (`ended: stopped`) once its file has been quiet past CLAUDE_STALE_MS, running until then.
+   *  One mtime round trip per refresh; a tail is re-read only when its file moved. */
   private async states(paneKey: string, dir: string, target: string | undefined, sessionId: string, list: Subagent[]): Promise<Subagent[]> {
     const readMtimes = this.io.mtimes, readTail = this.io.tail;
     if (!readMtimes || !list.length) return list;
@@ -1060,33 +1081,46 @@ export class ChatLens {
     const parent = this.parents.get(paneKey);
     const records = parent && parent.sessionId === sessionId ? parent.parent : undefined;
     const out: Subagent[] = [];
+    const soft = new Set<string>(); // judged done by quiet or a final message, which a running child overrides
     for (const agent of list) {
       const mtime = mtimes.get(agent.id);
       if (mtime === undefined) { out.push(agent); continue; } // the file is gone; the listing catches up when the directory moves
       const recorded = records && agent.toolUseId !== undefined && (records.finished.has(agent.toolUseId) || records.notified.has(agent.id));
       let done = Boolean(recorded);
+      const status = recorded ? records.notified.get(agent.id) ?? records.notified.get(agent.toolUseId!) : undefined;
+      let ended: Subagent['ended'] = status === 'failed' ? 'failed' : status === 'killed' || status === 'stopped' ? 'stopped' : undefined;
       if (recorded) {
         // A finish is not forever: resuming the subagent appends newer bytes, so a file moved
         // past the mtime the record stamped judges fresh again (STALE_MS still reads a quiet
         // one done). The stamp rides the tails entry so one map serves both rules.
         const mark = cache.tails.get(agent.id);
         if (mark?.recordedAt === undefined) cache.tails.set(agent.id, { mtime, done: true, recordedAt: mtime });
-        else if (mtime > mark.recordedAt) done = false;
+        else if (mtime > mark.recordedAt) { done = false; ended = undefined; }
       }
       if (!done) {
         let tail = cache.tails.get(agent.id);
         if (tail?.mtime !== mtime) {
-          let ending = false;
+          let ending: 'handback' | 'final' | false = false;
           if (readTail) {
-            try { ending = endsDone(await readTail(join(dir, `agent-${agent.id}.jsonl`), TAIL_BYTES, target)); }
+            const file = join(dir, `agent-${agent.id}.jsonl`);
+            try { ending = endsDone(await readTail(file, TAIL_BYTES, target)) ?? endsDone(await readTail(file, TAIL_MAX, target)) ?? false; }
             catch { /* a failing read leaves the judgement to freshness */ }
           }
-          tail = { mtime, done: ending, recordedAt: tail?.recordedAt };
+          tail = { mtime, done: Boolean(ending), soft: ending === 'final', recordedAt: tail?.recordedAt };
           cache.tails.set(agent.id, tail);
         }
-        done = tail.done || Date.now() - mtime > STALE_MS;
+        done = tail.done || Date.now() - mtime > CLAUDE_STALE_MS;
+        if (done && (!tail.done || tail.soft)) soft.add(agent.id);
+        if (done && !tail.done) ended = 'stopped'; // quiet with no report: killed, or Claude exited
       }
-      out.push({ ...agent, updatedAt: mtime, state: done ? 'done' : 'running' });
+      out.push({ ...agent, updatedAt: mtime, state: done ? 'done' : 'running', ...(done && ended ? { ended } : {}) });
+    }
+    // A parent ends its turn, then writes nothing while it waits on background children: a
+    // running child keeps it running.
+    const byId = new Map(out.map(item => [item.id, item]));
+    for (const item of out) {
+      if (item.state !== 'running') continue;
+      for (let up = item.parentId ? byId.get(item.parentId) : undefined; up && soft.delete(up.id); up = up.parentId ? byId.get(up.parentId) : undefined) { up.state = 'running'; delete up.ended; }
     }
     return out;
   }

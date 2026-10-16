@@ -10,6 +10,7 @@ export interface Chip {
   label: string;
   depth: number;
   running: boolean;
+  ended?: Subagent['ended'];
 }
 
 const kind = (agent: Subagent) => agent.type?.trim() || 'Subagent';
@@ -79,7 +80,7 @@ export function subagentChips(list: Subagent[], running?: (agent: Subagent) => b
   const byId = new Map(list.map((agent) => [agent.id, agent]));
   return subagentRows(list, running).map(({ agent, depth, running }) => {
     const parent = agent.parentId ? byId.get(agent.parentId) : undefined;
-    return { id: agent.id, label: parent ? `${kind(parent)} › ${subagentName(agent)}` : subagentName(agent), depth, running };
+    return { id: agent.id, label: parent ? `${kind(parent)} › ${subagentName(agent)}` : subagentName(agent), depth, running, ...(agent.ended ? { ended: agent.ended } : {}) };
   });
 }
 

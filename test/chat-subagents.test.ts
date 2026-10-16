@@ -94,9 +94,10 @@ describe('chat subagents and previews', () => {
     expect(chat?.sessionId).toBe(id);
     expect(chat?.subagents?.map(item => item.id)).toEqual(['t1aaaa', 't2bbbb', 't3cccc']); // ordered by `at`
     expect(chat?.subagents?.[1]).toEqual({ id: 't2bbbb', type: 'worker', description: 'Polish', toolUseId: 'toolu_t2', parentId: 't1aaaa', at: Date.parse('2026-10-06T00:00:04.500Z'), updatedAt: expect.any(Number), state: 'running' });
-    // t1 ended with a final assistant message; the others are fresh and unfinished. t2's Task
-    // rows sit in t1's file, not the main transcript, so only the ending and freshness judge it.
-    expect(chat?.subagents?.map(item => item.state)).toEqual(['done', 'running', 'running']);
+    // t1 ended its turn with a final message, but its child t2 is fresh and unfinished: a parent
+    // waiting on a background child ends its turn the same way, so t1 runs while t2 does. t2's
+    // Task rows sit in t1's file, not the main transcript, so only the ending and freshness judge it.
+    expect(chat?.subagents?.map(item => item.state)).toEqual(['running', 'running', 'running']);
     expect(chat?.subagents?.[2]!.parentId).toBeUndefined(); // a parent id outside the list is dropped
     const [task, write, artifact, read] = chat!.turns[1]!.tools;
     expect(task!.subagentId).toBe('t1aaaa');
@@ -232,8 +233,8 @@ describe('chat subagents and previews', () => {
   test('a quiet unfinished file reads done, and the state moves the ETag with the transcript still', async () => {
     const file = join(transcriptDir('/repo', id, home), 'subagents', 'agent-t3cccc.jsonl');
     const etag = (await lens.tagged(paneKey))!.etag;
-    const stale = Date.now() / 1000 - 200;
-    utimesSync(file, stale, stale); // the process died: nothing else will move
+    const stale = Date.now() / 1000 - 700;
+    utimesSync(file, stale, stale); // the process died: nothing else will move for 10 minutes
     const chat = await lens.query(paneKey);
     expect(chat?.subagents?.find(item => item.id === 't3cccc')!.state).toBe('done');
     expect(chat?.subagents?.find(item => item.id === 't2bbbb')!.state).toBe('running');
@@ -345,12 +346,72 @@ describe('chat subagents and previews', () => {
         { type: 'text', text: '<task-notification><task-id>bgr33333</task-id><tool-use-id>toolu_bgr</tool-use-id><status>completed</status></task-notification>' },
       ] } })}`);
       expect(await state()).toBe('done');
+      expect((await live.query(bgKey))?.subagents?.[0]!.ended).toBeUndefined(); // completed: it finished
+      writeFileSync(join(dir, '..', `${sid}.jsonl`), `${main}\n${line({ type: 'user', timestamp: '2026-10-06T00:00:09.000Z', message: { content: [
+        { type: 'text', text: '<task-notification><task-id>bgr33333</task-id><tool-use-id>toolu_bgr</tool-use-id><status>killed</status></task-notification>' },
+      ] } })}`);
+      expect((await live.query(bgKey))?.subagents?.[0]!.ended).toBe('stopped');
       const resumed = Date.now() / 1000 + 5; // a resume wrote again: the mtime moves past the record
       utimesSync(child, resumed, resumed);
       expect(await state()).toBe('running');
       const quiet = Date.now() / 1000 - 200; // nothing since: STALE_MS reads the child done
       utimesSync(child, quiet, quiet);
       expect(await state()).toBe('done');
+    } finally { bgLens?.close(); rmSync(bgHome, { recursive: true, force: true }); }
+  });
+
+  test("a SubagentHandback ends a run, even past the tail window; a quiet parent of a running child runs", async () => {
+    const bgHome = mkdtempSync(join(tmpdir(), 'tautan-chat-hb-'));
+    const sid = '88888888-8888-8888-8888-888888888888';
+    const bgKey = 'local/fake/p12';
+    let bgLens: ChatLens | undefined;
+    try {
+      const dir = transcriptDir('/repo', sid, bgHome);
+      const subs = join(dir, 'subagents');
+      mkdirSync(subs, { recursive: true });
+      writeFileSync(join(dir, '..', `${sid}.jsonl`), line({ type: 'user', timestamp: '2026-10-13T00:00:00.000Z', message: { content: 'Go.' } }));
+      // Recorded shape (Claude Code 2.1.296): the report rides the call's input, so its line
+      // passes the 16 KB tail; the result after it is Claude's fixed receipt.
+      const handback = [
+        line({ type: 'user', isSidechain: true, timestamp: '2026-10-13T00:00:01.000Z', message: { content: 'Review it.' } }),
+        line({ type: 'assistant', isSidechain: true, timestamp: '2026-10-13T00:00:02.000Z', message: { stop_reason: 'tool_use', content: [
+          { type: 'tool_use', id: 'toolu_hb', name: 'SubagentHandback', input: { message: 'x'.repeat(40_000) } },
+        ] } }),
+        line({ type: 'user', isSidechain: true, timestamp: '2026-10-13T00:00:03.000Z', message: { content: [
+          { type: 'tool_result', tool_use_id: 'toolu_hb', content: [{ type: 'text', text: '{"success":true,"message":"Report delivered to your caller."}' }] },
+        ] } }),
+        line({ type: 'attachment', isSidechain: true, attachment: { type: 'total_tokens_reminder' } }),
+      ].join('\n');
+      const working = [
+        line({ type: 'user', isSidechain: true, timestamp: '2026-10-13T00:00:01.000Z', message: { content: 'Build it.' } }),
+        line({ type: 'assistant', isSidechain: true, timestamp: '2026-10-13T00:00:02.000Z', message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'toolu_b', name: 'Bash', input: { command: 'make' } }] } }),
+      ].join('\n');
+      const meta = (name: string, body: Record<string, unknown>) => writeFileSync(join(subs, `agent-${name}.meta.json`), JSON.stringify(body));
+      meta('hb000001', { agentType: 'recon', description: 'Handed back' });
+      writeFileSync(join(subs, 'agent-hb000001.jsonl'), handback);
+      meta('or000002', { agentType: 'orchestrator', description: 'Waits on its child' });
+      writeFileSync(join(subs, 'agent-or000002.jsonl'), working);
+      const quiet = Date.now() / 1000 - 700; // past the crash ceiling
+      utimesSync(join(subs, 'agent-or000002.jsonl'), quiet, quiet);
+      meta('ch000003', { agentType: 'worker', description: 'Runs a long Bash', parentAgentId: 'or000002' });
+      writeFileSync(join(subs, 'agent-ch000003.jsonl'), working);
+      const slow = Date.now() / 1000 - 200; // one Bash may run 10 minutes
+      utimesSync(join(subs, 'agent-ch000003.jsonl'), slow, slow);
+      const chatHub: ChatHub = {
+        resolvePane: () => ({ paneId: 'p12', entry: { mux: { kind: 'herdr' }, tree: { panes: [{ id: 'p12', agentSession: sid }] } } }),
+        state: async () => ({ panes: [{ key: bgKey, cwd: '/repo' }] }) as State,
+        paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
+      };
+      bgLens = new ChatLens(chatHub, localIo, bgHome);
+      const states = async () => Object.fromEntries((await bgLens!.query(bgKey))!.subagents!.map(item => [item.id, item.state]));
+      expect(await states()).toEqual({ hb000001: 'done', or000002: 'running', ch000003: 'running' });
+      utimesSync(join(subs, 'agent-ch000003.jsonl'), quiet, quiet); // the child died too
+      expect(await states()).toEqual({ hb000001: 'done', or000002: 'done', ch000003: 'done' });
+      // No report before the quiet: they stopped. The handback finished.
+      expect(Object.fromEntries((await bgLens!.query(bgKey))!.subagents!.map(item => [item.id, item.ended]))).toEqual({ hb000001: undefined, or000002: 'stopped', ch000003: 'stopped' });
+      // A resume after the handback runs again.
+      writeFileSync(join(subs, 'agent-hb000001.jsonl'), `${handback}\n${line({ type: 'user', isSidechain: true, timestamp: '2026-10-13T00:01:00.000Z', message: { content: 'One more thing.' } })}`);
+      expect((await states()).hb000001).toBe('running');
     } finally { bgLens?.close(); rmSync(bgHome, { recursive: true, force: true }); }
   });
 });

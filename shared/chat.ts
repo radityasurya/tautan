@@ -67,6 +67,9 @@ export interface Subagent {
   /** Whether it still runs, judged by the Hub from the file's ending and the parent's
    *  completion records. Absent on an older Hub; the browser then keeps its own guess. */
   state?: 'running' | 'done';
+  /** How a done one ended, when not plainly: `failed` or `stopped` (killed) by its
+   *  notification, `stopped` too when it went quiet without a report. Absent: it finished. */
+  ended?: 'failed' | 'stopped';
 }
 
 /** `GET /api/panes/:key/chat[?agent=<id>]`. `subagents` lists the whole tree, on both forms. */
