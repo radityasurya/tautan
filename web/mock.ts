@@ -987,15 +987,16 @@ const mockChat = (agent?: string): ChatResponse => agent ? {
         },
       ],
     },
+    { role: 'assistant', from: 'Explore', at: ago(2.6), tools: [], text: 'Events route through `server/http.ts`: `/api/events` streams `state`, `pane` and `alert`.' },
     { role: 'user', text: '/model\n\n> Set model to `Fable 5.1` and saved as your default for new sessions', tools: [], at: ago(2.2) },
     { role: 'user', text: 'Nice. Run the full suite and then:\n- commit\n- open a PR', tools: [], at: ago(2) },
     { role: 'assistant', text: 'Running `pnpm test` now.', tools: [{
-      name: 'Bash',
+      name: 'Bash', at: ago(1),
       brief: 'cd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/ge…',
       detail: '# Commit the slides generator\ncd /home/dev/projects/uxui-issue-9 && git add .claude/skills/slides/scripts/generate-deck.ts \\\n  .claude/skills/slides/SKILL.md \\\n  && git commit -m "slides: generate the deck from the outline" \\\n  && pnpm test',
       ...longOutput(),
     }, {
-      name: 'Bash', brief: 'gh pr create --fill', detail: '# Open the PR\ngh pr create --fill', isError: true, resultLines: 3,
+      name: 'Bash', at: ago(0.9), brief: 'gh pr create --fill', detail: '# Open the PR\ngh pr create --fill', isError: true, resultLines: 3,
       result: 'Exit code 1\nmust be on a branch named differently than "main"\naborted: you must first push the current branch to a remote, or use the --head flag',
     }], at: ago(1) },
     {

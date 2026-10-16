@@ -55,6 +55,27 @@ describe('parseTranscript', () => {
     expect(turn!.text.endsWith('…')).toBe(true); // the one oversized block was cut
   });
 
+  test("a reply after Claude's turn_duration is its own Turn, though what woke Claude is hidden", () => {
+    const jsonl = [
+      { type: 'assistant', uuid: 'a1', message: { content: [{ type: 'text', text: 'First reply.' }] } },
+      { type: 'system', subtype: 'turn_duration', durationMs: 1_000 },
+      { type: 'user', isMeta: true, message: { content: 'Another Claude session sent a message: …' } },
+      { type: 'assistant', uuid: 'a2', message: { content: [{ type: 'text', text: 'Second reply.' }] } },
+      { type: 'assistant', uuid: 'a3', message: { content: [{ type: 'text', text: 'Same run.' }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    expect(parseTranscript(jsonl).map(turn => [turn.id, turn.text])).toEqual([['a1', 'First reply.'], ['a2', 'Second reply.\n\nSame run.']]);
+  });
+
+  test('each tool call carries the time of its entry', () => {
+    const jsonl = [
+      { type: 'assistant', timestamp: '2026-10-13T00:00:01.000Z', message: { content: [{ type: 'text', text: 'Checking.' }] } },
+      { type: 'assistant', timestamp: '2026-10-13T00:00:02.000Z', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const [turn] = parseTranscript(jsonl);
+    expect(turn!.at).toBe(Date.parse('2026-10-13T00:00:01.000Z'));
+    expect(turn!.tools[0]!.at).toBe(Date.parse('2026-10-13T00:00:02.000Z'));
+  });
+
   test('recovers a human queued prompt as a user turn; the flushed copy does not double it', () => {
     const jsonl = [
       { type: 'assistant', timestamp: '2026-10-06T00:00:00.000Z', message: { content: 'Working.' } },

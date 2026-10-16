@@ -48,6 +48,8 @@ export interface Tool {
   resultLines?: number;
   /** The tool reported a failure (Claude's `is_error`, pi's `isError`). */
   isError?: boolean;
+  /** When the call was made (Claude's tool_use entry); absent where the transcript has none. */
+  at?: number;
 }
 
 /** A subagent of the conversation, from Claude Code's `<session>/subagents/agent-<id>.meta.json`. */
@@ -483,6 +485,9 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   };
   const artifactHtml = new Map<string, string>(); // Artifact tool_use id → the source its file_path matched
   const queuedText = new Set<string>(); // queued prompts already shown; a flushed copy is dropped below
+  // Claude closes every turn with a `turn_duration` record. A reply after it is a new bubble,
+  // even when what woke Claude (an agent's message, a task notification) is not shown.
+  let ended = false;
   for (const line of jsonl.split(/\r?\n/)) {
     if (!line) continue;
     let entry: Record<string, unknown>;
@@ -491,6 +496,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
       entry = value as Record<string, unknown>;
     } catch { continue; }
+    if (entry.type === 'system' && entry.subtype === 'turn_duration') { ended = true; continue; }
     // A queued prompt exists only as its attachment entry; when the queue flushes, Claude
     // also writes it as a user entry, which `queuedText` then keeps from showing twice.
     const peer = entry.type === 'attachment' ? peerMessage(entry) : undefined;
@@ -513,6 +519,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     let thinking = '';
     const tools: Turn['tools'] = [];
     const images: Pasted[] = [];
+    const at = time(entry.timestamp);
     if (Array.isArray(content)) for (const item of content) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const block = item as Block;
@@ -527,7 +534,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         thinking += (thinking ? '\n\n' : '') + capTurn(block.thinking);
       if (block.type === 'tool_use' && typeof block.name === 'string') {
         const image = block.name === 'Read' ? readImage(block.input) : undefined;
-        const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
+        const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}), ...(at !== undefined ? { at } : {}) };
         const input = block.input && typeof block.input === 'object' && !Array.isArray(block.input) ? block.input as Record<string, unknown> : {};
         const filePath = str(input.file_path);
         if (block.name === 'Write' && filePath && HTML_FILE.test(filePath)) {
@@ -605,15 +612,15 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     // ponytail: only the first later copy of a queued prompt is swallowed — a user who retypes the same words on purpose loses that repeat
     if (role === 'user' && queued === undefined && text && queuedText.delete(text)) continue;
     if (!text && !tools.length && !images.length && !thinking) continue;
-    const at = time(entry.timestamp);
     const uuid = typeof entry.uuid === 'string' ? entry.uuid : undefined;
     const previous = turns.at(-1);
-    if (joins(previous, role, text || thinking)) {
+    if (!ended && joins(previous, role, text || thinking)) {
       previous.text = previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text;
       if (thinking) previous.thinking = previous.thinking ? `${previous.thinking}\n\n${thinking}` : thinking;
       previous.tools.push(...tools);
       if (images.length) previous.images = [...previous.images ?? [], ...images];
     } else turns.push({ role, text, tools, ...(thinking ? { thinking } : {}), ...(uuid ? { id: uuid } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
+    ended = false;
   }
   return turns;
 }

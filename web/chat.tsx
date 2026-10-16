@@ -131,22 +131,36 @@ function PendingTurn({ entry, agent, working }: { entry: Pending; agent: string;
 
 /**
  * The run's reasoning, folded: one muted row above the turn's text. The body renders only
- * once opened, so a long transcript of thoughts costs nothing until asked for. A teammate's
- * message folds the same way, under its own label, the way Claude Code prints it.
+ * once opened, so a long transcript of thoughts costs nothing until asked for.
  */
-function Thinking({ text, label = 'Thinking' }: { text: string; label?: string }) {
+function Thinking({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
     <details className="group mb-1 w-[min(88%,42rem)]" onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className={`${SUMMARY} -mx-1 flex min-h-9 w-fit items-center gap-1 px-1 text-caption text-muted lg:min-h-7`}>
         <ChevronRight size={14} className="shrink-0 transition-transform group-open:rotate-90 motion-reduce:transition-none" />
-        {label}
+        Thinking
       </summary>
       {open && (
         <div className="mt-0.5 mb-1.5 border-l-2 border-border pl-3 text-caption text-muted [&_h1]:text-caption [&_h2]:text-caption [&_h3]:text-caption">
           <Markdown text={text} />
         </div>
       )}
+    </details>
+  );
+}
+
+/** A teammate's message: a bubble of its own, folded the way Claude Code prints it. The body
+ *  renders only once opened. */
+function PeerMessage({ from, text }: { from: string; text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="group min-w-0 max-w-[88%] rounded-card bg-surface px-3 py-1 text-body text-fg" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className={`${SUMMARY} -mx-1 flex min-h-9 w-fit items-center gap-1 px-1 text-caption text-muted lg:min-h-7`}>
+        <ChevronRight size={14} className="shrink-0 transition-transform group-open:rotate-90 motion-reduce:transition-none" />
+        Message from <span className="font-medium text-fg">@{from}</span>
+      </summary>
+      {open && <div className="break-words pb-1.5"><Markdown text={text} /></div>}
     </details>
   );
 }
@@ -223,8 +237,16 @@ function ToolResult({ tool, full }: { tool: Tool; full?: string }) {
   );
 }
 
-/** The closed row's hint: a red dot for a failure, else how long the output is. */
-function ResultHint({ tool }: { tool: Tool }) {
+/** The closed row's hint: a red dot for a failure, a pulse while it runs, else how long the output is. */
+function ResultHint({ tool, running }: { tool: Tool; running?: boolean }) {
+  if (running) {
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-[10px] text-accent">
+        <span aria-hidden className="size-1.5 rounded-full bg-accent motion-safe:animate-pulse" />
+        running
+      </span>
+    );
+  }
   if (tool.isError) {
     return (
       <span title="The tool reported an error" className="flex items-center">
@@ -322,15 +344,18 @@ function ToolRow({
   at,
   subagent,
   kind,
+  running,
   onOpenSubagent,
 }: {
   paneKey: string;
   /** The subagent whose transcript this row is in, for the image and preview routes. */
   agent?: string;
   tool: Tool;
-  /** The turn's time, on the last row only. */
+  /** The call's time; for a transcript without one, the turn's, on its last row only. */
   at?: number;
   subagent?: Subagent;
+  /** The call (or the subagent it started) has not finished yet. */
+  running?: boolean;
   /** Which agent wrote this transcript, for readable tool names. */
   kind?: AgentKind;
   onOpenSubagent: (id: string) => void;
@@ -391,7 +416,7 @@ function ToolRow({
               <span title={brief} className={`truncate ${subagent ? 'font-sans text-fg' : 'text-muted'}`}>{brief}</span>
             </span>
             <span className="flex items-center gap-2">
-              <ResultHint tool={tool} />
+              <ResultHint tool={tool} running={running} />
               <Stamp at={at} />
             </span>
             <ChevronRight className="text-muted transition-transform group-open:rotate-90" />
@@ -1103,6 +1128,8 @@ export function Chat({
     blocked: status === 'blocked',
   };
   const openRunning = open ? running(open) : false;
+  /** The conversation on screen still runs: its last turn's unfinished calls are running. */
+  const liveTurn = selected ? openRunning : status === 'working';
   const pendingShown = selected ? [] : waiting;
   /** Every pending tool of the final turn, oldest first: the first is the one the on-screen
    *  prompt asks about, the rest queue behind it (18.4). */
@@ -1172,8 +1199,8 @@ export function Chat({
                 const tools = assistant ? turn.tools : [];
                 if (turn.from) return (
                   <li key={turn.id ?? turnIndex} className="flex flex-col items-start">
-                    <Thinking label={`Message from @${turn.from}`} text={turn.text} />
-                    <span className="px-1"><Stamp at={turn.at} /></span>
+                    <PeerMessage from={turn.from} text={turn.text} />
+                    <span className="mt-1 px-1"><Stamp at={turn.at} /></span>
                   </li>
                 );
                 return (
@@ -1198,14 +1225,20 @@ export function Chat({
                         ) : null}
                       </div>
                     )}
+                    {(turn.text || Boolean(turn.images?.length) || tools.length === 0) && (
+                      <span className={`mt-1 px-1 ${assistant ? '' : 'text-right'}`}>
+                        <Stamp at={turn.at} />
+                      </span>
+                    )}
                     {tools.length > 0 && (
                       <ul className="mt-1.5 flex w-[min(92%,42rem)] flex-col gap-1">
                         {tools.map((tool, toolIndex) => {
                           const pending = targets.find(item => item.turn === turnIndex && item.tool === toolIndex);
-                          // The Stamp rides the row with the Blocked card — the first pending
-                          // tool — not the last queued one; a turn with pending tools stamps no
-                          // tool row, so the turn stamps exactly once.
-                          const lastRow = !targets.some(item => item.turn === turnIndex) && toolIndex === tools.length - 1;
+                          // Each call stamps its own time. A transcript without one (pi, Codex)
+                          // stamps the turn once: on the row with the Blocked card — the first
+                          // pending tool — or else on the last row, when no bubble above has it.
+                          const lastRow = !turn.text && !targets.some(item => item.turn === turnIndex) && toolIndex === tools.length - 1;
+                          const subagent = tool.subagentId ? byId.get(tool.subagentId) : undefined;
                           return pending && approval ? (
                             <ApprovalItem
                               key={tool.id ?? `${tool.name}-${toolIndex}`}
@@ -1213,7 +1246,7 @@ export function Chat({
                               agent={agent}
                               tool={tool}
                               kind={view?.agentKind}
-                              at={pending === targets[0] ? turn.at : undefined}
+                              at={pending === targets[0] ? tool.at ?? turn.at : undefined}
                               queued={pending !== targets[0]}
                             />
                           ) : (
@@ -1223,18 +1256,15 @@ export function Chat({
                             agent={selected}
                             tool={tool}
                             kind={view?.agentKind}
-                            at={lastRow ? turn.at : undefined}
-                            subagent={tool.subagentId ? byId.get(tool.subagentId) : undefined}
+                            at={tool.at ?? (lastRow ? turn.at : undefined)}
+                            subagent={subagent}
+                            running={subagent ? running(subagent)
+                              : liveTurn && turnIndex === view.turns.length - 1 && tool.result === undefined && tool.output === undefined && !tool.isError}
                             onOpenSubagent={pick}
                           />
                           );
                         })}
                       </ul>
-                    )}
-                    {tools.length === 0 && (
-                      <span className={`mt-1 px-1 ${assistant ? '' : 'text-right'}`}>
-                        <Stamp at={turn.at} />
-                      </span>
                     )}
                   </li>
                 );
