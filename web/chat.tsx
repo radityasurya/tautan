@@ -11,7 +11,7 @@ import { toolLabel, type AgentKind } from '../shared/tool-label.ts';
 import type { Span, Status } from '../shared/types.ts';
 import { deliver, dropPending, pendingSnapshot, settled, subscribePending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
-import { toolbarFromScreen, type Profile } from './profiles.ts';
+import { toolbarFromScreen, type Profile, type ToolbarData } from './profiles.ts';
 import { store } from './store.tsx';
 import { finishedIn, readSubagent, setShowing, subagentChips, subagentName, subagentRows, subagentRunning, writeSubagent } from './subagents.ts';
 
@@ -537,13 +537,14 @@ function ApprovalItem({ approval, agent, tool, at, kind, queued }: { approval: A
 
 /**
  * The assistant side's "typing": three dots and what the Agent is doing. Claude's own spinner
- * line, read off the Screen, gives the verb and the time; anything else says "working".
- * A blocked Agent asks for the answer instead, and Review brings the prompt's card up.
+ * line, read off the Screen, gives the verb, the time and the rest of its facts; anything else
+ * says "working". A blocked Agent asks for the answer instead, and Review brings the prompt's
+ * card up. Its subagents live in the Switcher's list, not here.
  */
 function Working({ agent, status, spinner, onReview }: {
   agent: string;
-  status: Status;
-  spinner?: { verb: string; elapsed?: string };
+  status: 'working' | 'blocked';
+  spinner?: ToolbarData['spinner'];
   onReview?: () => void;
 }) {
   const name = capital(agent);
@@ -561,15 +562,11 @@ function Working({ agent, status, spinner, onReview }: {
     );
   }
   return (
-    <div role="status" className="mt-4 flex w-fit max-w-[88%] items-center gap-2.5 rounded-card bg-surface px-3 py-2 text-caption">
+    <div role="status" className="mt-4 flex w-fit max-w-[88%] min-w-0 items-center gap-2.5 rounded-card bg-surface px-3 py-2 text-caption">
       <span className="sr-only">{name} is working</span>
       <span aria-hidden className="flex shrink-0 items-center gap-1">
         {[0, 160, 320].map((delay) => (
-          <span
-            key={delay}
-            style={{ animationDelay: `${delay}ms` }}
-            className="size-1.5 rounded-full bg-muted motion-safe:animate-pulse"
-          />
+          <span key={delay} style={{ animationDelay: `${delay}ms` }} className="size-1.5 rounded-full bg-muted motion-safe:animate-pulse" />
         ))}
       </span>
       <span aria-hidden className="min-w-0 truncate text-muted">
@@ -577,6 +574,7 @@ function Working({ agent, status, spinner, onReview }: {
           <>
             <span className="text-fg">{spinner.verb}…</span>
             {spinner.elapsed && <span className="font-mono text-[11px] tabular-nums"> · {spinner.elapsed}</span>}
+            {spinner.more && <span className="text-[11px]"> · {spinner.more}</span>}
           </>
         ) : (
           `${name} is working…`
@@ -1152,9 +1150,9 @@ export function Chat({
     return () => clearTimeout(t);
   }, [awaiting, status, mainTurns, mainSession]);
 
-  const spinner = useMemo(
-    () => (lines && status === 'working' ? toolbarFromScreen(profile, lines.map((spans) => spans.map((s) => s.text).join(''))).spinner : undefined),
-    [lines, profile, status],
+  const toolbar = useMemo(
+    () => (lines ? toolbarFromScreen(profile, lines.map((spans) => spans.map((s) => s.text).join(''))) : undefined),
+    [lines, profile],
   );
   const busy = status === 'blocked' || status === 'working' || awaiting !== null;
 
@@ -1315,7 +1313,14 @@ export function Chat({
             </ol>
             </>
           )}
-          {view && busy && !approval && <Working agent={agent} status={status === 'blocked' ? 'blocked' : 'working'} spinner={spinner} onReview={onReview} />}
+          {view && busy && !approval && (
+            <Working
+              agent={agent}
+              status={status === 'blocked' ? 'blocked' : 'working'}
+              spinner={status === 'working' ? toolbar?.spinner : undefined}
+              onReview={onReview}
+            />
+          )}
         </div>
       </div>
       {asking && approval ? (

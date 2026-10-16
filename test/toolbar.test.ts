@@ -133,9 +133,9 @@ describe('Claude spinner line', () => {
   ];
 
   test('reads the verb and the elapsed time', () => {
-    expect(toolbarFromScreen(claude, working).spinner).toEqual({ verb: 'Razzle-dazzling', elapsed: '9s' });
+    expect(toolbarFromScreen(claude, working).spinner).toEqual({ verb: 'Razzle-dazzling', elapsed: '9s', more: '↓ 277 tokens · thinking' });
     expect(toolbarFromScreen(claude, ['✢ Tempering… (1m 55s · ↓ 10.0k tokens · esc to interrupt)']).spinner)
-      .toEqual({ verb: 'Tempering', elapsed: '1m 55s' });
+      .toEqual({ verb: 'Tempering', elapsed: '1m 55s', more: '↓ 10.0k tokens' });
     expect(toolbarFromScreen(claude, ['✻ Thinking… (esc to interrupt)']).spinner).toEqual({ verb: 'Thinking', elapsed: undefined });
   });
 

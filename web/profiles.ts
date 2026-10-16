@@ -10,8 +10,9 @@ export interface ToolbarData {
   model?: string;
   /** Percent of context LEFT until auto-compact, 0–100 — not percent used. */
   context?: number;
-  /** Claude's spinner line while it works: `* Razzle-dazzling… (9s · ↓ 277 tokens · thinking)`. */
-  spinner?: { verb: string; elapsed?: string };
+  /** Claude's spinner line while it works: `* Razzle-dazzling… (9s · ↓ 277 tokens · thinking)`.
+   *  `more` is what follows the time (`↓ 277 tokens · thinking`), without `esc to interrupt`. */
+  spinner?: { verb: string; elapsed?: string; more?: string };
 }
 
 export interface Profile extends AffordanceProfile {
@@ -39,7 +40,7 @@ const MODEL = /\b(Opus|Sonnet|Haiku)(?: \d[\w.]*)?/;
 const CONTEXT_LEFT = /Context left until auto-compact: (\d{1,3})%|(\d{1,3})% context left/;
 // The verb ends in `…` only while it runs; a finished turn prints `✻ Brewed for 48s`. The line
 // sits above the input box and the subagent list, so the whole Screen is scanned, bottom up.
-const SPINNER = /^\s*[·✢✳✶✻✽*]\s+([A-Z][\p{L}'-]*)…\s*(?:\((\d+[hms](?: \d+[ms])*)\b)?/u;
+const SPINNER = /^\s*[·✢✳✶✻✽*]\s+([A-Z][\p{L}'-]*)…\s*(?:\((\d+[hms](?: \d+[ms])*)\b([^)]*))?/u;
 
 function claudeToolbar(lines: string[]): ToolbarData {
   const footer = lines.slice(-FOOTER_LINES);
@@ -47,8 +48,9 @@ function claudeToolbar(lines: string[]): ToolbarData {
   const status = footer.filter(line => MODE_ON.test(line)).join('\n');
   const context = CONTEXT_LEFT.exec(text);
   const spin = [...lines].reverse().find((line) => SPINNER.test(line))?.match(SPINNER);
+  const more = spin?.[3]?.split('·').map((part) => part.trim()).filter((part) => part && part !== 'esc to interrupt').join(' · ');
   return {
-    spinner: spin ? { verb: spin[1]!, elapsed: spin[2] } : undefined,
+    spinner: spin ? { verb: spin[1]!, elapsed: spin[2], ...(more ? { more } : {}) } : undefined,
     mode: MODE_ON.exec(text)?.[1]?.replace(/ mode$/, ''),
     model: MODEL.exec(status)?.[0],
     context: context ? Number(context[1] ?? context[2]) : undefined,
