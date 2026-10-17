@@ -126,7 +126,7 @@
     animation: tautan-fade-in 180ms ease-out;
   }
   &[data-state="closed"] {
-    animation: tautan-fade-out 140ms ease-in;
+    animation: tautan-fade-out 140ms ease-in forwards;
   }
 }
 
@@ -138,6 +138,23 @@
 @keyframes tautan-fade-out {
   from { opacity: 1 }
   to { opacity: 0 }
+}
+
+/* ModalSheet's phone panel rises from the bottom edge and drops back. The exit names no
+   `from`, so a sheet dragged part of the way down drops from where the finger let go. */
+@utility sheet-rise {
+  animation: tautan-sheet-in 280ms cubic-bezier(0.2, 0, 0, 1);
+  &[data-state="closed"] {
+    animation: tautan-sheet-out 200ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  }
+}
+
+@keyframes tautan-sheet-in {
+  from { transform: translateY(100%) }
+}
+
+@keyframes tautan-sheet-out {
+  to { transform: translateY(100%) }
 }
 
 /* Anything tappable answers the finger: 3 % of scale, back in 120 ms. Rows, chips and
@@ -180,6 +197,7 @@
 
   .fade,
   .rise,
+  .sheet-rise,
   .caret-blink {
     animation: none !important;
   }

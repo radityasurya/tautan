@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { InputHTMLAttributes, KeyboardEvent, ReactNode } from 'react';
 import type { HostConfig, ProbeResult, Settings, State, StateHost, StateMux, StatePane, Status } from '../shared/types.ts';
 import { api, Link, navigate, opensWith, useDesktop } from './app.tsx';
 import { Dot, statusText } from './home.tsx';
 import { Back, ChevronRight, HostsTab, Install, Plus } from './icons.tsx';
 import { TopBar } from './header.tsx';
-import { ErrorLine, Sheet, useWrite } from './sheets.tsx';
-import { Button, IconButton, LinkButton, StatusDot, SwitchToggle, TextInput, usePal } from './halaska-kit';
+import { ErrorLine, ModalSheet, useWrite } from './sheets.tsx';
+import { Button, IconButton, LinkButton, StatusDot, SwitchToggle, usePal } from './halaska-kit';
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
@@ -590,9 +590,40 @@ const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').re
 const hostId = (label: string | undefined, target: string) =>
   slug(label ?? '') || slug(target.split('@').pop()!.split(':')[0]!.split('.')[0]!) || 'host';
 
+/** `dev@vps` → `['dev', 'vps']`, `vps` → `['', 'vps']`. ssh splits at the last `@` too. */
+const splitTarget = (target: string): [string, string] => {
+  const at = target.lastIndexOf('@');
+  return at > 0 ? [target.slice(0, at), target.slice(at + 1)] : ['', target];
+};
+
+/** A grouped card of form rows, iOS Settings style: lighter than the sheet behind it. */
+const CARD = 'overflow-hidden rounded-card bg-elevated divide-y divide-border';
+/** A caption under a card, inset to the rows' text. */
+const NOTE = 'px-4 pt-1.5 text-caption text-muted';
+
+/** One form row: the label on the left, the field filling the rest. A tap anywhere focuses it. */
+function Field({ label, ...input }: { label: string } & InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <label className="flex min-h-11 cursor-text items-center gap-3 px-4 focus-within:shadow-[inset_2px_0_0_var(--accent)]">
+      <span className="w-[5.5rem] shrink-0 text-body text-fg">{label}</span>
+      <input
+        type="text"
+        autoCapitalize="off"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        {...input}
+        className="min-w-0 flex-1 bg-transparent py-2.5 text-body text-fg outline-none placeholder:text-muted"
+      />
+    </label>
+  );
+}
+
 /**
- * Add or edit one `hosts.json` entry. Probe is optional: it dials the target once and
- * saves nothing, so a Host can be added before its machine is up.
+ * Add or edit one `hosts.json` entry, in the shape of Termius's New Host: the address and
+ * user, the label, the herdr Mux, then a connection test. The stored target stays one string,
+ * `user@address`. Testing is optional: it dials the target once and saves nothing, so a Host
+ * can be added before its machine is up.
  */
 export function AddHostSheet({
   open,
@@ -608,58 +639,127 @@ export function AddHostSheet({
 }) {
   const { busy, error, submit, retry } = useWrite(open, onSubmit, onClose);
   const [label, setLabel] = useState('');
-  const [target, setTarget] = useState('');
+  const [address, setAddress] = useState('');
+  const [username, setUsername] = useState('');
   const [session, setSession] = useState('');
   const [probing, setProbing] = useState(false);
   const [result, setResult] = useState<(ProbeResult & { code?: string }) | null>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
 
   // A reopened sheet starts clean, the same rule the write hook follows.
   useEffect(() => {
     if (open) {
+      const [user, addr] = splitTarget(editing?.target ?? '');
       setLabel(editing?.label ?? '');
-      setTarget(editing?.target ?? '');
+      setUsername(user);
+      setAddress(addr);
       setSession(editing?.session ?? '');
       setProbing(false);
       setResult(null);
     }
   }, [open, editing]);
+  useEffect(() => {
+    if (error) errorRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [error]);
+
+  const addr = address.trim();
+  const user = username.trim();
+  // A `user@host` typed into Address is the whole target: its user wins over the field.
+  const target = user && !addr.includes('@') ? `${user}@${addr}` : addr;
+  const save = () =>
+    submit({ id: editing?.id ?? hostId(label.trim() || undefined, target), label: label.trim() || undefined, target, session: session.trim() || undefined });
 
   const probe = () => {
     setProbing(true);
     setResult(null);
-    api<ProbeResult>('/api/hosts/probe', { target: target.trim(), session: session.trim() || undefined })
+    api<ProbeResult>('/api/hosts/probe', { target, session: session.trim() || undefined })
       .then(setResult)
       .catch((e: unknown) => setResult({ online: false, code: (e instanceof Error && e.message) || 'network' }))
       .finally(() => setProbing(false));
   };
 
+  // Enter moves to the next field; in the last one it saves.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing || !(e.target instanceof HTMLInputElement)) return;
+    e.preventDefault();
+    const fields = [...e.currentTarget.querySelectorAll('input')];
+    const next = fields[fields.indexOf(e.target) + 1];
+    if (next) next.focus();
+    else if (addr && !busy) save();
+  };
+
   return (
-    <Sheet open={open} title={editing ? 'Edit Host' : 'Add Host'} onClose={onClose}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <TextInput value={label} onChange={setLabel} label="Label" placeholder="Optional · taken from the target" />
-        <TextInput value={target} onChange={setTarget} label="SSH target" placeholder="user@host" />
-        <TextInput value={session} onChange={setSession} label="herdr Mux" placeholder="default · leave empty to discover" />
-
-        <Button variant="secondary" size="lg" fullWidth loading={probing} onClick={probe}>
-          {probing ? 'Probing…' : 'Probe'}
-        </Button>
-        {result && <ProbeLine result={result} />}
-
-        {error && <ErrorLine error={error} busy={busy} onRetry={retry} />}
-        <Button
-          variant="primary"
-          size="lg"
-          fullWidth
-          loading={busy}
-          disabled={!target.trim()}
-          onClick={() =>
-            submit({ id: editing?.id ?? hostId(label.trim() || undefined, target.trim()), label: label.trim() || undefined, target: target.trim(), session: session.trim() || undefined })
-          }
-        >
-          {busy ? 'Saving…' : editing ? 'Save Host' : 'Add Host'}
-        </Button>
+    <ModalSheet
+      open={open}
+      title={editing ? 'Edit Host' : 'New Host'}
+      onClose={onClose}
+      save={{ label: busy ? 'Saving…' : 'Save', onSave: save, disabled: !addr, busy }}
+    >
+      {error && (
+        <div ref={errorRef} className="rounded-card bg-danger/8 py-1 pr-1 pl-4">
+          <ErrorLine error={error} busy={busy} onRetry={retry} />
+        </div>
+      )}
+      <div className="contents" onKeyDown={onKeyDown}>
+        <section>
+          <div className={CARD}>
+            <Field
+              label="Address"
+              data-autofocus
+              inputMode="url"
+              enterKeyHint="next"
+              placeholder="Hostname, IP or alias"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              // A pasted `user@host` lands in both fields.
+              onBlur={() => {
+                const [u, a] = splitTarget(addr);
+                if (u) {
+                  setUsername(u);
+                  setAddress(a);
+                }
+              }}
+            />
+            <Field label="Username" enterKeyHint="next" placeholder="Optional" value={username} onChange={(e) => setUsername(e.target.value)} />
+          </div>
+          <p className={NOTE}>The Hub runs ssh with this address, so an ~/.ssh/config alias works. Set a custom port there.</p>
+        </section>
+        <section className={CARD}>
+          <Field
+            label="Label"
+            autoCapitalize="words"
+            enterKeyHint="next"
+            placeholder="Taken from the address"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+        </section>
+        <section>
+          <div className={CARD}>
+            <Field label="herdr Mux" enterKeyHint="done" placeholder="Discover all" value={session} onChange={(e) => setSession(e.target.value)} />
+          </div>
+          <p className={NOTE}>Leave it empty to show every herdr Mux on the Host.</p>
+        </section>
       </div>
-    </Sheet>
+      <section className={CARD}>
+        <button
+          type="button"
+          onClick={() => {
+            if (!probing) probe();
+          }}
+          disabled={!addr}
+          aria-busy={probing || undefined}
+          className="flex min-h-11 w-full items-center justify-center px-4 text-body text-accent outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)] active:bg-surface disabled:text-muted"
+        >
+          {probing ? 'Testing…' : 'Test connection'}
+        </button>
+        {result && (
+          <div className="px-4 py-2.5">
+            <ProbeLine result={result} />
+          </div>
+        )}
+      </section>
+    </ModalSheet>
   );
 }
 
@@ -681,7 +781,7 @@ function ProbeLine({ result }: { result: ProbeResult & { code?: string } }) {
 
 /** The probe's own failures, in words. A bad target is the one the Hub answers with a 400. */
 const why = (code: string) =>
-  code === 'target' ? 'Enter a target like user@host' : code === 'network' ? 'No connection to the Hub' : code;
+  code === 'target' ? 'Enter an address with no spaces, like dev@vps' : code === 'network' ? 'No connection to the Hub' : code;
 
 /** One setting row: label and hint on the left, the kit SwitchToggle on the right. */
 export function Toggle({
