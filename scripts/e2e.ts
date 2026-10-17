@@ -256,6 +256,35 @@ try {
     }
     return 'no switch offered (agent pane without lens support) — Screen only';
   });
+  await flow('chat lens holds through a /clear whose new transcript lands late', async () => {
+    const agent = await pane('e2e-clear');
+    const key = `HireOpz/default/${agent}`;
+    await report(agent, 'idle');
+    await print(agent, ['screen of the clear test']);
+    const turn = (text: string) => ({ role: 'user', text, tools: [], at: Date.now() });
+    // The old conversation, then 404s past the 5 s grace (the new session has no file yet),
+    // then the new one: a view that showed a transcript waits instead of going to Screen.
+    let reply: object | null = { sessionId: 'e2e-old', at: Date.now(), turns: [turn('old conversation')] };
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    try {
+      await page.route((url: URL) => /^\/api\/panes\/[^/]+\/chat$/.test(url.pathname), (route: { fulfill: (reply: object) => Promise<void> }) =>
+        route.fulfill(reply ? { json: reply } : { status: 404, json: { error: 'no-session' } }));
+      await page.addInitScript((k: string) => localStorage.setItem(`tautan.lens.${k}`, 'chat'), key);
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      await page.getByText('old conversation').waitFor({ timeout: 8_000 });
+      reply = null;
+      // Working polls every 1.5 s, so the 404s start at once and outlast the grace.
+      await report(agent, 'working');
+      await page.waitForTimeout(8_000);
+      assert(await page.locator('[aria-label$="transcript"]').count() === 1, 'still Chat after 8 s of 404');
+      reply = { sessionId: 'e2e-new', at: Date.now(), turns: [turn('/clear')] };
+      await report(agent, 'idle');
+      await page.getByText('/clear').first().waitFor({ timeout: 8_000 });
+      return assert(await page.getByText('old conversation').count() === 0, 'new conversation shown');
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
 
   await flow('file viewer folder view lists the folder and opens a sibling', async () => {
     await desktop.goto(`${BASE}/#/file/${encodeURIComponent(KEY)}?path=${encodeURIComponent(`${fixture.dir}/chart.png`)}`, { waitUntil: 'networkidle' });
@@ -458,6 +487,38 @@ try {
       await row.getByText('Sent · waiting for Claude').waitFor({ timeout: 8_000 });
       // Row 4 is one step below the cursor on row 1: one down, then enter.
       return assert(sent.length === 1 && sent[0]!.includes('"keys":["down","enter"]') && sent[0]!.includes('"promptId"'), `sent=${sent.join('|').slice(0, 120)}`);
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
+  await flow('chat view: a ! command Claude suggests is a Run card; Run sends !command, one run later offers Run again, !res.ok stays code', async () => {
+    const runner = await pane('e2e-shell-run');
+    const key = `HireOpz/default/${runner}`;
+    await report(runner, 'idle');
+    const now = Date.now();
+    const transcript = { sessionId: 'e2e', at: now, turns: [
+      { role: 'assistant', text: 'Send this alone: `! sudo apt install -y git-lfs`. The `!res.ok` guard stays.\n\n```\n! gh pr merge 35 --merge\n```', tools: [], at: now - 60_000 },
+      { role: 'user', text: '!gh pr merge 35 --merge\n\n```\nMerged\n```', tools: [], at: now - 30_000 },
+    ] };
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    const sent: string[] = [];
+    try {
+      await page.route((url: URL) => /^\/api\/panes\/[^/]+\/chat$/.test(url.pathname), (route: { fulfill: (reply: object) => Promise<void> }) => route.fulfill({ json: transcript }));
+      // The input never reaches the shell: `!sudo …` is for the card's POST only.
+      await page.route((url: URL) => /^\/api\/panes\/[^/]+\/input$/.test(url.pathname), (route: { request(): { postData(): string | null }; fulfill: (reply: object) => Promise<void> }) => {
+        sent.push(route.request().postData() ?? '');
+        return route.fulfill({ status: 204, body: '' });
+      });
+      await page.addInitScript((k: string) => localStorage.setItem(`tautan.lens.${k}`, 'chat'), key);
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      const run = page.getByRole('button', { name: 'Run ! sudo apt install -y git-lfs in Claude' });
+      await run.waitFor({ timeout: 8_000 });
+      assert(await page.getByRole('button', { name: 'Run ! gh pr merge 35 --merge again in Claude' }).count() === 1, 'a fenced command run later offers Run again');
+      assert(await page.getByRole('button', { name: /res\.ok/ }).count() === 0, '!res.ok stays code');
+      await run.click();
+      await page.getByRole('button', { name: '! sudo apt install -y git-lfs, sent' }).waitFor({ timeout: 8_000 });
+      const body = JSON.parse(sent[0] ?? '{}') as { text?: string; keys?: string[] };
+      return assert(sent.length === 1 && body.text === '!sudo apt install -y git-lfs' && body.keys?.join() === 'enter', `sent=${sent.join('|').slice(0, 120)}`);
     } finally {
       await page.close().catch(() => {});
     }

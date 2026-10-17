@@ -379,6 +379,15 @@ async function piSession(known: string | undefined, info: Promise<ProcessInfo | 
   }
 }
 
+/** The session a Claude process runs, from the `~/.claude/sessions/<pid>.json` Claude keeps
+ *  for itself and rewrites on a `/clear`; `undefined` for a Claude that keeps none. */
+async function claudeSessionOf(pid: number, io: TranscriptIo, home: string, target?: string): Promise<string | undefined> {
+  try {
+    const value = JSON.parse(await io.read(join(target ? '$HOME' : home, '.claude', 'sessions', `${pid}.json`), target)) as { sessionId?: unknown };
+    return typeof value.sessionId === 'string' && sessionId.test(value.sessionId) ? value.sessionId : undefined;
+  } catch { return undefined; }
+}
+
 export async function resolveSession(hub: SessionHub, paneKey: string, io?: TranscriptIo, home = homedir(), target?: string, piFiles?: PiFiles): Promise<ResolvedSession | undefined> {
   const found = hub.resolvePane(paneKey);
   if (!found || found.entry.mux.kind !== 'herdr') return undefined;
@@ -390,13 +399,20 @@ export async function resolveSession(hub: SessionHub, paneKey: string, io?: Tran
   // root scans ADR 0005 forbids, so it stays unresolved.
   if (pane?.agent === 'omp') return typeof known === 'string' && piFile.test(known) ? { agent: 'omp', path: known } : undefined;
   if (pane?.agent === 'codex' && known && sessionId.test(known)) return { agent: 'codex', sessionId: known };
+  const info = await Promise.resolve(found.entry.mux.processInfo?.(found.paneId)).catch(() => undefined);
+  const processes = info ? [...info.foregroundProcesses].sort((a, b) => Number(b.pid === info.foregroundProcessGroupId) - Number(a.pid === info.foregroundProcessGroupId)) : [];
+  const isClaude = (process: Process) => process.name?.toLowerCase() === 'claude' || (process.argv ?? []).some(arg => /(?:^|\/)claude$/i.test(arg));
+  // herdr's report names whichever Claude last ran its SessionStart hook with this Pane's
+  // HERDR_PANE_ID, and a background `claude daemon` spawned from the Pane inherits that: each
+  // session it resumes reports itself here. The Pane's own Claude says which session it runs.
+  // ponytail: one process_info and one small read per resolve; cache by pid if it ever shows.
+  const own = io && processes.find(isClaude)?.pid;
+  const ownSession = own ? await claudeSessionOf(own, io, home, target) : undefined;
+  if (ownSession) return { agent: 'claude', sessionId: ownSession };
   if (known && sessionId.test(known)) return { agent: 'claude', sessionId: known };
-  const info = await found.entry.mux.processInfo?.(found.paneId);
-  if (!info) return undefined;
-  const processes = [...info.foregroundProcesses].sort((a, b) => Number(b.pid === info.foregroundProcessGroupId) - Number(a.pid === info.foregroundProcessGroupId));
   for (const process of processes) {
+    if (!isClaude(process)) continue;
     const argv = process.argv ?? [];
-    if (process.name?.toLowerCase() !== 'claude' && !argv.some(arg => /(?:^|\/)claude$/i.test(arg))) continue;
     for (let index = 0; index < argv.length - 1; index++) if (['-r', '--resume', '--session-id'].includes(argv[index]!) && sessionId.test(argv[index + 1]!)) return { agent: 'claude', sessionId: argv[index + 1]! };
   }
   // The Pane's own `codex resume <thread-id>` descriptor carries the same id the hook reports.

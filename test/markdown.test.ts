@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Markdown } from '../web/markdown.tsx';
+import { Markdown, ShellRun, shellCommand, shellLines } from '../web/markdown.tsx';
 
 /** Rendered HTML with class and style attributes dropped, so tests read the structure. */
 const md = (text: string) =>
@@ -217,5 +217,39 @@ describe('images in table cells', () => {
       expect(out).not.toContain('<img');
       expect(out).toContain('![x](');
     }
+  });
+});
+
+describe('! commands', () => {
+  test('inline code needs the space Claude writes; code that negates stays code', () => {
+    expect(shellCommand('! sudo apt install -y git-lfs')).toBe('sudo apt install -y git-lfs');
+    expect(shellCommand("! docker ps --format '{{.Names}}' | grep 0.0.0.0")).toBe("docker ps --format '{{.Names}}' | grep 0.0.0.0");
+    for (const code of ['!res.ok', '!important', '!contains(x)', '!', '! ', '!= null', '! <command>', '!! ls', '![a](b)', 'a ! b']) expect([code, shellCommand(code)]).toEqual([code, undefined]);
+  });
+
+  test('a shell or unlabelled fence of ! lines gives its commands; anything else gives none', () => {
+    expect(shellLines('', '! gh pr merge 35 --merge')).toEqual(['gh pr merge 35 --merge']);
+    expect(shellLines('bash', '!cd apps/web && pnpm migrate\n\n! echo done')).toEqual(['cd apps/web && pnpm migrate', 'echo done']);
+    expect(shellLines('ts', '!ok')).toBeUndefined();
+    expect(shellLines('', '! docker run \\\n  -p 80:80 nginx')).toBeUndefined();
+    expect(shellLines('', '\n')).toBeUndefined();
+  });
+
+  const run = (text: string) =>
+    renderToStaticMarkup(createElement(ShellRun.Provider, { value: (command: string) => createElement('run', null, command) }, createElement(Markdown, { text })))
+      .replace(/ (class|style)="[^"]*"/g, '')
+      .replace(/^<div>|<\/div>$/g, '');
+
+  test('with a card provider, a paragraph gets one card per command under it, and a ! fence turns into cards', () => {
+    expect(run('Send `! sudo apt install -y git-lfs` alone, then `! sudo apt install -y git-lfs` again.')).toBe(
+      '<p>Send <code>! sudo apt install -y git-lfs</code> alone, then <code>! sudo apt install -y git-lfs</code> again.</p><div><run>sudo apt install -y git-lfs</run></div>',
+    );
+    expect(run('1. Run **`! git branch -m main`**.')).toBe('<ol><li>Run <strong><code>! git branch -m main</code></strong>.<div><run>git branch -m main</run></div></li></ol>');
+    expect(run('```\n! gh pr merge 35 --merge\n```')).toBe('<div><run>gh pr merge 35 --merge</run></div>');
+  });
+
+  test('without a provider nothing changes', () => {
+    expect(md('Run `! ls`.')).toBe('<p>Run <code>! ls</code>.</p>');
+    expect(md('```\n! ls\n```')).toContain('<pre><code>! ls</code></pre>');
   });
 });

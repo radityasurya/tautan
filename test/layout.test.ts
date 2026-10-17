@@ -334,6 +334,11 @@ describe('caretAt', () => {
     expect(caretAt(['● Done.', rule, '❯\u00a0', rule, '  ⏵⏵ auto mode on'])).toEqual({ row: 2, col: 2 });
     expect(caretAt(['❯ old prompt', 'output', rule, '❯ fix the te', rule, '  footer'])).toEqual({ row: 3, col: 12 });
   });
+  test('Claude: an input that wraps or breaks continues under the ❯, up to the box rule', () => {
+    expect(caretAt([rule, '❯ a long reply that wraps', '  onto a second row and', '  a third one', rule, '  footer'])).toEqual({ row: 3, col: 13 });
+    // A ❯ with no rule under it (a numbered menu) keeps its own row.
+    expect(caretAt(['Do you want to proceed?', '❯ 1. Yes', '  2. No', '', 'Esc to cancel'])).toEqual({ row: 1, col: 8 });
+  });
   test('pi: the row inside its editor, between the last two rules', () => {
     expect(caretAt(['reply', rule, '', rule, '~/projects   zai/glm-5.3'])).toEqual({ row: 2, col: 0 });
     expect(caretAt(['reply', rule, 'hello there', '', rule, 'footer'])).toEqual({ row: 2, col: 11 });

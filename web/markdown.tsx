@@ -8,7 +8,7 @@
 // reference only matches a label without emphasis characters. No setext headings, footnotes,
 // HTML, linked images, or image references. Add a real parser (micromark) when a transcript
 // needs one of those.
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, Fragment, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Picture, safeImage } from './image.tsx';
 import type { Lang } from './highlight.ts';
 
@@ -200,7 +200,39 @@ function link(href: string, children: ReactNode, key: number) {
   return <a key={key} href={href} target="_blank" rel="noopener noreferrer" className={LINK}>{children}</a>;
 }
 
-export function inline(text: string, refs?: Record<string, string>): ReactNode[] {
+// ---- `!` commands ----
+// Claude Code runs a prompt that starts with `!` in its shell mode, and asks the user to type
+// `! <command>` for anything interactive or privileged. Such a command can be run from the Chat.
+
+/** The command in a `!` line, or undefined. Inline code needs the space Claude writes
+ *  (`! cmd`), because `!res.ok` and `!important` are code; a line in a shell fence may drop it.
+ *  `!=`, `!!`, `![…]` and a `<placeholder>` are never commands. */
+export function shellCommand(code: string, spaced = true): string | undefined {
+  return code.trim().match(spaced ? /^!\s+([^\s!=[(<][\s\S]*)$/ : /^!\s*([^\s!=[(<][\s\S]*)$/)?.[1]!.trim();
+}
+
+const SHELL_FENCE = new Set(['', 'sh', 'bash', 'zsh', 'shell', 'console', 'text']);
+
+/** A shell (or unlabelled) fence whose every non-empty line is a `!` command: those commands. */
+export function shellLines(lang: string, text: string): string[] | undefined {
+  if (!SHELL_FENCE.has(lang.toLowerCase())) return;
+  const lines = text.split('\n').filter((line) => line.trim());
+  const commands = lines.map((line) => shellCommand(line, false));
+  return lines.length && commands.every(Boolean) ? (commands as string[]) : undefined;
+}
+
+/** Draws a card that runs a `!` command; without one, a command stays code. The Chat view
+ *  provides it for Claude's own replies only. */
+export const ShellRun = createContext<((command: string) => ReactNode) | null>(null);
+
+function ShellCards({ commands, className }: { commands: string[]; className?: string }) {
+  const card = useContext(ShellRun);
+  if (!card || !commands.length) return null;
+  return <div className={`flex flex-col gap-2 ${className ?? ''}`}>{commands.map((command, n) => <Fragment key={n}>{card(command)}</Fragment>)}</div>;
+}
+
+/** `found` collects the `!` commands in its inline code, for cards under the paragraph. */
+export function inline(text: string, refs?: Record<string, string>, found?: string[]): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   const push = (s: string) => {
@@ -245,12 +277,17 @@ export function inline(text: string, refs?: Record<string, string>): ReactNode[]
     last = p + m[0].length;
     const k = out.length;
     if (m[1] !== undefined) push(m[1]);
-    else if (m[3] !== undefined) out.push(<code key={k} className="rounded-chip bg-bg px-1 py-px font-mono text-[0.86em] [overflow-wrap:anywhere]">{m[3].replace(/\n/g, ' ')}</code>);
-    else if (m[4] !== undefined) out.push(SAFE_URL.test(m[5]!) ? link(m[5]!, inline(m[4], refs), k) : m[0]);
+    else if (m[3] !== undefined) {
+      const code = m[3].replace(/\n/g, ' ');
+      const command = found && shellCommand(code);
+      if (command && !found.includes(command)) found.push(command);
+      out.push(<code key={k} className="rounded-chip bg-bg px-1 py-px font-mono text-[0.86em] [overflow-wrap:anywhere]">{code}</code>);
+    }
+    else if (m[4] !== undefined) out.push(SAFE_URL.test(m[5]!) ? link(m[5]!, inline(m[4], refs, found), k) : m[0]);
     else if (m[6] !== undefined) out.push(link(m[6], m[6], k));
-    else if (m[7] !== undefined) out.push(<strong key={k} className="font-semibold"><em>{inline(m[7], refs)}</em></strong>);
-    else if (m[8] !== undefined || m[9] !== undefined) out.push(<strong key={k} className="font-semibold">{inline((m[8] ?? m[9])!, refs)}</strong>);
-    else if (m[10] !== undefined) out.push(<s key={k}>{inline(m[10], refs)}</s>);
+    else if (m[7] !== undefined) out.push(<strong key={k} className="font-semibold"><em>{inline(m[7], refs, found)}</em></strong>);
+    else if (m[8] !== undefined || m[9] !== undefined) out.push(<strong key={k} className="font-semibold">{inline((m[8] ?? m[9])!, refs, found)}</strong>);
+    else if (m[10] !== undefined) out.push(<s key={k}>{inline(m[10], refs, found)}</s>);
     else if (m[14] !== undefined) {
       const src = /^https:/i.test(m[14]) ? safeImage(m[14]) : undefined;
       out.push(src ? <Picture key={k} src={src} alt={m[13]!.trim() || 'Image'} /> : m[0]);
@@ -264,7 +301,7 @@ export function inline(text: string, refs?: Record<string, string>): ReactNode[]
       out.push(href && SAFE_URL.test(href) ? link(href, inline(m[17]!, refs), k) : m[0]);
     }
     else if (m[18] !== undefined) push(m[18]!);
-    else out.push(<em key={k}>{inline((m[11] ?? m[12])!, refs)}</em>);
+    else out.push(<em key={k}>{inline((m[11] ?? m[12])!, refs, found)}</em>);
     TRIGGER.lastIndex = last; // the dispatch recursed into inline() and moved it
     if (++spans >= MAX_SPANS) break; // the ceiling above: the tail stays plain text
   }
@@ -386,31 +423,46 @@ const HEADING_CLASS = ['', 'text-title', 'text-title', 'text-body font-semibold'
 const CELL = 'border-border px-2 py-1.5 align-top [&+*]:border-l';
 
 function Blocks({ blocks, tight = false, refs }: { blocks: Block[]; tight?: boolean; refs?: Record<string, string> }) {
+  const shell = useContext(ShellRun) !== null;
   // A list item holding one paragraph renders it bare, so the marker sits on its text.
-  if (tight && blocks.length === 1 && blocks[0]!.kind === 'para') return <>{inline(blocks[0]!.text, refs)}</>;
+  if (tight && blocks.length === 1 && blocks[0]!.kind === 'para') {
+    const found: string[] = [];
+    const text = inline(blocks[0]!.text, refs, shell ? found : undefined);
+    return <>{text}<ShellCards commands={found} className="mt-2" /></>;
+  }
   return <>{blocks.map((block, n) => <BlockView key={n} block={block} refs={refs} />)}</>;
 }
 
 function BlockView({ block, refs }: { block: Block; refs?: Record<string, string> }) {
+  const shell = useContext(ShellRun) !== null;
   switch (block.kind) {
     case 'heading': {
       const H = `h${block.level}` as 'h1';
       return <H className={`${HEADING_CLASS[block.level]} font-semibold [&:not(:first-child)]:mt-1`}>{inline(block.text, refs)}</H>;
     }
-    case 'para': return <p>{inline(block.text, refs)}</p>;
+    case 'para': {
+      // A `!` command in the paragraph's inline code gets its card under the paragraph.
+      const found: string[] = [];
+      const text = inline(block.text, refs, shell ? found : undefined);
+      return <><p>{text}</p><ShellCards commands={found} /></>;
+    }
     case 'rule': return <hr className="my-1 border-0 border-t border-border" />;
     case 'quote': return <blockquote className="flex flex-col gap-2 border-l-2 border-border pl-3 text-muted"><Blocks blocks={block.blocks} refs={refs} /></blockquote>;
-    case 'code': return (
-      <div className="min-w-0 overflow-hidden rounded-card border border-border bg-bg">
-        {(block.lang || canCopy()) && (
-          <div className="flex min-h-9 items-center justify-between gap-2 border-b border-border pl-3 pr-1 lg:min-h-7">
-            <span className="truncate font-mono text-[10px] leading-none text-muted">{block.lang}</span>
-            <CopyButton text={block.text} className="min-h-8 rounded-chip px-2 text-caption text-muted hover:text-fg active:text-fg lg:min-h-6" />
-          </div>
-        )}
-        <pre className="max-h-96 overflow-auto overscroll-contain px-3 py-2 font-mono text-caption"><CodeText lang={block.lang} text={block.text} /></pre>
-      </div>
-    );
+    case 'code': {
+      const commands = shell ? shellLines(block.lang, block.text) : undefined;
+      if (commands) return <ShellCards commands={commands} />;
+      return (
+        <div className="min-w-0 overflow-hidden rounded-card border border-border bg-bg">
+          {(block.lang || canCopy()) && (
+            <div className="flex min-h-9 items-center justify-between gap-2 border-b border-border pl-3 pr-1 lg:min-h-7">
+              <span className="truncate font-mono text-[10px] leading-none text-muted">{block.lang}</span>
+              <CopyButton text={block.text} className="min-h-8 rounded-chip px-2 text-caption text-muted hover:text-fg active:text-fg lg:min-h-6" />
+            </div>
+          )}
+          <pre className="max-h-96 overflow-auto overscroll-contain px-3 py-2 font-mono text-caption"><CodeText lang={block.lang} text={block.text} /></pre>
+        </div>
+      );
+    }
     case 'list': {
       const List = block.ordered ? 'ol' : 'ul';
       // A bare marker with nothing after it is still a task item.

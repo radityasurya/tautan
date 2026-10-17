@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { FocusEvent, ReactNode, RefObject } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import type { FocusEvent, ReactNode, RefObject, TouchEvent } from 'react';
 
 import type { BranchList, PluginAction, PluginRun, State, Worktree } from '../shared/types.ts';
-import { api, navigate } from './app.tsx';
+import { api, navigate, reducedMotion, useDesktop } from './app.tsx';
 import { Toggle } from './hosts.tsx';
 import { actionsFor, appeared, byPlugin, keysIn, NEW_PANE_MS, type PaneWatch } from './plugins.ts';
 import { FolderBrowser } from './folders.tsx';
@@ -192,6 +192,183 @@ export function Sheet({
  */
 export const FLUSH_BODY = { margin: '0 -24px -24px', height: 'calc(100dvh - 76px)' } as const;
 
+/** A text button in the bottom sheet's header row: Cancel on the left, the action on the right. */
+const BAR_BUTTON =
+  'flex h-11 items-center rounded-chip px-2.5 text-body text-accent outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent active:opacity-50 disabled:text-muted disabled:active:opacity-100';
+
+/**
+ * A form sheet in the Termius and iOS manner. On the phone it is a bottom sheet: a grabber,
+ * then `Cancel · title · Save`, and dragging that top down closes it. At `lg` it is a centred
+ * modal with Cancel and Save at the foot. The body scrolls inside, up to 92 % of the space
+ * above the keyboard (`--vv-h`). Escape and a tap on the scrim close it, Tab stays inside, a
+ * field marked `data-autofocus` takes focus on open, and closing gives focus back to the
+ * opener, as `Sheet` does. Other sheets keep the side panel until they move here.
+ */
+export function ModalSheet({
+  open,
+  title,
+  onClose,
+  save,
+  children,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  /** The confirm button. While `busy` it stays focusable but does nothing. */
+  save: { label: string; onSave: () => void; disabled?: boolean; busy?: boolean };
+  children: ReactNode;
+}) {
+  const desktop = useDesktop();
+  // Mounted on open; kept for the exit animation, then gone.
+  const [mounted, setMounted] = useState(open);
+  useEffect(() => {
+    if (open) return setMounted(true);
+    const t = setTimeout(() => setMounted(false), reducedMotion() ? 0 : 220);
+    return () => clearTimeout(t);
+  }, [open]);
+  const root = useRef<HTMLDivElement | null>(null);
+  const panel = useRef<HTMLDivElement | null>(null);
+  const opener = useFocusBack(open, root);
+  const titleId = useId();
+  // A closing sheet keeps its title while it leaves: Edit Host does not turn into New Host
+  // when the caller clears what it was editing.
+  const shownTitle = useRef(title);
+  if (open) shownTitle.current = title;
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const box = panel.current;
+    (box?.querySelector<HTMLElement>('[data-autofocus]') ?? box)?.focus({ preventScroll: true });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => {
+      const box = panel.current;
+      if (!box || e.isComposing) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+      if (e.key !== 'Tab') return;
+      const all = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.tabIndex >= 0 && !el.matches(':disabled'));
+      const first = all[0];
+      const last = all.at(-1);
+      const at = document.activeElement;
+      if (!first || !last) return;
+      if (!box.contains(at) || at === (e.shiftKey ? first : last) || at === box) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      }
+    };
+    document.addEventListener('keydown', key);
+    return () => document.removeEventListener('keydown', key);
+  }, [open, onClose]);
+
+  // Drag the grabber and header row down to close. Touch, not pointer, events: Chromium
+  // cancels a pointer drag it hands to a scroller.
+  const drag = useRef<{ y: number; dy: number } | null>(null);
+  const grab = {
+    onTouchStart: (e: TouchEvent) => {
+      drag.current = { y: e.touches[0]!.clientY, dy: 0 };
+      if (panel.current) panel.current.style.transition = 'none';
+    },
+    onTouchMove: (e: TouchEvent) => {
+      const d = drag.current;
+      if (!d || !panel.current) return;
+      d.dy = Math.max(0, e.touches[0]!.clientY - d.y);
+      panel.current.style.transform = d.dy ? `translateY(${d.dy}px)` : '';
+    },
+    onTouchEnd: () => {
+      const d = drag.current;
+      drag.current = null;
+      if (!d || !panel.current) return;
+      // ponytail: distance only; add a flick velocity if a short fast swipe should close too.
+      if (d.dy > 96) return onClose();
+      panel.current.style.transition = 'transform 200ms cubic-bezier(0.2, 0, 0, 1)';
+      panel.current.style.transform = '';
+    },
+  };
+
+  if (!open && !mounted) return null;
+  const state = open ? 'open' : 'closed';
+  const run = () => {
+    if (!save.busy && !save.disabled) save.onSave();
+  };
+  return (
+    <div
+      data-sheet
+      ref={(el) => {
+        root.current = el;
+        if (el) openers.set(el, opener);
+      }}
+      // Sized to the visual viewport, so the phone panel sits on the keyboard (app.tsx).
+      style={{ top: 'var(--vv-top, 0px)', height: 'var(--vv-h, 100dvh)' }}
+      className={`fixed inset-x-0 z-[10000] flex justify-center ${desktop ? 'items-center p-4' : 'items-end'} ${open ? '' : 'pointer-events-none'}`}
+    >
+      <div aria-hidden data-state={state} onClick={onClose} className="fade absolute inset-0 bg-black/40" />
+      <div
+        ref={panel}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        data-state={state}
+        style={{ maxHeight: desktop ? 'min(720px, calc(var(--vv-h, 100dvh) - 64px))' : 'calc(var(--vv-h, 100dvh) * 0.92)' }}
+        className={`relative flex w-full flex-col bg-surface shadow-elevated outline-none ${
+          desktop ? `max-w-[460px] rounded-drawer ${open ? 'rise' : 'fade'}` : 'sheet-rise max-w-xl rounded-t-drawer'
+        }`}
+      >
+        {desktop ? (
+          <h2 id={titleId} className="shrink-0 px-5 pt-5 pb-1 text-title text-fg">
+            {shownTitle.current}
+          </h2>
+        ) : (
+          <div className="shrink-0 touch-none select-none" {...grab} onTouchCancel={grab.onTouchEnd}>
+            <div aria-hidden className="mx-auto mt-2 h-[5px] w-9 rounded-full bg-muted/40" />
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 px-1.5 pb-1">
+              <button type="button" onClick={onClose} className={`${BAR_BUTTON} justify-self-start`}>
+                Cancel
+              </button>
+              <h2 id={titleId} className="truncate text-center text-title text-fg">
+                {shownTitle.current}
+              </h2>
+              <button
+                type="button"
+                onClick={run}
+                disabled={save.disabled}
+                aria-disabled={save.busy || undefined}
+                aria-busy={save.busy || undefined}
+                className={`${BAR_BUTTON} justify-self-end font-semibold`}
+              >
+                {save.label}
+              </button>
+            </div>
+          </div>
+        )}
+        <div
+          className={`min-h-0 flex-1 overflow-y-auto overscroll-contain ${
+            desktop ? 'px-5 pt-3 pb-5' : 'px-4 pt-2 pb-[max(var(--safe-b,env(safe-area-inset-bottom)),20px)]'
+          }`}
+        >
+          {/* Its own column, so a card never shrinks to fit: the scroller above scrolls instead. */}
+          <div className="flex flex-col gap-6">{children}</div>
+        </div>
+        {desktop && (
+          <div className="flex shrink-0 justify-end gap-2 border-t border-border px-5 py-3.5">
+            <Button variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={run} disabled={save.disabled} loading={save.busy}>
+              {save.label}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** The error codes the Hub sends, in words. Anything else is shown with its code. */
 const WHY: Record<string, string> = {
   network: 'No connection to the Hub',
@@ -202,7 +379,7 @@ const WHY: Record<string, string> = {
   'workspace not found': 'Workspace is gone',
   agent_not_ready: 'Agent did not start',
   target: 'Enter a target like user@host',
-  hosts: 'Check the SSH target',
+  hosts: 'Check the address. Another Host may use it already',
   login: 'That login is not the one this request carries',
   timeout: 'git took too long, so tautan stopped waiting',
   branch: 'That branch is gone',

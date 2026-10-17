@@ -482,6 +482,22 @@ describe('resolveSession', () => {
     await expect(resolveSession(hub(async () => { throw new Error('gone'); }), paneKey)).resolves.toEqual({ agent: 'claude', sessionId: id }); // the tree's copy stands in
   });
 
+  test("the Pane's own Claude names its session: another Claude's report under this Pane's id loses", async () => {
+    // A background `claude daemon` spawned from the Pane inherits HERDR_PANE_ID, and each
+    // session it resumes reports itself here (seen 2026-10-17: a jala conversation on taut).
+    const own = '44444444-4444-4444-4444-444444444444';
+    const files: Record<string, string> = { '/home/tama/.claude/sessions/2.json': JSON.stringify({ pid: 2, sessionId: own, cwd: '/home/tama/projects/taut' }) };
+    const io: TranscriptIo = {
+      stat: async () => undefined,
+      read: async (path) => { if (path in files) return files[path]!; throw new Error('ENOENT'); },
+    };
+    const hub = sessionHub(id, [{ pid: 1, name: 'zsh', argv: ['zsh'] }, { pid: 2, name: 'claude', argv: ['claude'] }]);
+    await expect(resolveSession(hub, paneKey, io, '/home/tama')).resolves.toEqual({ agent: 'claude', sessionId: own });
+    // A Claude that keeps no such file: herdr's report stands.
+    delete files['/home/tama/.claude/sessions/2.json'];
+    await expect(resolveSession(hub, paneKey, io, '/home/tama')).resolves.toEqual({ agent: 'claude', sessionId: id });
+  });
+
   test('finds a Claude resume descriptor in the foreground processes', async () => {
     await expect(resolveSession(sessionHub(undefined, [
       { pid: 1, name: 'zsh', argv: ['zsh'] },
