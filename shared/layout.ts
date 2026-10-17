@@ -178,11 +178,17 @@ export function fullScreen(mouse: boolean, alt: boolean | undefined, text: strin
  */
 export function caretAt(rows: string[]): { row: number; col: number } | null {
   const end = (row: string) => row.replace(/[\s\u00a0]+$/, '').length;
+  const rule = (row: string) => /^\s*─{20,}\s*$/.test(row);
   for (let i = rows.length - 1; i >= 0; i--) {
     const at = rows[i]!.search(/\S/);
-    if (rows[i]![at] === '❯') return { row: i, col: Math.max(end(rows[i]!), at + 2) };
+    if (rows[i]![at] !== '❯') continue;
+    // A wrapped or multi-line input goes on under the ❯ to the box's closing rule; a ❯ with
+    // no rule under it (a numbered menu) keeps its own row.
+    const close = rows.findIndex((row, j) => j > i && rule(row));
+    for (let j = close - 1; j > i; j--) if (rows[j]!.trim()) return { row: j, col: end(rows[j]!) };
+    return { row: i, col: Math.max(end(rows[i]!), at + 2) };
   }
-  const rules = rows.flatMap((row, i) => (/^\s*─{20,}\s*$/.test(row) ? [i] : []));
+  const rules = rows.flatMap((row, i) => (rule(row) ? [i] : []));
   const [top, bottom] = rules.slice(-2);
   if (top !== undefined && bottom !== undefined && bottom - top >= 2) {
     let row = bottom - 1;
