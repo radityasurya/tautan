@@ -491,6 +491,38 @@ try {
       await page.close().catch(() => {});
     }
   });
+  await flow('chat view: a ! command Claude suggests is a Run card; Run sends !command, one run later offers Run again, !res.ok stays code', async () => {
+    const runner = await pane('e2e-shell-run');
+    const key = `HireOpz/default/${runner}`;
+    await report(runner, 'idle');
+    const now = Date.now();
+    const transcript = { sessionId: 'e2e', at: now, turns: [
+      { role: 'assistant', text: 'Send this alone: `! sudo apt install -y git-lfs`. The `!res.ok` guard stays.\n\n```\n! gh pr merge 35 --merge\n```', tools: [], at: now - 60_000 },
+      { role: 'user', text: '!gh pr merge 35 --merge\n\n```\nMerged\n```', tools: [], at: now - 30_000 },
+    ] };
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    const sent: string[] = [];
+    try {
+      await page.route((url: URL) => /^\/api\/panes\/[^/]+\/chat$/.test(url.pathname), (route: { fulfill: (reply: object) => Promise<void> }) => route.fulfill({ json: transcript }));
+      // The input never reaches the shell: `!sudo …` is for the card's POST only.
+      await page.route((url: URL) => /^\/api\/panes\/[^/]+\/input$/.test(url.pathname), (route: { request(): { postData(): string | null }; fulfill: (reply: object) => Promise<void> }) => {
+        sent.push(route.request().postData() ?? '');
+        return route.fulfill({ status: 204, body: '' });
+      });
+      await page.addInitScript((k: string) => localStorage.setItem(`tautan.lens.${k}`, 'chat'), key);
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      const run = page.getByRole('button', { name: 'Run ! sudo apt install -y git-lfs in Claude' });
+      await run.waitFor({ timeout: 8_000 });
+      assert(await page.getByRole('button', { name: 'Run ! gh pr merge 35 --merge again in Claude' }).count() === 1, 'a fenced command run later offers Run again');
+      assert(await page.getByRole('button', { name: /res\.ok/ }).count() === 0, '!res.ok stays code');
+      await run.click();
+      await page.getByRole('button', { name: '! sudo apt install -y git-lfs, sent' }).waitFor({ timeout: 8_000 });
+      const body = JSON.parse(sent[0] ?? '{}') as { text?: string; keys?: string[] };
+      return assert(sent.length === 1 && body.text === '!sudo apt install -y git-lfs' && body.keys?.join() === 'enter', `sent=${sent.join('|').slice(0, 120)}`);
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
   await flow('split view: both cells render, a click moves focus without a new EventSource, the Chat lens keeps the split, chips return at 1100 px', async () => {
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-split' });
     const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;

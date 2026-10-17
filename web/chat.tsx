@@ -2,14 +2,15 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { Blocked, ON_WARN, type ExplainResponse } from './blocked.tsx';
 import { Dot } from './home.tsx';
 import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
-import { CopyButton, Markdown } from './markdown.tsx';
+import { CopyButton, Markdown, ShellRun } from './markdown.tsx';
+import { haptic } from './app.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
 import { CHAT_PAGE_TURNS, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
 import { CHAT_EVENT, mergeTurns } from '../shared/chat-merge.ts';
 import { toolLabel, type AgentKind } from '../shared/tool-label.ts';
 import type { Span, Status } from '../shared/types.ts';
-import { deliver, dropPending, pendingSnapshot, settled, subscribePending, type Pending } from './pending.ts';
+import { deliver, dropPending, pendingSnapshot, settled, subscribePending, trackPending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
 import { toolbarFromScreen, type Profile, type ToolbarData } from './profiles.ts';
 import { store } from './store.tsx';
@@ -439,6 +440,51 @@ function ToolRow({
 }
 
 const capital = (name: string) => `${name[0]!.toUpperCase()}${name.slice(1)}`;
+
+/**
+ * A `!` command Claude asked the user to run. Run sends `!command` the way the Composer sends a
+ * reply, so Claude runs it in its shell mode and logs it, output and all, as the user's turn.
+ * While the Pane is blocked the reply is held, because text and Enter would answer the prompt.
+ * A command the user ran later in the conversation offers Run again instead.
+ */
+function ShellCard({ command, paneKey, agent, blocked, ran }: { command: string; paneKey: string; agent: string; blocked: boolean; ran: boolean }) {
+  const all = useSyncExternalStore(subscribePending, pendingSnapshot);
+  const text = `!${command}`;
+  const entry = all.find((p) => p.paneKey === paneKey && p.text === text);
+  const busy = !!entry && entry.state !== 'failed';
+  const label = !entry ? (ran ? 'Run again' : 'Run') : entry.state === 'failed' ? 'Retry' : entry.state === 'held' ? 'Held' : entry.state === 'sending' ? 'Sending…' : 'Sent';
+  const run = () => {
+    haptic();
+    if (entry) void deliver(entry.id); // only a failed one: the others are disabled
+    else if (blocked) trackPending(paneKey, text, true);
+    else void deliver(trackPending(paneKey, text));
+  };
+  return (
+    <div className="min-w-0 overflow-hidden rounded-card border border-border bg-bg">
+      <div className="flex min-h-9 items-center justify-between gap-2 border-b border-border pl-3 pr-1 lg:min-h-8">
+        <span className="truncate font-mono text-[10px] leading-none text-muted">shell</span>
+        <span className="flex shrink-0 items-center gap-1">
+          <CopyButton text={command} label={`Copy ${command}`} className="min-h-8 rounded-chip px-2 text-caption text-muted hover:text-fg active:text-fg lg:min-h-7" />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={run}
+            aria-label={busy ? `! ${command}, ${label.toLowerCase()}` : `${entry ? 'Retry' : 'Run'} ! ${command}${ran && !entry ? ' again' : ''} in ${capital(agent)}`}
+            className={`press inline-flex min-h-8 min-w-14 items-center justify-center rounded-chip px-3 text-caption font-semibold lg:min-h-7 ${
+              busy ? 'text-muted' : ran && !entry ? 'text-accent' : 'bg-accent text-bg'
+            }`}
+          >
+            <span aria-live="polite">{label}</span>
+          </button>
+        </span>
+      </div>
+      <pre className="whitespace-pre-wrap px-3 py-2 font-mono text-caption text-fg [overflow-wrap:anywhere]">
+        <span aria-hidden className="select-none text-accent">! </span>
+        {command}
+      </pre>
+    </div>
+  );
+}
 
 /** The blocked prompt, answered where it sits in the conversation. Absent unless blocked. */
 export interface Approval {
@@ -1178,6 +1224,17 @@ export function Chat({
   /** Every pending tool of the final turn, oldest first: the first is the one the on-screen
    *  prompt asks about, the rest queue behind it (18.4). */
   const targets = approval && view ? pendingTools(view.turns) : [];
+  /** Claude's replies in Main can run the `!` commands they suggest; a subagent's are read-only. */
+  const shell = !selected && /^claude/i.test(agent);
+  /** Each `!` command the user ran, by its latest turn: a card above that turn offers Run again. */
+  const ranAt = useMemo(() => {
+    const at = new Map<string, number>();
+    view?.turns.forEach((turn, n) => {
+      if (turn.role !== 'user') return;
+      for (const part of turn.text.split('\n\n')) if (part.startsWith('!')) at.set(part.slice(1).trim(), n);
+    });
+    return at;
+  }, [view]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1256,7 +1313,11 @@ export function Chat({
                           assistant ? 'bg-surface text-fg' : 'bg-accent/10 text-fg'
                         }`}
                       >
-                        {turn.text && <Markdown text={turn.text} />}
+                        {turn.text && (assistant && shell ? (
+                          <ShellRun.Provider value={(command) => <ShellCard command={command} paneKey={paneKey} agent={agent} blocked={status === 'blocked'} ran={(ranAt.get(command) ?? -1) > turnIndex} />}>
+                            <Markdown text={turn.text} />
+                          </ShellRun.Provider>
+                        ) : <Markdown text={turn.text} />)}
                         {turn.images?.length ? (
                           <span className={`block ${turn.text ? 'mt-2' : ''}`}>
                             <Gallery
