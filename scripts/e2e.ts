@@ -435,7 +435,10 @@ try {
     // The live shape (Claude Code 2.1, herdr's bash_permission_prompt): description, the
     // command between dashed rules, numbered options, `Esc to cancel · Tab to amend`.
     const box = (cmd: string) => ['● Creating an empty test file in /tmp', '─'.repeat(40), ' Bash command', ' Create an empty test file in /tmp', '╌'.repeat(40), ` ${cmd}`, '╌'.repeat(40), ' Do you want to proceed?', ' ❯ 1. Yes', '   4. No', '', ' Esc to cancel · Tab to amend'];
-    await print(asker, box('touch /tmp/tautan-permission-test'));
+    // The box goes up only after the user has scrolled: the Hub reads a box that ends in
+    // `Esc to cancel · Tab to amend` as blocked at once (62e64a6), and a prompt that arrives
+    // while the view is pinned to the bottom scrolls its row into view instead of the pill.
+    await print(asker, ['● Working on the test file']);
     await report(asker, 'working');
     // A transcript shaped like the live one (chat JSON saved from a real blocked Pane): long
     // enough to scroll, ending in the Bash call with no result.
@@ -460,6 +463,7 @@ try {
       await page.getByText('Filler turn 1:').waitFor({ timeout: 8_000 });
       await transcriptBox.evaluate((el: HTMLElement) => { el.scrollTop = 0; });
       await page.waitForTimeout(300);
+      await print(asker, box('touch /tmp/tautan-permission-test'));
       await report(asker, 'blocked');
       const pill = page.getByRole('button', { name: 'Needs your approval' });
       await pill.waitFor({ timeout: 8_000 });
