@@ -3,7 +3,8 @@
 **Status (2026-09-12):** every phase through 23 is built; 0.1.1 is released. Phases 24–30,
 the [parity waves](./WAVES-PARITY.md), are built and await verification on a real device.
 Phases 32–37, from the [second parity round](./WAVES-PARITY-2.md) (2026-10-11), are built and
-await verification too.
+await verification too. Phase 38 (2026-10-17) holds ideas from herdr-gpui; its worktree
+removal is built.
 `[~]` marks work that is built and verified in an emulated phone but not yet on a real
 device.
 
@@ -732,6 +733,55 @@ Verify: in a shell Pane, print a word, then 1,000 more lines. On the phone, open
 terminal**, find the word, and read the lines around it. Do the same in a tmux Pane. On
 desktop, ⌘⇧F opens Find, and **Older match** and **Newer match** step through matches. The
 phone ⋯ menu fits one screen, and **Layout…** holds the layout rows.
+
+## Phase 38 — ideas from herdr-gpui
+
+From a comparison with [herdr-gpui](https://github.com/penso/herdr-gpui) on 2026-10-17, a
+native desktop client for herdr. It reads herdr through the binary client socket, not the
+socket API, so only its ideas carry over. Usage meters and named palettes are already in
+Phase 28.
+
+- [~] **Remove worktree…** in the Workspace ⋯ menu of a linked worktree.
+      `GET /api/workspaces/:key/worktree` reports the branch, its base, the commits the base
+      lacks, uncommitted files, and the pull request state from `gh`.
+      `POST /api/workspaces/:key/worktree/remove {force, deleteBranch}` runs herdr
+      `worktree.remove`, which closes the Workspace, then deletes a merged branch. A dirty
+      checkout answers 409 until the user confirms the discard — `server/http.ts`,
+      `server/herdr.ts`, `server/mux.ts`, `web/home.tsx`, `web/sheets.tsx`,
+      `web/worktree-logic.ts`, `test/worktree.contract.test.ts`
+- [ ] **Web preview** for a Workspace: its listening ports, and a folder served with
+      `webshare` (design below)
+- [ ] **Host meters**: CPU, memory, and network latency per Host on the Hosts screen —
+      `server/hosts.ts`, `web/hosts.tsx`
+- [ ] **Review notes** on the Diff: notes on diff lines, sent to the Agent as one reply —
+      `web/diff.tsx`
+- [ ] A colour per Host, and drag to reorder Hosts on desktop — `web/hosts.tsx`
+
+### Web preview (design, not built)
+
+- **Ports.** `GET /api/workspaces/:key/ports` lists the TCP ports that processes in the
+  Workspace's Panes listen on. herdr `pane.process_info` gives each Pane's foreground process
+  group, and `ss -ltnpH` on the Host maps those pids to ports. Each row shows the port, the
+  bind address, and the command.
+- **Reach from the phone.** A port bound to `0.0.0.0` or the Host's Tailscale address opens
+  at `http://<host>:<port>`. A port bound to `127.0.0.1` cannot be reached, so its row offers
+  **Share on the tailnet**: `tailscale serve --bg --https=<port> http://127.0.0.1:<port>`
+  on the Host, and `--https=<port> off` to stop.
+- **webshare.** **Serve a folder** opens a Tab in the Workspace that runs
+  `webshare <port>` in a chosen folder, such as the Pane's cwd or `dist/`. `webshare` binds
+  Python's `http.server` to the Host's Tailscale address only, so the folder is reachable on
+  the tailnet and nowhere else. Closing the Tab stops it. A Host without `webshare` on its
+  `PATH` does not show the row.
+- **Viewing.** tautan is served over HTTPS, so it cannot frame a plain `http://` page (mixed
+  content). An `https://` share opens in a Preview sheet with Reload and **Open in new tab**.
+  An `http://` page, such as `webshare` or a `0.0.0.0` port, opens in a new browser tab.
+- **Out of scope:** page annotation and browser automation (herdr-gpui annotates page
+  elements and sends the note to an Agent).
+
+Verify: on the phone, open a worktree Workspace whose branch is merged. Its ⋯ menu offers
+**Remove worktree…**, the sheet says **Merged**, and Remove with **Delete branch** on removes
+the Workspace and the branch. In a worktree with an uncommitted file, the sheet warns, and
+**Remove and discard changes** removes it.
 
 ## Later (explicitly out of v1)
 

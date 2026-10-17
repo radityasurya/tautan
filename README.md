@@ -12,7 +12,10 @@ approve, attach a photo, dictate a prompt. Works over Tailscale as an installabl
   Smart replies.
 - Pushes a notification when an agent enters `blocked`, and badges the app for unseen work.
 - Creates a Tab or a Workspace, starts an agent in it, renames and closes Panes.
+- Reads an agent's conversation as a Chat view, and runs a `!` command Claude suggests with
+  one tap.
 - Shows `git diff` for a Workspace: working tree, staged, or against the base branch.
+- Removes a worktree Workspace once its branch has merged, and deletes the branch.
 - Reaches remote machines over SSH, so one Hub covers your whole tailnet.
 
 Backends: [herdr](https://herdr.dev) in full, tmux for list, read and input.

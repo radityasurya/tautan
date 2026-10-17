@@ -31,6 +31,8 @@ const snapshot = {
       // herdr 0.9.2 links a Workspace to a git worktree; 0.9.0 omits the field entirely.
       { workspace_id: 'w2', label: 'w2', worktree: { checkout_path: '/wt/checkout', repo_root: '/wt/repo', is_linked_worktree: true, repo_key: 'k', repo_name: 'r' } },
       { workspace_id: 'w3', label: 'w3' },
+      // 0.9.3: the main checkout reports the worktree record with is_linked_worktree: false.
+      { workspace_id: 'w4', label: 'w4', worktree: { checkout_path: '/main/co', repo_root: '/main/repo', is_linked_worktree: false } },
     ],
     tabs: [{ tab_id: 'w1:t1', workspace_id: 'w1' }, { tab_id: 'w1:t2', workspace_id: 'w1' }, { tab_id: 'w2:t1', workspace_id: 'w2' }],
     layouts: [
@@ -159,6 +161,11 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tr
     expect(workspaces.find(w => w.id === 'w1')!.cwd).toBe('/run/w1');
     // No worktree and no Pane: no cwd at all.
     expect(workspaces.find(w => w.id === 'w3')!.cwd).toBeUndefined();
+    // The worktree pair rides along only on a linked worktree: is_linked_worktree: false
+    // (the main checkout) and an absent record both get none.
+    expect(workspaces.find(w => w.id === 'w2')!.worktree).toEqual({ root: '/wt/repo', path: '/wt/checkout' });
+    expect(workspaces.find(w => w.id === 'w1')!.worktree).toBeUndefined();
+    expect(workspaces.find(w => w.id === 'w4')!.worktree).toBeUndefined();
     mux.close();
   });
 });

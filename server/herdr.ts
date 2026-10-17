@@ -120,7 +120,14 @@ export class HerdrMux implements Mux {
       // 0.9.2 bundled schema. Only linked worktrees report checkout_path, so the root
       // pane's cwd stays the fallback. Re-probe workspace.get when herdr ships a plain cwd.
       const cwd = w.worktree?.checkout_path ?? panes.find(p => p.workspaceId === w.workspace_id)?.cwd;
-      return { id: w.workspace_id, label: w.label || w.workspace_id, ...(cwd ? { cwd } : {}) };
+      // Only a linked worktree carries the pair; the main checkout reports
+      // is_linked_worktree: false (or omits the field) and gets none.
+      const linked = w.worktree?.is_linked_worktree === true
+        && typeof w.worktree.repo_root === 'string' && typeof w.worktree.checkout_path === 'string';
+      return {
+        id: w.workspace_id, label: w.label || w.workspace_id, ...(cwd ? { cwd } : {}),
+        ...(linked ? { worktree: { root: w.worktree.repo_root, path: w.worktree.checkout_path } } : {}),
+      };
     });
     this.paneContexts = new Map(panes.map(pane => [pane.id, {
       workspaceId: pane.workspaceId, tabId: pane.tabId,
@@ -302,6 +309,12 @@ export class HerdrMux implements Mux {
   async closePane(paneId: string): Promise<void> { await this.rpc('pane.close', { pane_id: paneId }); }
   async zoom(paneId: string, zoomed: boolean): Promise<void> { await this.rpc('pane.zoom', { pane_id: paneId, mode: zoomed ? 'on' : 'off' }); }
   async closeWorkspace(workspaceId: string): Promise<void> { await this.rpc('workspace.close', { workspace_id: workspaceId }); }
+
+  /** herdr ≥ 0.9.3 `worktree.remove`: removes the checkout and closes the Workspace.
+   *  The branch is never touched — that stays the Hub's own decision, after the removal. */
+  async removeWorktree(workspaceId: string, force: boolean): Promise<void> {
+    await this.rpc('worktree.remove', { workspace_id: workspaceId, ...(force ? { force: true } : {}) });
+  }
 
   /** ADR 0008: layout writes need herdr 0.9. Gate on the version the snapshot already carried —
    *  a write must not learn 0.8 by firing a doomed RPC. An unreadable or absent version attempts the call. */

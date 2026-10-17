@@ -3,7 +3,8 @@
 
 export type Status = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
-export interface Workspace { id: string; label: string; cwd?: string }
+/** the linked git worktree (herdr ≥ 0.9.3); mirrors StateWorkspace.worktree */
+export interface Workspace { id: string; label: string; cwd?: string; worktree?: { root: string; path: string } }
 export interface Tab { id: string; workspaceId: string; label: string }
 export interface Pane {
   id: string; tabId: string; workspaceId: string; title: string; cwd?: string;
@@ -134,7 +135,11 @@ export interface StateMux {
   /** as the Mux itself reports it (herdr's snapshot, `tmux -V`); absent until the Hub learns it */
   version?: string;
 }
-export interface StateWorkspace { key: string; muxKey: string; id: string; label: string; cwd?: string }
+export interface StateWorkspace {
+  key: string; muxKey: string; id: string; label: string; cwd?: string;
+  /** set only on a herdr linked worktree (`worktree.is_linked_worktree`): the main checkout and this one */
+  worktree?: { root: string; path: string };
+}
 export interface StateTab { key: string; muxKey: string; workspaceId: string; id: string; label: string }
 export interface StatePane {
   key: string; muxKey: string; workspaceId: string; tabId: string; id: string; title: string;
@@ -209,6 +214,30 @@ export interface DiffResult { scope: DiffScope; base?: string; files: DiffFile[]
 export interface Worktree { path: string; branch: string | null; head: string; current: boolean; locked?: boolean; prunable?: boolean }
 /** GET /api/workspaces/:key/branches[?worktree=<path>], and the answer to POST …/switch. null = detached HEAD. */
 export interface BranchList { current: string | null; branches: string[]; worktrees: Worktree[] }
+/** `GET /api/workspaces/:key/worktree`: is a linked worktree safe to remove? */
+export interface WorktreeStatus {
+  /** absent on a detached HEAD */
+  branch?: string;
+  path: string;
+  /** what `merged` is measured against, e.g. `origin/main`; absent when no base resolves */
+  base?: string;
+  /** false when `git fetch` of the base failed or timed out, so `merged` may be stale */
+  fetched: boolean;
+  /** commits on the branch that the base lacks */
+  ahead: number;
+  /** changed or untracked files; removing then needs `force` */
+  dirty: number;
+  /** ahead is 0, or GitHub reports the branch's pull request merged (a squash merge) */
+  merged: boolean;
+  /** the branch's pull request, when `gh` runs on the Host and finds one */
+  pr?: { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED' };
+}
+/** `POST /api/workspaces/:key/worktree/remove`; 409 `{error: 'dirty'}` without `force` on a dirty checkout */
+export interface WorktreeRemoveBody { force?: boolean; deleteBranch?: boolean }
+export interface WorktreeRemoveResult {
+  /** the branch is gone; false when `git branch -d` refused (not merged locally) or none was asked */
+  branchDeleted: boolean;
+}
 /** POST /api/workspaces/:key/switch — one of BranchList.branches. */
 export interface SwitchBody { branch: string }
 /** POST /api/push/subscribe */
