@@ -968,13 +968,17 @@ export function Chat({
         if (!selected && code === 404) {
           // Main with no transcript yet (a fresh Agent that has not been asked anything): an
           // empty view that asks again each second, so the Chat lens holds until the first
-          // turn lands. Still 404 after GIVE_UP_MS, it is not fresh: back to Screen.
+          // turn lands. Still 404 after GIVE_UP_MS, it is not fresh: back to Screen. A view
+          // that has shown a transcript is between two (a `/clear` whose SessionStart hooks
+          // are slow, a `/resume`): it keeps its turns and keeps asking, at the poll's pace
+          // after GIVE_UP_MS.
           const first = !missSince;
           if (first) missSince = Date.now();
-          else if (Date.now() - missSince >= GIVE_UP_MS) return fallBack();
+          const waited = Date.now() - missSince >= GIVE_UP_MS;
+          if (waited && !loaded) return fallBack();
           cursor = '';
           if (first && !loaded) show({ sessionId: '', cursor: '', reset: true, upserts: [] });
-          retryIn = 1_000;
+          if (!waited) retryIn = 1_000;
         } else if (gone || (!loaded && ++misses > RETRIES)) {
           // A transcript that went away, or one that never loaded through every retry: a
           // subagent's falls back to Main, Main's to Screen.
@@ -1016,10 +1020,11 @@ export function Chat({
         show(page);
       } catch (error) {
         if ((error as Error).name === 'AbortError') return;
-        if ((error as { gone?: boolean }).gone) {
+        // Main's page gone is a conversation in between: the next poll resets the list, or
+        // answers 501 and goes to Screen itself.
+        if ((error as { gone?: boolean }).gone && selected) {
           controller.abort();
-          if (selected) pick(undefined);
-          else onUnavailable();
+          pick(undefined);
           return;
         }
       } finally {

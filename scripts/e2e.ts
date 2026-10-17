@@ -256,6 +256,35 @@ try {
     }
     return 'no switch offered (agent pane without lens support) — Screen only';
   });
+  await flow('chat lens holds through a /clear whose new transcript lands late', async () => {
+    const agent = await pane('e2e-clear');
+    const key = `HireOpz/default/${agent}`;
+    await report(agent, 'idle');
+    await print(agent, ['screen of the clear test']);
+    const turn = (text: string) => ({ role: 'user', text, tools: [], at: Date.now() });
+    // The old conversation, then 404s past the 5 s grace (the new session has no file yet),
+    // then the new one: a view that showed a transcript waits instead of going to Screen.
+    let reply: object | null = { sessionId: 'e2e-old', at: Date.now(), turns: [turn('old conversation')] };
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    try {
+      await page.route((url: URL) => /^\/api\/panes\/[^/]+\/chat$/.test(url.pathname), (route: { fulfill: (reply: object) => Promise<void> }) =>
+        route.fulfill(reply ? { json: reply } : { status: 404, json: { error: 'no-session' } }));
+      await page.addInitScript((k: string) => localStorage.setItem(`tautan.lens.${k}`, 'chat'), key);
+      await page.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+      await page.getByText('old conversation').waitFor({ timeout: 8_000 });
+      reply = null;
+      // Working polls every 1.5 s, so the 404s start at once and outlast the grace.
+      await report(agent, 'working');
+      await page.waitForTimeout(8_000);
+      assert(await page.locator('[aria-label$="transcript"]').count() === 1, 'still Chat after 8 s of 404');
+      reply = { sessionId: 'e2e-new', at: Date.now(), turns: [turn('/clear')] };
+      await report(agent, 'idle');
+      await page.getByText('/clear').first().waitFor({ timeout: 8_000 });
+      return assert(await page.getByText('old conversation').count() === 0, 'new conversation shown');
+    } finally {
+      await page.close().catch(() => {});
+    }
+  });
 
   await flow('file viewer folder view lists the folder and opens a sibling', async () => {
     await desktop.goto(`${BASE}/#/file/${encodeURIComponent(KEY)}?path=${encodeURIComponent(`${fixture.dir}/chart.png`)}`, { waitUntil: 'networkidle' });
