@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
-import type { BranchList, DiffResult, DiffScope, HostConfig, InputBody, MouseBody, MoveBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SplitBody, SuggestSettingBody, SwitchBody, Worktree } from '../shared/types.ts';
+import type { BranchList, DiffResult, DiffScope, HostConfig, InputBody, MouseBody, MoveBody, NewTabBody, NewWorkspaceBody, ProbeBody, PushSubscriptionBody, RenameBody, ScreenMode, SeenBody, SettingsBody, SplitBody, SuggestSettingBody, SwitchBody, Worktree, WorktreeRemoveBody, WorktreeRemoveResult, WorktreeStatus } from '../shared/types.ts';
 import { CHAT_PAGE_TURNS, type ChatEvent } from '../shared/chat.ts';
 import { parseUnifiedDiff } from '../shared/diff.ts';
 import { promptId } from '../shared/blocked.ts';
@@ -77,19 +77,42 @@ async function quotaReport(): Promise<unknown> {
   return quotaRequest;
 }
 
-async function runGit(cwd: string, args: string[], target?: string, timeoutMs?: number): Promise<GitResult> {
-  const command = target
-    ? ['ssh', '-o', 'BatchMode=yes', target, '--', `cd ${quoteShell(cwd)} && git ${args.map(quoteShell).join(' ')}`]
-    : ['git', ...args];
-  const child = Bun.spawn(command, { ...(target ? {} : { cwd }), stdout: 'pipe', stderr: 'pipe' });
-  // A git call that never ends (an editor waiting on a tty) must not hang the caller —
-  // the chat.ts kill pattern; the flag tells a kill from a git exit.
+/** The spawn+kill core git and gh share. A call that never ends (an editor waiting on a
+ *  tty) must not hang the caller — the chat.ts kill pattern; the flag tells a kill from an exit. */
+async function runSpawn(argv: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): Promise<GitResult> {
+  const child = Bun.spawn(argv, {
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+    stdout: 'pipe', stderr: 'pipe',
+  });
   let timedOut = false;
-  const timer = timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
+  const timer = opts.timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; child.kill(); }, opts.timeoutMs);
   try {
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return { stdout, stderr, code, ...(timedOut ? { timedOut: true } : {}) };
   } finally { if (timer) clearTimeout(timer); }
+}
+
+async function runGit(cwd: string, args: string[], target?: string, timeoutMs?: number, env?: Record<string, string>): Promise<GitResult> {
+  // Over ssh the env vars prefix the remote command, so GIT_TERMINAL_PROMPT holds there too.
+  const prefix = env ? `${Object.entries(env).map(([name, value]) => `${name}=${quoteShell(value)}`).join(' ')} ` : '';
+  return target
+    ? runSpawn(['ssh', '-o', 'BatchMode=yes', target, '--', `${prefix}cd ${quoteShell(cwd)} && git ${args.map(quoteShell).join(' ')}`], { timeoutMs })
+    : runSpawn(['git', ...args], { cwd, timeoutMs, env });
+}
+
+/** The branch's pull request, when `gh` runs on the Host and finds one. Any failure —
+ *  gh absent, not a GitHub checkout, a timeout — means no pr, never an error. */
+async function ghPr(cwd: string, branch: string, target?: string): Promise<WorktreeStatus['pr'] | undefined> {
+  try {
+    const result = target
+      ? await runSpawn(['ssh', '-o', 'BatchMode=yes', target, '--', `cd ${quoteShell(cwd)} && gh pr view ${quoteShell(branch)} --json number,url,state`], { timeoutMs: 10_000 })
+      : await runSpawn(['gh', 'pr', 'view', branch, '--json', 'number,url,state'], { cwd, timeoutMs: 10_000 });
+    if (result.code || result.timedOut) return undefined;
+    const pr = JSON.parse(result.stdout) as { number?: unknown; url?: unknown; state?: unknown };
+    if (typeof pr.number !== 'number' || typeof pr.url !== 'string' || !['OPEN', 'MERGED', 'CLOSED'].includes(pr.state as string)) return undefined;
+    return { number: pr.number, url: pr.url, state: pr.state as 'OPEN' | 'MERGED' | 'CLOSED' };
+  } catch { return undefined; }
 }
 
 async function resolveDiffBase(cwd: string, target?: string): Promise<string | undefined> {
@@ -180,6 +203,25 @@ async function checkoutParam(hub: Hub, key: string, asked: string | null): Promi
   if (!checkout) return json({ error: 'worktree' }, 404);
   return { cwd: checkout, target: repo.target };
 }
+
+/** The linked-worktree scope the worktree routes run in: the Mux's own tree sets `worktree`
+ *  (only a herdr linked worktree carries it), never the request. */
+async function linkedWorktree(hub: Hub, key: string): Promise<
+  { cwd: string; root: string; target?: string; muxKey: string; workspaceId: string } | { missing: 'unknown-workspace' | 'not-linked' | 'unsupported' }
+> {
+  const state = await hub.state();
+  const workspace = state.workspaces.find(item => item.key === key);
+  if (!workspace) return { missing: 'unknown-workspace' };
+  if (state.muxes.find(item => item.key === workspace.muxKey)?.kind !== 'herdr') return { missing: 'unsupported' };
+  if (!workspace.worktree) return { missing: 'not-linked' };
+  return {
+    cwd: workspace.worktree.path, root: workspace.worktree.root,
+    target: state.hosts.find(item => item.id === workspace.muxKey.split('/')[0])?.target,
+    muxKey: workspace.muxKey, workspaceId: workspace.id,
+  };
+}
+
+const worktreeMissing = { 'unknown-workspace': 404, 'not-linked': 409, 'unsupported': 501 } as const;
 
 export function startHttp(hub: Hub, opts: {
   port: number; hostname: string; staticDir: string;
@@ -295,6 +337,84 @@ export function startHttp(hub: Hub, opts: {
             if (message === 'not-a-repo') return json({ error: 'not-a-repo' }, 409);
             return json({ error: message.slice(0, 1000) }, 502);
           }
+        }
+        const workspaceWorktree = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/worktree$/);
+        if (req.method === 'GET' && workspaceWorktree) {
+          let key: string;
+          try { key = decodeURIComponent(workspaceWorktree[1]!); } catch { return json({ error: 'unknown-workspace' }, 404); }
+          const repo = await linkedWorktree(hub, key);
+          if ('missing' in repo) return json({ error: repo.missing }, worktreeMissing[repo.missing]);
+          const head = await runGit(repo.cwd, ['rev-parse', '--abbrev-ref', 'HEAD'], repo.target, 30_000);
+          if (head.timedOut) return json({ error: 'timeout' }, 504);
+          if (/not a git repository/i.test(head.stderr)) return json({ error: 'not-a-repo' }, 409);
+          if (head.code) return json({ error: head.stderr.split(/\r?\n/).find(Boolean) ?? `git exited ${head.code}` }, 502);
+          const branch = head.stdout.trim();
+          let base: string | undefined;
+          try { base = await resolveDiffBase(repo.cwd, repo.target); }
+          catch (error) { if (errorMessage(error) === 'not-a-repo') return json({ error: 'not-a-repo' }, 409); throw error; }
+          // Refresh the base before measuring, so merged means "no commits the base lacks" now.
+          // A failed or hung fetch is not fatal: `fetched: false` says merged may be stale.
+          // ponytail: a slashless base (the local `main` fallback) fetches `origin main`, but
+          // ahead still measures the local ref, which that fetch never moves.
+          let fetched = false;
+          if (base) {
+            const slash = base.indexOf('/');
+            const fetch = await runGit(repo.cwd, ['fetch', '--quiet', slash > 0 ? base.slice(0, slash) : 'origin', slash > 0 ? base.slice(slash + 1) : base], repo.target, 15_000, { GIT_TERMINAL_PROMPT: '0' });
+            fetched = !fetch.code && !fetch.timedOut;
+          }
+          const ahead = base ? await runGit(repo.cwd, ['rev-list', '--count', `${base}..HEAD`], repo.target, 30_000) : undefined;
+          if (ahead?.timedOut) return json({ error: 'timeout' }, 504);
+          const status = await runGit(repo.cwd, ['status', '--porcelain'], repo.target, 30_000);
+          if (status.timedOut) return json({ error: 'timeout' }, 504);
+          const pr = branch !== 'HEAD' ? await ghPr(repo.cwd, branch, repo.target) : undefined;
+          const payload: WorktreeStatus = {
+            ...(branch !== 'HEAD' ? { branch } : {}),
+            path: repo.cwd,
+            ...(base ? { base } : {}),
+            fetched,
+            ahead: ahead && !ahead.code ? Number(ahead.stdout.trim()) || 0 : 0,
+            dirty: status.stdout.split('\n').filter(Boolean).length,
+            merged: (base !== undefined && !ahead?.code && Number(ahead?.stdout.trim()) === 0) || pr?.state === 'MERGED',
+            ...(pr ? { pr } : {}),
+          };
+          return json(payload);
+        }
+        const workspaceWorktreeRemove = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/worktree\/remove$/);
+        if (req.method === 'POST' && workspaceWorktreeRemove) {
+          let key: string;
+          try { key = decodeURIComponent(workspaceWorktreeRemove[1]!); } catch { return json({ error: 'unknown-workspace' }, 404); }
+          let body: unknown;
+          try { body = await req.json(); } catch { return json({ error: 'body' }, 400); }
+          if (!plainObject(body) || body.force !== undefined && typeof body.force !== 'boolean'
+            || body.deleteBranch !== undefined && typeof body.deleteBranch !== 'boolean') return json({ error: 'body' }, 400);
+          const { force, deleteBranch } = body as WorktreeRemoveBody;
+          const repo = await linkedWorktree(hub, key);
+          if ('missing' in repo) return json({ error: repo.missing }, worktreeMissing[repo.missing]);
+          // Read the branch and base before the removal closes the checkout; the root survives it.
+          const head = await runGit(repo.cwd, ['rev-parse', '--abbrev-ref', 'HEAD'], repo.target, 30_000);
+          const branch = !head.code && !head.timedOut && head.stdout.trim() !== 'HEAD' ? head.stdout.trim() : undefined;
+          let base: string | undefined;
+          if (branch) { try { base = await resolveDiffBase(repo.cwd, repo.target); } catch { /* branch -d's own refusal is the guard left */ } }
+          try { await hub.removeWorktree(repo.muxKey, repo.workspaceId, force === true); }
+          catch (error) {
+            const code = errorMessage(error).split(': ')[0];
+            if (code === 'dirty_worktree_requires_force') return json({ error: 'dirty' }, 409);
+            if (code === 'not_linked_worktree') return json({ error: 'not-linked' }, 409);
+            throw error;
+          }
+          // `git branch -d` alone is safe (it refuses an unmerged branch); -D runs only when
+          // GitHub reports the pull request merged — a squash merge leaves the commits unreconciled.
+          let branchDeleted = false;
+          if (deleteBranch === true && branch && branch !== base && !['main', 'master', 'trunk'].includes(branch)) {
+            const attempt = await runGit(repo.root, ['branch', '-d', branch], repo.target, 30_000);
+            if (!attempt.code && !attempt.timedOut) branchDeleted = true;
+            else if ((await ghPr(repo.root, branch, repo.target))?.state === 'MERGED') {
+              const forced = await runGit(repo.root, ['branch', '-D', branch], repo.target, 30_000);
+              branchDeleted = !forced.code && !forced.timedOut;
+            }
+          }
+          const result: WorktreeRemoveResult = { branchDeleted };
+          return json(result);
         }
         const workspaceSwitch = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/switch$/);
         if (req.method === 'POST' && workspaceSwitch) {

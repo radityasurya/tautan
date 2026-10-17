@@ -467,6 +467,17 @@ export class Hub {
     await this.refreshAfterWrite(muxKey);
   }
 
+  /** Remove a linked-worktree Workspace (herdr ≥ 0.9.3). tmux has no worktrees, so it
+   *  answers `unsupported` like every herdr-only write. The branch is the caller's business. */
+  async removeWorktree(muxKey: string, workspaceId: string, force: boolean): Promise<void> {
+    const entry = this.entries.get(muxKey);
+    if (!entry) throw new Error('mux not found');
+    if (!entry.tree?.workspaces.some(w => w.id === workspaceId)) throw new Error('workspace not found');
+    if (entry.mux.kind !== 'herdr') throw new Error('unsupported');
+    await (entry.mux as Mux & { removeWorktree(workspaceId: string, force: boolean): Promise<void> }).removeWorktree(workspaceId, force);
+    await this.refreshAfterWrite(muxKey);
+  }
+
   /** ADR 0009: reorder a Workspace's own slot or a Tab's, then refresh so the reply carries it. */
   async moveWorkspace(muxKey: string, workspaceId: string, index: number): Promise<void> {
     const entry = this.entries.get(muxKey);
