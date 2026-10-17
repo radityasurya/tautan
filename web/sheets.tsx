@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { FocusEvent, ReactNode, RefObject, TouchEvent } from 'react';
 
-import type { BranchList, PluginAction, PluginRun, State, Worktree } from '../shared/types.ts';
+import type { BranchList, PluginAction, PluginRun, State, StateWorkspace, Worktree, WorktreeRemoveBody, WorktreeRemoveResult, WorktreeStatus } from '../shared/types.ts';
 import { api, navigate, reducedMotion, useDesktop } from './app.tsx';
 import { Toggle } from './hosts.tsx';
 import { actionsFor, appeared, byPlugin, keysIn, NEW_PANE_MS, type PaneWatch } from './plugins.ts';
@@ -9,7 +9,8 @@ import { FolderBrowser } from './folders.tsx';
 import { basename } from './folders-logic.ts';
 import { Check } from './icons.tsx';
 import { tildePath } from './spaces.ts';
-import { AlertDialog, Button, Caption, Chip, Sheet as KitSheet, TextInput, usePal } from './halaska-kit';
+import { AlertDialog, Button, Caption, Chip, Sheet as KitSheet, MiddleTruncate, Skeleton, Spinner, TextInput, usePal } from './halaska-kit';
+import { verdict } from './worktree-logic.ts';
 
 // One kit surface for every sheet: Halaska's side panel, with the title row it brings.
 // The forms inside are kit inputs (controlled), so a sheet is state, not FormData.
@@ -214,8 +215,10 @@ export function ModalSheet({
   open: boolean;
   title: string;
   onClose: () => void;
-  /** The confirm button. While `busy` it stays focusable but does nothing. */
-  save: { label: string; onSave: () => void; disabled?: boolean; busy?: boolean };
+  /** The confirm button. While `busy` it stays focusable but does nothing. `danger` paints it
+   *  red and, on the phone, moves it to a full-width button at the foot, where the thumb is and
+   *  a long label ("Remove and discard changes") fits; the header keeps Cancel. */
+  save: { label: string; onSave: () => void; disabled?: boolean; busy?: boolean; danger?: boolean };
   children: ReactNode;
 }) {
   const desktop = useDesktop();
@@ -333,36 +336,46 @@ export function ModalSheet({
               <h2 id={titleId} className="truncate text-center text-title text-fg">
                 {shownTitle.current}
               </h2>
-              <button
-                type="button"
-                onClick={run}
-                disabled={save.disabled}
-                aria-disabled={save.busy || undefined}
-                aria-busy={save.busy || undefined}
-                className={`${BAR_BUTTON} justify-self-end font-semibold`}
-              >
-                {save.label}
-              </button>
+              {!save.danger && (
+                <button
+                  type="button"
+                  onClick={run}
+                  disabled={save.disabled}
+                  aria-disabled={save.busy || undefined}
+                  aria-busy={save.busy || undefined}
+                  className={`${BAR_BUTTON} justify-self-end font-semibold`}
+                >
+                  {save.label}
+                </button>
+              )}
             </div>
           </div>
         )}
         <div
           className={`min-h-0 flex-1 overflow-y-auto overscroll-contain ${
-            desktop ? 'px-5 pt-3 pb-5' : 'px-4 pt-2 pb-[max(var(--safe-b,env(safe-area-inset-bottom)),20px)]'
+            desktop ? 'px-5 pt-3 pb-5' : save.danger ? 'px-4 pt-2 pb-4' : 'px-4 pt-2 pb-[max(var(--safe-b,env(safe-area-inset-bottom)),20px)]'
           }`}
         >
           {/* Its own column, so a card never shrinks to fit: the scroller above scrolls instead. */}
           <div className="flex flex-col gap-6">{children}</div>
         </div>
-        {desktop && (
+        {desktop ? (
           <div className="flex shrink-0 justify-end gap-2 border-t border-border px-5 py-3.5">
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={run} disabled={save.disabled} loading={save.busy}>
+            <Button variant={save.danger ? 'danger' : 'primary'} onClick={run} disabled={save.disabled} loading={save.busy}>
               {save.label}
             </Button>
           </div>
+        ) : (
+          save.danger && (
+            <div className="shrink-0 border-t border-border px-4 pt-3 pb-[max(var(--safe-b,env(safe-area-inset-bottom)),20px)]">
+              <Button variant="danger" size="lg" fullWidth onClick={run} disabled={save.disabled} loading={save.busy}>
+                {save.label}
+              </Button>
+            </div>
+          )
         )}
       </div>
     </div>
@@ -389,6 +402,9 @@ const WHY: Record<string, string> = {
   tab_move_failed: 'The order changed. Try again',
   workspace_move_failed: 'The order changed. Try again',
   worktree: 'That worktree is gone',
+  dirty: 'The worktree has uncommitted changes',
+  'not-linked': 'This Workspace is not a linked worktree',
+  'no-base': 'No base branch to compare with',
 };
 export const why = (code: string) => WHY[code] ?? `That did not work · ${code}`;
 
@@ -583,6 +599,8 @@ const actionKey = (a: PluginAction) => `${a.pluginId}/${a.actionId}`;
 interface Trouble {
   head: string;
   detail?: string;
+  /** `warn` for a write that half worked (the worktree went, its branch stayed). */
+  tone?: 'warn';
 }
 
 // ---- the notice for a run that ended after its sheet closed (21.4.1) ----
@@ -594,10 +612,13 @@ const setNotice = (next: Trouble | null) => {
   noticeListeners.forEach((fn) => fn());
 };
 const NOTICE_MS = 8_000;
+/** A line for after a sheet has closed: the write worked, but not all of it. */
+export const notify = (head: string) => setNotice({ head, tone: 'warn' });
 
 /**
  * A plugin action that failed after its sheet closed, at the top of the screen where the
  * NeedsCard shows: what failed, then herdr's text. It goes after NOTICE_MS, or on ×.
+ * `notify` puts a partial success here too, in the warn tint.
  */
 export function RunNotice() {
   const shown = useSyncExternalStore(
@@ -617,7 +638,7 @@ export function RunNotice() {
       {shown && (
         <div className="pointer-events-auto flex w-full max-w-md items-start gap-1 rounded-card bg-elevated py-2.5 pl-3.5 shadow-elevated">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <p className="text-[13px] font-semibold text-danger">{shown.head}</p>
+            <p className={`text-[13px] font-semibold ${shown.tone === 'warn' ? 'text-[color-mix(in_srgb,var(--warn)_65%,var(--fg))]' : 'text-danger'}`}>{shown.head}</p>
             {shown.detail && <p className="font-mono text-[11.5px] leading-normal break-words text-muted">{shown.detail}</p>}
           </div>
           <button
@@ -962,11 +983,204 @@ export function BranchSheet({
         </div>
         <p className="shrink-0 border-t border-border px-6 pt-3 pb-[max(env(safe-area-inset-bottom),24px)] text-caption text-muted">
           {many
-            ? 'Tap a worktree to browse its files and its diff. Agents create these with git worktree; tautan never creates or removes one.'
+            ? 'Tap a worktree to browse its files and its diff. To remove a linked worktree, use Remove worktree… in its Workspace menu.'
             : 'Switching changes the files every Pane in this Workspace sees. tautan never creates, commits or stashes.'}
         </p>
       </div>
     </Sheet>
+  );
+}
+
+/** A grouped card of rows, as Add Host draws them: lighter than the sheet behind it. */
+const CARD = 'overflow-hidden rounded-card bg-elevated divide-y divide-border';
+/** Text in the ok or warn hue, mixed toward the text colour so it reads at 4.5:1 on light themes. */
+const INK = { ok: 'text-[color-mix(in_srgb,var(--ok)_65%,var(--fg))]', warn: 'text-[color-mix(in_srgb,var(--warn)_65%,var(--fg))]' };
+const changes = (n: number) => `${n} uncommitted change${n === 1 ? '' : 's'}`;
+
+/** One label and value row: the label on the left, the value muted on the right. */
+function InfoRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex min-h-11 items-center gap-3 px-4 py-2">
+      <span className="shrink-0 text-body text-fg">{label}</span>
+      <span className="ml-auto flex min-w-0 justify-end font-mono text-caption text-muted">{children}</span>
+    </div>
+  );
+}
+
+/**
+ * Remove a linked worktree once its branch has landed (Workspace ⋯ › Remove worktree…). On
+ * open it asks the Hub where the branch stands, which runs `git fetch` and can take a few
+ * seconds. The verdict leads: quiet when merged, a warn card with the count when not.
+ * Uncommitted changes turn the action into "Remove and discard changes", which sends `force`;
+ * a 409 `dirty` (the checkout changed since the check) does the same. herdr closes the
+ * Workspace, so a removal that worked needs no word; a branch git kept gets one (`notify`).
+ * A failed check still lets the user remove: the Hub refuses a dirty checkout without force.
+ */
+export function RemoveWorktreeSheet({ open, onClose, workspace }: { open: boolean; onClose: () => void; workspace: StateWorkspace | null }) {
+  // The caller clears `workspace` on close; the sheet keeps drawing it while it leaves.
+  const kept = useRef(workspace);
+  if (workspace) kept.current = workspace;
+  const ws = kept.current;
+  const key = ws?.key ?? '';
+  const [status, setStatus] = useState<WorktreeStatus | null>(null);
+  const [checkError, setCheckError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  /** The Hub answered 409 `dirty` after a clean check. */
+  const [changed, setChanged] = useState(false);
+
+  useEffect(() => {
+    if (!open || !key) return;
+    let live = true;
+    setStatus(null);
+    setCheckError('');
+    setChanged(false);
+    api<WorktreeStatus>(`/api/workspaces/${encodeURIComponent(key)}/worktree`, undefined, 'GET').then(
+      (s) => {
+        if (!live) return;
+        setStatus(s);
+        setDeleteBranch(s.merged);
+      },
+      (e: unknown) => {
+        if (live) setCheckError((e instanceof Error && e.message) || 'network');
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [open, key, attempt]);
+
+  const { busy, error, submit, retry } = useWrite(
+    open,
+    async (body: WorktreeRemoveBody) => {
+      try {
+        const done = await api<WorktreeRemoveResult>(`/api/workspaces/${encodeURIComponent(key)}/worktree/remove`, body);
+        if (body.deleteBranch && !done.branchDeleted) notify(`Worktree removed. Branch ${status?.branch} kept: not merged locally`);
+      } catch (e) {
+        if (e instanceof Error && e.message === 'dirty') setChanged(true);
+        throw e;
+      }
+    },
+    onClose,
+  );
+
+  const branch = status?.branch;
+  const dirty = status?.dirty ?? 0;
+  const discard = dirty > 0 || changed;
+  const said = status && verdict(status);
+  const path = status?.path ?? ws?.worktree?.path ?? '';
+  const shownPath = tildePath(path);
+  const folder = shownPath.slice(shownPath.lastIndexOf('/'));
+  /** A value the check has not given: shimmering while it runs, a word once it failed. */
+  const unknown = (width: number) => (checkError ? <span className="font-sans">unknown</span> : <Skeleton width={width} height={12} />);
+  return (
+    <ModalSheet
+      open={open}
+      title="Remove worktree"
+      onClose={onClose}
+      save={{
+        label: busy ? 'Removing…' : discard ? 'Remove and discard changes' : 'Remove worktree',
+        onSave: () => submit({ force: discard || undefined, deleteBranch: (Boolean(branch) && deleteBranch) || undefined }),
+        disabled: !status && !checkError,
+        busy,
+        danger: true,
+      }}
+    >
+      {error && error !== 'dirty' && (
+        <div className="rounded-card bg-danger/8 py-1 pr-1 pl-4">
+          <ErrorLine error={error} busy={busy} onRetry={retry} />
+        </div>
+      )}
+
+      {/* The verdict: the reason the user is here, announced when the check ends. */}
+      <section aria-live="polite" className="flex flex-col gap-1">
+        {said ? (
+          <div className={`flex flex-col gap-1 ${said.tone === 'warn' ? 'rounded-card bg-warn/12 px-4 py-3' : 'px-1'}`}>
+            <p className={`flex items-center gap-2 ${said.tone === 'warn' ? 'text-title' : 'text-body font-semibold'} ${INK[said.tone]}`}>
+              <span aria-hidden className={`size-2 shrink-0 rounded-full ${said.tone === 'warn' ? 'bg-warn' : 'bg-ok'}`} />
+              {said.text}
+            </p>
+            {said.tone === 'warn' && status.ahead > 0 && (
+              <p className="pl-4 text-caption text-fg/80">Removing deletes the checkout, not the commits.</p>
+            )}
+            {(status.pr || !status.fetched) && (
+              <p className="flex flex-wrap items-baseline gap-x-2 pl-4 text-caption text-muted">
+                {status.pr && (
+                  <a
+                    href={status.pr.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Pull request #${status.pr.number}, ${status.pr.state.toLowerCase()}, opens in a new tab`}
+                    className="text-accent underline decoration-accent/40 underline-offset-2"
+                  >
+                    #{status.pr.number} · {status.pr.state.toLowerCase()}
+                  </a>
+                )}
+                {!status.fetched && <span>Could not fetch; this may be out of date</span>}
+              </p>
+            )}
+          </div>
+        ) : checkError ? (
+          <>
+            <div className="rounded-card bg-danger/8 py-1 pr-1 pl-4">
+              <ErrorLine error={checkError} busy={false} onRetry={() => setAttempt((n) => n + 1)} />
+            </div>
+            <p className="px-4 text-caption text-muted">Not checked. Removing still stops if the worktree has uncommitted changes.</p>
+          </>
+        ) : (
+          <p role="status" className="flex items-center gap-2 px-1 text-body text-muted">
+            <Spinner size={14} />
+            <span className="min-w-0 truncate">Checking {ws?.label}…</span>
+          </p>
+        )}
+      </section>
+
+      {discard && (
+        <p role={changed ? 'alert' : undefined} className="rounded-card bg-danger/8 px-4 py-3 text-body font-medium text-danger">
+          {changed && !dirty ? 'New uncommitted changes will be lost' : `${changes(dirty)} will be lost`}
+        </p>
+      )}
+
+      <section className={CARD}>
+        <InfoRow label="Branch">
+          {status ? (branch ? <span className="truncate">{branch}</span> : <span className="font-sans">detached HEAD</span>) : unknown(96)}
+        </InfoRow>
+        <InfoRow label="Path">
+          <span title={path} className="flex min-w-0">
+            <MiddleTruncate text={shownPath} tail={Math.min(24, folder.length)} style={{ fontSize: 'inherit', lineHeight: 'inherit', color: 'inherit' }} />
+          </span>
+        </InfoRow>
+        <InfoRow label="Base">
+          {status ? <span className="truncate">{status.base ?? 'none'}</span> : unknown(80)}
+        </InfoRow>
+      </section>
+
+      {branch && (
+        <section className={CARD}>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={deleteBranch}
+            onClick={() => setDeleteBranch(!deleteBranch)}
+            className="flex min-h-12 w-full items-center gap-3 px-4 py-2 text-left outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)] active:bg-surface"
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block text-body text-fg [overflow-wrap:anywhere]">
+                Delete branch <span className="font-mono text-[14px]">{branch}</span>
+              </span>
+              {!status.merged && <span className="mt-px block text-caption text-muted">git keeps it if it is not merged</span>}
+            </span>
+            <span aria-hidden className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-150 ${deleteBranch ? 'bg-accent' : 'bg-border'}`}>
+              <span
+                className={`absolute top-0.5 size-5 rounded-full bg-white shadow-sm transition-[left] duration-150 motion-reduce:transition-none ${
+                  deleteBranch ? 'left-[22px]' : 'left-0.5'
+                }`}
+              />
+            </span>
+          </button>
+        </section>
+      )}
+    </ModalSheet>
   );
 }
 

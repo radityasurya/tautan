@@ -13,7 +13,7 @@ import {
   rollup, setAgentGroup, setAgentSort, setPaneList, setShowShells, setSpaceAgentsOnly, setSpaceSort, sortSpaces, tildePath,
   usePref, type AgentGroup, type AgentSort, type PaneList, type SpaceSort,
 } from './spaces.ts';
-import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, PluginActionsSheet, RenameSheet, usePluginActions, why } from './sheets.tsx';
+import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, PluginActionsSheet, RemoveWorktreeSheet, RenameSheet, usePluginActions, why } from './sheets.tsx';
 import { actionsFor } from './plugins.ts';
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
@@ -1120,6 +1120,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const [menu, setMenu] = useState<StateWorkspace | null>(null);
   const [rename, setRename] = useState<StateWorkspace | null>(null);
   const [close, setClose] = useState<StateWorkspace | null>(null);
+  const [removeWorktree, setRemoveWorktree] = useState<StateWorkspace | null>(null);
   const [paneMenu, setPaneMenu] = useState<StatePane | null>(null);
   const [paneRename, setPaneRename] = useState<StatePane | null>(null);
   const [paneClose, setPaneClose] = useState<StatePane | null>(null);
@@ -1579,6 +1580,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
             : []),
           // Last, so it can arrive after the menu opens without moving a row under a finger.
           ...(menu && wsActions.length ? [{ label: 'Plugin actions…', onClick: () => setActionsIn({ ws: menu, actions: wsActions }) }] : []),
+          // herdr's linked worktrees only: herdr removes the checkout and closes the Workspace.
+          ...(menu?.worktree && writable(menu.muxKey) ? [{ label: 'Remove worktree…', danger: true, onClick: () => setRemoveWorktree(menu) }] : []),
           ...(writable(menu?.muxKey) ? [{ label: 'Close Workspace', danger: true, onClick: () => menu && setClose(menu) }] : []),
         ]}
       />
@@ -1607,6 +1610,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
         onClose={() => setClose(null)}
         onConfirm={() => api<void>(`/api/workspaces/${encodeURIComponent(close!.key)}/close`)}
       />
+      <RemoveWorktreeSheet open={removeWorktree !== null} workspace={removeWorktree} onClose={() => setRemoveWorktree(null)} />
       <MenuSheet
         open={paneMenu !== null}
         title={paneMenu?.title ?? ''}

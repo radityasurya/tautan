@@ -2,7 +2,7 @@
 // main.tsx loads this chunk only when the page is opened with `?mock` (or built with
 // VITE_MOCK=1); it never loads for a real page.
 import type {
-  BranchList, DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope, SwitchBody, Worktree,
+  BranchList, DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope, SwitchBody, Worktree, WorktreeRemoveBody, WorktreeRemoveResult, WorktreeStatus,
   Explain, HistoryMatch, HistoryResult, HostIntegrations, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, PluginAction, PluginRun, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
   ScreenMode, SeenBody, Settings, SettingsBody, State, StatePane, Status, SuggestSettingBody,
 } from '../shared/types.ts';
@@ -196,6 +196,16 @@ export const mockState: State = {
     { key: 'mbp/tmux/admin', muxKey: 'mbp/tmux', id: 'admin', label: 'admin', cwd: '~' },
     { key: 'vps/herdr/blog', muxKey: 'vps/herdr', id: 'blog', label: 'blog', cwd: '~/srv/blog' },
     { key: 'unraid/tmux/main', muxKey: 'unraid/tmux', id: 'main', label: 'main', cwd: '/mnt/user' },
+    // Linked worktrees, for Remove worktree…: one merged and clean, one unmerged with changes
+    // (MOCK_WORKTREES). Literal paths: WT_FILES is declared further down.
+    {
+      key: 'mbp/herdr/files', muxKey: 'mbp/herdr', id: 'files', label: 'tautan · feat/files', cwd: '~/projects/tautan-wt-files',
+      worktree: { root: '/home/dev/projects/tautan', path: '/home/dev/projects/tautan-wt-files' },
+    },
+    {
+      key: 'mbp/herdr/zoom', muxKey: 'mbp/herdr', id: 'zoom', label: 'tautan · fix/ios-zoom', cwd: '~/projects/tautan-ios-zoom',
+      worktree: { root: '/home/dev/projects/tautan', path: '/home/dev/projects/tautan-ios-zoom' },
+    },
   ],
   // herdr numbers Tabs `t<n>`; tmux windows are their index. Both are the Mux's own id.
   tabs: [
@@ -209,6 +219,8 @@ export const mockState: State = {
     { key: 'mbp/tmux/2', muxKey: 'mbp/tmux', workspaceId: 'admin', id: '2', label: 'k9s' },
     { key: 'unraid/tmux/0', muxKey: 'unraid/tmux', workspaceId: 'main', id: '0', label: 'shell' },
     { key: 'unraid/tmux/1', muxKey: 'unraid/tmux', workspaceId: 'main', id: '1', label: 'rsync' },
+    { key: 'mbp/herdr/t6', muxKey: 'mbp/herdr', workspaceId: 'files', id: 't6', label: 'main' },
+    { key: 'mbp/herdr/t7', muxKey: 'mbp/herdr', workspaceId: 'zoom', id: 't7', label: 'main' },
   ],
   panes: [
     {
@@ -285,6 +297,17 @@ export const mockState: State = {
       key: 'unraid/tmux/p2', muxKey: 'unraid/tmux', workspaceId: 'main', tabId: '1', id: 'p2',
       title: 'btrfs scrub status', cwd: '/mnt/user',
       status: 'unknown', revision: 2, seenRevision: 2, cols: 100, rows: 28, statusChangedAt: ago(400),
+    },
+    {
+      key: 'mbp/herdr/p8', muxKey: 'mbp/herdr', workspaceId: 'files', tabId: 't6', id: 'p8',
+      title: 'files screen', cwd: '~/projects/tautan-wt-files', agent: 'claude',
+      status: 'idle', revision: 310, seenRevision: 310, cols: 80, rows: 24,
+      lastLine: 'PR #12 merged', statusChangedAt: ago(240),
+    },
+    {
+      key: 'mbp/herdr/p9', muxKey: 'mbp/herdr', workspaceId: 'zoom', tabId: 't7', id: 'p9',
+      title: 'zsh', cwd: '~/projects/tautan-ios-zoom',
+      status: 'idle', revision: 18, seenRevision: 18, cols: 80, rows: 24, statusChangedAt: ago(300),
     },
   ],
 };
@@ -556,6 +579,19 @@ const REPO = `${HOME}/projects/tautan`;
 const WT_FILES = `${HOME}/projects/tautan-wt-files`;
 const WT_OTTER = `${HOME}/projects/tautan-swift-otter`; // prunable: its folder is gone
 
+/** `GET /api/workspaces/:key/worktree` for the two linked worktree Workspaces: a squash-merged
+ *  clean one, and an unmerged one with changes whose fetch failed. */
+const MOCK_WORKTREES: Record<string, WorktreeStatus> = {
+  'mbp/herdr/files': {
+    branch: 'feat/files', path: WT_FILES, base: 'origin/main', fetched: true, ahead: 4, dirty: 0, merged: true,
+    pr: { number: 12, url: 'https://github.com/radityasurya/tautan/pull/12', state: 'MERGED' },
+  },
+  'mbp/herdr/zoom': {
+    branch: 'fix/ios-zoom', path: `${HOME}/projects/tautan-ios-zoom`, base: 'origin/main', fetched: false, ahead: 3, dirty: 2, merged: false,
+    pr: { number: 14, url: 'https://github.com/radityasurya/tautan/pull/14', state: 'OPEN' },
+  },
+};
+
 const README = [
   '# tautan',
   '',
@@ -786,6 +822,8 @@ export function assertMockInvariants(): void {
       && MOCK_ACTIONS.some((a) => !a.description) || 'a grouped action list',
     MOCK_INTEGRATIONS.some((e) => e.error) && MOCK_INTEGRATIONS.some((e) => e.integrations?.some((i) => !i.available)) || 'a failed integration Host',
     mockState.panes.some((p) => p.agentName) || 'a named Agent',
+    mockState.workspaces.some((w) => w.worktree && MOCK_WORKTREES[w.key]?.merged) && mockState.workspaces.some((w) => w.worktree && MOCK_WORKTREES[w.key]?.dirty)
+      || 'a merged and a dirty worktree',
   ].filter((p) => p !== true);
   if (problems.length) throw new Error(`mock fixtures lost ${problems.join(', ')}`);
 }
@@ -1249,6 +1287,16 @@ function addTab(s: Store, muxKey: string, workspaceId: string, o: NewTabBody): S
   return pane;
 }
 
+/** A Workspace goes with its Tabs, Panes and Screens, and every stream hears of it. */
+function dropWorkspace(s: Store, ws: State['workspaces'][number]): void {
+  const gone = s.state.panes.filter((p) => p.muxKey === ws.muxKey && p.workspaceId === ws.id);
+  s.state.workspaces = s.state.workspaces.filter((w) => w !== ws);
+  s.state.tabs = s.state.tabs.filter((t) => !(t.muxKey === ws.muxKey && t.workspaceId === ws.id));
+  s.state.panes = gone.length ? s.state.panes.filter((p) => !gone.includes(p)) : s.state.panes;
+  for (const p of gone) delete s.screens[p.key];
+  for (const es of sources) es.push(s, { state: true });
+}
+
 /** ponytail: no `cwd` check here. The fixtures carry `~/projects/…`, which the Hub's own
  *  "must be absolute" rule would reject, and the sheets default to what State gave them. */
 function write(s: Store, url: URL, method: string, body: unknown): Response | undefined {
@@ -1261,13 +1309,24 @@ function write(s: Store, url: URL, method: string, body: unknown): Response | un
     const bad = writableMux(s, ws.muxKey);
     if (bad) return bad;
     if (ws.label === FAIL) return json({ error: 'agent_not_ready' }, 502);
-    const gone = s.state.panes.filter((p) => p.muxKey === ws.muxKey && p.workspaceId === ws.id);
-    s.state.workspaces = s.state.workspaces.filter((w) => w !== ws);
-    s.state.tabs = s.state.tabs.filter((t) => !(t.muxKey === ws.muxKey && t.workspaceId === ws.id));
-    s.state.panes = gone.length ? s.state.panes.filter((p) => !gone.includes(p)) : s.state.panes;
-    for (const p of gone) delete s.screens[p.key];
-    for (const es of sources) es.push(s, { state: true });
+    dropWorkspace(s, ws);
     return noContent();
+  }
+
+  // herdr removes the checkout and closes the Workspace; the branch goes only when asked and
+  // git agrees, which here means the fixture says merged.
+  const removeWt = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/worktree\/remove$/);
+  if (removeWt) {
+    const ws = s.state.workspaces.find((w) => w.key === decodeURIComponent(removeWt[1]!));
+    if (!ws) return json({ error: 'unknown-workspace' }, 404);
+    const bad = writableMux(s, ws.muxKey);
+    if (bad) return bad;
+    const wt = MOCK_WORKTREES[ws.key];
+    if (!wt || !ws.worktree) return json({ error: 'not-linked' }, 409);
+    const o = (body ?? {}) as WorktreeRemoveBody;
+    if (wt.dirty && !o.force) return json({ error: 'dirty' }, 409);
+    dropWorkspace(s, ws);
+    return json({ branchDeleted: Boolean(o.deleteBranch && wt.merged) } satisfies WorktreeRemoveResult);
   }
 
   // ADR 0009 order writes: `index` is the pre-move splice index, scoped to the Mux for
@@ -1467,6 +1526,16 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
   }
 
   // Branches and worktrees, from the Workspace's own checkout or from `?worktree=`.
+  const worktree = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/worktree$/);
+  if (method === 'GET' && worktree) {
+    const ws = s.state.workspaces.find((w) => w.key === decodeURIComponent(worktree[1]!));
+    if (!ws) return json({ error: 'unknown-workspace' }, 404);
+    const bad = writableMux(s, ws.muxKey);
+    if (bad) return bad;
+    const wt = MOCK_WORKTREES[ws.key];
+    return wt && ws.worktree ? json(wt) : json({ error: 'not-linked' }, 409);
+  }
+
   const branches = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/(branches|switch)$/);
   if (branches) {
     const key = decodeURIComponent(branches[1]!);
@@ -1689,7 +1758,8 @@ export function installMock(): void {
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
     const raw = typeof init?.body === 'string' ? init.body : undefined; // a file save is text, not JSON
     const response = route(s, url, method, await readBody(input, init), headers, raw);
-    await sleep(80 + Math.random() * 120); // slow enough to see the loading states
+    // Slow enough to see the loading states; the worktree check runs `git fetch` on a real Hub.
+    await sleep(url.pathname.endsWith('/worktree') ? 1500 : 80 + Math.random() * 120);
     return response ?? json({ error: 'not found' }, 404);
   };
   // The cast drops Bun's `fetch.preconnect`, which no browser has anyway.
