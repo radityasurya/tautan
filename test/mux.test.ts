@@ -229,6 +229,20 @@ test('an empty Screen keeps its key fast until the program draws', async () => {
   } finally { off(); f.hub.close(); }
 }, 5_000);
 
+test('input re-reads a quiet watched Pane at once, so typing echoes without the poll', async () => {
+  const f = watchFixture();
+  const screens: ScreenEvent[] = [];
+  const off = f.hub.subscribe({ paneKeys: ['local/fake/a', 'local/fake/b'], onState: () => {}, onScreen: screen => screens.push(screen) });
+  try {
+    await Bun.sleep(2_500); // a's poll has backed off well past 250 ms
+    f.textFor('a', () => 'typed x');
+    const at = Date.now();
+    await f.hub.input('local/fake/a', { text: 'x' });
+    await until(() => screens, list => list.some(screen => screen.key === 'local/fake/a' && screen.text === 'typed x'), 1_000);
+    expect(Date.now() - at).toBeLessThan(200);
+  } finally { off(); f.hub.close(); }
+}, 6_000);
+
 test('a change on one key re-polls only that key', async () => {
   const f = watchFixture(); // both panes return a constant screen
   const screens: ScreenEvent[] = [];

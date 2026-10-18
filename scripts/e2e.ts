@@ -321,7 +321,7 @@ try {
     return assert(decodeURIComponent(desktop.url()).endsWith(second), `url=${desktop.url().slice(-30)}`);
   });
 
-  await flow('desktop composer: / opens the picker and sends nothing; mode chip follows the Screen', async () => {
+  await flow('desktop composer: a typed / opens the picker and sends nothing; the bar reads the Screen, Keys cycles the mode', async () => {
     const agent = await pane('e2e-composer');
     await report(agent, 'idle');
     await print(agent, ['composer test, default mode']);
@@ -336,21 +336,29 @@ try {
       // The field is a textbox at rest and a combobox while the `/` picker is open (Wave 13), so
       // find it by its label, not its role.
       const field = desktop.locator('textarea[aria-label^="Reply to"]');
-      await desktop.getByRole('button', { name: 'Type /' }).click();
-      await desktop.waitForTimeout(400);
+      await field.click();
+      await field.press('/');
+      await desktop.getByRole('listbox').waitFor({ timeout: 8_000 });
       assert(await field.inputValue() === '/', `field=${await field.inputValue()}`);
       assert(sent.length === 0, `sent ${sent.length} on /`);
       await field.press('Escape');
       await desktop.waitForTimeout(200);
       assert(await desktop.getByRole('listbox').count() === 0, 'Esc closes the picker');
       assert(sent.length === 0, `sent ${sent.length} after Esc`);
-      const chip = desktop.getByRole('button', { name: /^Mode:/ });
-      assert(await chip.count() === 0, 'mode chip hidden without ⏵⏵');
+      // The desktop bar is toggles, then attach, mic and Send: no mode chip, `/`, `@`, esc or ^C.
+      const bar = desktop.getByRole('toolbar', { name: 'Composer' });
+      assert(await bar.getByRole('button', { name: /^Mode:|^Type [/@]$|^Escape$|^Interrupt/ }).count() === 0, 'a quiet bar');
       await print(agent, ['❯', '  ⏵⏵ accept edits on (shift+tab to cycle) · Opus 4.6 · Context left until auto-compact: 37%']);
-      await chip.waitFor({ timeout: 8_000 });
-      assert(await desktop.getByText('37% context left').count() === 1, 'context shown');
-      await chip.click();
+      await bar.getByText('37% context left').waitFor({ timeout: 8_000 });
+      // Shift+Tab reaches Claude through the Keys tray, whose Control group leads with ^C and esc.
+      const keysToggle = bar.getByRole('button', { name: 'Keys', exact: true });
+      if (await keysToggle.getAttribute('aria-pressed') !== 'true') await keysToggle.click();
+      const control = desktop.locator('#pane-keys').getByRole('group', { name: 'Control' });
+      const first = await control.getByRole('button').evaluateAll((els: Element[]) => els.slice(0, 2).map((e) => e.getAttribute('aria-label')));
+      assert(first.join() === 'Interrupt, control C,Escape', `control=${first.join()}`);
+      await desktop.locator('#pane-keys').getByRole('button', { name: 'Cycle mode, shift tab' }).click();
       await desktop.waitForTimeout(400);
+      await keysToggle.click(); // the tray is remembered on this page; close it again
       return assert(sent.some((body) => body.includes('"shift+tab"')), `sent=${sent.join('|').slice(0, 80)}`);
     } finally {
       desktop.off('request', watch);

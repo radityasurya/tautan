@@ -90,10 +90,12 @@ export class Hub {
   // off while quiet. ponytail: drop this if herdr gains a surface stream.
   private static readonly WATCH_FAST = 250;
   private static readonly WATCH_SLOW = 2_000;
+  /** How long after an input the Pane is read again: the program's echo is in by then. */
+  private static readonly ECHO_MS = 40;
   // How long a blank Screen stays fast before it backs off like a quiet one.
   private static readonly WATCH_BLANK_GRACE = 2_000;
   // One watch per (listener, key), so each watched Pane backs off on its own (ADR 0006).
-  private watchers = new Map<HubListener, Map<string, { timer?: ReturnType<typeof setTimeout>; delay: number; last?: string; blankSince?: number }>>();
+  private watchers = new Map<HubListener, Map<string, { timer?: ReturnType<typeof setTimeout>; at?: number; echo?: boolean; delay: number; last?: string; blankSince?: number }>>();
   private streamEndCallbacks = new Set<(stream: string) => void>();
   private cached?: State;
   private statuses = new Map<string, { status: string; at: number }>();
@@ -569,6 +571,7 @@ export class Hub {
     if (text !== undefined) await found.entry.mux.sendText(found.paneId, text);
     if (body.keys?.length) await found.entry.mux.sendKeys(found.paneId, body.keys);
     if (body.raw !== undefined) await found.entry.mux.sendRaw(found.paneId, body.raw);
+    this.echoSoon(paneKey);
   }
   async explain(paneKey: string): Promise<Explain | null> {
     await this.state(); const found = this.resolve(paneKey);
@@ -682,7 +685,23 @@ export class Hub {
   private scheduleWatch(listener: HubListener, paneKey: string, ms: number): void {
     const watch = this.watchers.get(listener)?.get(paneKey); if (!watch) return;
     clearTimeout(watch.timer);
+    watch.at = Date.now() + ms;
     watch.timer = setTimeout(() => void this.sendScreen(listener, paneKey), ms);
+  }
+
+  /** Typed input shows on the Screen at once: every stream watching the Pane reads it again
+   *  in ECHO_MS instead of at its backed-off poll. A read already due sooner stays, so a fast
+   *  typist never pushes the echo back; a read in flight may predate the key, so it follows
+   *  up ECHO_MS after it ends. */
+  private echoSoon(paneKey: string): void {
+    const now = Date.now();
+    for (const [listener, watches] of this.watchers) {
+      const watch = watches.get(paneKey);
+      if (!watch) continue;
+      watch.delay = Hub.WATCH_FAST;
+      if (watch.at === undefined || watch.at <= now) watch.echo = true;
+      else if (watch.at > now + Hub.ECHO_MS) this.scheduleWatch(listener, paneKey, Hub.ECHO_MS);
+    }
   }
 
   private async sendScreen(listener: HubListener, paneKey: string): Promise<void> {
@@ -706,7 +725,9 @@ export class Hub {
       // on the next read. Past the grace it backs off like a quiet one, and a `pane.updated`
       // re-reads at once (`changed`), so a Pane that later draws is never missed.
     } catch { watch.delay = Hub.WATCH_SLOW; }
-    if (this.watchers.get(listener)?.has(paneKey)) this.scheduleWatch(listener, paneKey, watch.delay);
+    const next = watch.echo ? Hub.ECHO_MS : watch.delay;
+    watch.echo = false;
+    if (this.watchers.get(listener)?.has(paneKey)) this.scheduleWatch(listener, paneKey, next);
   }
   private emitState(): void {
     const wait = Math.max(0, 500 - (Date.now() - this.lastStateAt));

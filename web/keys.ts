@@ -174,18 +174,36 @@ export function capInput(cap: Cap, mod: Modifier | null): { keys?: string[]; raw
 
 /**
  * A key pressed while typing straight into the Pane: what it sends, or null to leave it to the
- * field. Plain text arrives through `beforeinput` instead, and a Cmd chord stays the
- * browser's (copy, paste).
+ * field. Plain text arrives through `beforeinput` instead. A modifier on a named key is its
+ * xterm form (`CSI 1;5D` is ctrl+left; m = 1 + shift 1 + alt 2 + ctrl 4), since herdr's key
+ * names stop at ctrl+letter and the function keys. Copy and paste stay the browser's, as in
+ * VS Code's terminal: Ctrl+V, Ctrl+Shift+V, Ctrl+Shift+C, and Ctrl+C over a selection (the
+ * caller says whether text is `selected`). A Cmd chord, browser zoom, and AltGr text (Ctrl+Alt
+ * on a symbol) are left alone too.
  */
-export function directKey(e: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean }): { keys?: string[]; raw?: string } | null {
+export function directKey(e: { key: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean; selected?: boolean }): { keys?: string[]; raw?: string } | null {
   if (e.metaKey) return null;
+  const lower = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (e.ctrlKey && !e.altKey && (lower === 'v' || (lower === 'c' && (e.shiftKey || e.selected)))) return null;
+  const m = 1 + (e.shiftKey ? 1 : 0) + (e.altKey ? 2 : 0) + (e.ctrlKey ? 4 : 0);
+  const letter = CSI_LETTER[e.key];
+  if (letter) return m > 1 ? { raw: `\x1b[1;${m}${letter}` } : DIRECT_NAMES[e.key] ? { keys: [DIRECT_NAMES[e.key]!] } : { raw: `\x1b[${letter}` };
+  const tilde = CSI_TILDE[e.key];
+  if (tilde) return { raw: m > 1 ? `\x1b[${tilde};${m}~` : `\x1b[${tilde}~` };
+  const fn = FN[e.key];
+  if (fn) return m === 1 ? { keys: [e.key.toLowerCase()] } : { raw: /\d/.test(fn) ? `\x1b[${fn};${m}~` : `\x1b[1;${m}${fn}` };
   if (e.key === 'Tab' && e.shiftKey) return { keys: ['shift+tab'] };
-  if (e.key === 'Enter' && e.altKey) return { raw: '\x1b\r' };
+  // ESC CR: Claude and most line editors read it as a new line in the input.
+  if (e.key === 'Enter' && (e.altKey || e.shiftKey)) return { raw: '\x1b\r' };
+  if (e.key === 'Backspace' && e.ctrlKey) return { raw: '\x08' };
+  if (e.key === 'Backspace' && e.altKey) return { raw: '\x1b\x7f' };
   const named = DIRECT_NAMES[e.key];
   if (named) return { keys: [named] };
-  const csi = DIRECT_CSI[e.key];
-  if (csi) return { raw: `\x1b[${csi}` };
-  if (e.key.length === 1 && e.ctrlKey) return { keys: [`ctrl+${e.key.toLowerCase()}`] };
+  if (e.key.length === 1 && e.ctrlKey) {
+    if (/^[a-z]$/.test(lower)) return e.altKey ? { raw: `\x1b${String.fromCharCode(lower.charCodeAt(0) & 0x1f)}` } : { keys: [`ctrl+${lower}`] };
+    const byte = e.altKey ? undefined : CTRL_SYMBOL[e.key];
+    return byte === undefined ? null : { raw: byte };
+  }
   if (e.key.length === 1 && e.altKey) return { raw: `\x1b${e.key}` };
   return null;
 }
@@ -193,7 +211,11 @@ const DIRECT_NAMES: Record<string, string> = {
   Enter: 'enter', Backspace: 'backspace', Escape: 'esc', Tab: 'tab',
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
 };
-const DIRECT_CSI: Record<string, string> = { Home: 'H', End: 'F', PageUp: '5~', PageDown: '6~', Delete: '3~' };
+const CSI_LETTER: Record<string, string> = { ArrowUp: 'A', ArrowDown: 'B', ArrowRight: 'C', ArrowLeft: 'D', Home: 'H', End: 'F' };
+const CSI_TILDE: Record<string, string> = { Insert: '2', Delete: '3', PageUp: '5', PageDown: '6' };
+const FN: Record<string, string> = { F1: 'P', F2: 'Q', F3: 'R', F4: 'S', F5: '15', F6: '17', F7: '18', F8: '19', F9: '20', F10: '21', F11: '23', F12: '24' };
+/** Ctrl on a symbol, as a terminal sends it. Not `-`, `=`, `0`: those are the browser's zoom. */
+const CTRL_SYMBOL: Record<string, string> = { ' ': '\x00', '@': '\x00', '[': '\x1b', '\\': '\x1c', ']': '\x1d', '^': '\x1e', '_': '\x1f', '/': '\x1f' };
 
 /** A typed letter or symbol while a modifier is armed: `ctrl+r`, `alt+.`. */
 export const modified = (mod: Modifier, ch: string): string => `${mod}+${ch.toLowerCase()}`;
@@ -240,11 +262,14 @@ export const toKeyPrefs = (rows: { cap: Cap; on: boolean }[]): KeyPrefs => ({
   hidden: rows.filter((r) => !r.on).map((r) => r.cap.label),
 });
 
-/** Move row `i` by `by` places; a move off either end changes nothing. */
-export function moveRow<T>(rows: T[], i: number, by: -1 | 1): T[] {
-  const j = i + by;
-  if (j < 0 || j >= rows.length) return rows;
+/** Move row `from` to index `to`, the rows between closing up behind it: a drag's drop. A move
+ *  off either end, or onto itself, changes nothing. */
+export function moveRowTo<T>(rows: T[], from: number, to: number): T[] {
+  if (from === to || from < 0 || to < 0 || from >= rows.length || to >= rows.length) return rows;
   const next = [...rows];
-  [next[i], next[j]] = [next[j]!, next[i]!];
+  next.splice(to, 0, ...next.splice(from, 1));
   return next;
 }
+
+/** Move row `i` by `by` places: the ▲ and ▼ buttons. */
+export const moveRow = <T>(rows: T[], i: number, by: -1 | 1): T[] => moveRowTo(rows, i, i + by);
