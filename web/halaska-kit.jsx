@@ -239,9 +239,10 @@ const tokens = {
     textTertiary: "#6a6a6a",
     textMuted: "#4a4a4a",
     textInverse: "#1a1a1a",
-    // tautan edit: white on danger #f87171 was 2.8:1; the palette's own ink is 6.3:1 (4.6:1 on
+    // tautan edit: white failed on every dark fill (accent #60a5fa 2.5:1, danger #f87171 2.8:1,
+    // success #4ade80 1.7:1). The palette's own ink reads 6.9:1, 6.3:1 and 10.0:1 (4.6:1 on
     // dangerHover), as tautan's named palettes pick it (palettes.ts on()).
-    onAccent: "#ffffff", onDanger: "#1a1a1a", onSuccess: "#ffffff",
+    onAccent: "#1a1a1a", onDanger: "#1a1a1a", onSuccess: "#1a1a1a",
     sheetBg: "rgba(30,30,30,0.95)",
     shadow: "rgba(0,0,0,0.2)",
     shadowMd: "rgba(0,0,0,0.3)",

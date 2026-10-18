@@ -9,8 +9,10 @@
   subscription that fell behind with `events_lost`; the Hub now subscribes again with the
   same events and re-reads everything. It used to drop one optional event, `layout.updated`
   first, until the next restart.
-- **The red button reads in dark mode.** Its text is the dark palette's ink (6.3:1) instead
-  of white (2.8:1), on every danger button: Close, Remove worktree, the sheet actions.
+- **Filled buttons read in dark mode.** Text and marks on the blue, red and green fills are
+  the dark palette's ink instead of white: 6.9:1, 6.3:1 and 10.0:1, where white was 2.5:1,
+  2.8:1 and 1.7:1. Send, Save, Close, Remove worktree, switch knobs and checkmarks follow;
+  the named palettes already worked this way.
 
 ## 0.2.0 — 2026-10-18
 
