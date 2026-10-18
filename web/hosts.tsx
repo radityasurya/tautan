@@ -6,6 +6,7 @@ import { Dot, statusText } from './home.tsx';
 import { Back, ChevronRight, HostsTab, Install, Plus } from './icons.tsx';
 import { TopBar } from './header.tsx';
 import { ErrorLine, ModalSheet, useWrite } from './sheets.tsx';
+import { hostClash, hostId } from './host-id.ts';
 import { Button, IconButton, LinkButton, StatusDot, SwitchToggle, usePal } from './halaska-kit';
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
@@ -411,6 +412,7 @@ export function Hosts({ state }: { state: State | null }) {
       <AddHostSheet
         open={add || edit !== null}
         editing={edit ?? undefined}
+        others={[...hosts, ...(state?.hosts ?? [])]}
         onClose={() => {
           setAdd(false);
           setEdit(null);
@@ -578,6 +580,7 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
       <AddHostSheet
         open={editing !== null}
         editing={editing ?? undefined}
+        others={[...hosts, ...(state?.hosts ?? [])]}
         onClose={() => setEditing(null)}
         onSubmit={(entry) => writeHosts([...hosts.filter((c) => c.id !== entry.id), entry])}
       />
@@ -586,9 +589,6 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
 }
 
 /** `Label` wins; otherwise the first part of the target's host, so `dev@vps.ts.net` is `vps`. */
-const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-const hostId = (label: string | undefined, target: string) =>
-  slug(label ?? '') || slug(target.split('@').pop()!.split(':')[0]!.split('.')[0]!) || 'host';
 
 /** `dev@vps` → `['dev', 'vps']`, `vps` → `['', 'vps']`. ssh splits at the last `@` too. */
 const splitTarget = (target: string): [string, string] => {
@@ -713,12 +713,16 @@ function Field({ label, ...input }: { label: string } & InputHTMLAttributes<HTML
 export function AddHostSheet({
   open,
   editing,
+  others,
   onClose,
   onSubmit,
 }: {
   open: boolean;
   /** The entry being changed; its `id` is kept, so the Host keeps its Panes' keys. */
   editing?: HostConfig;
+  /** Every Host there is (the saved list and the ones the Hub found): a new one may not take
+   *  an id or a target from them, or saving would replace that Host. */
+  others: { id: string; label?: string; target?: string }[];
   onClose: () => void;
   onSubmit: (entry: HostConfig) => Promise<void>;
 }) {
@@ -764,8 +768,9 @@ export function AddHostSheet({
   const user = username.trim();
   // A `user@host` typed into Address is the whole target: its user wins over the field.
   const target = user && !addr.includes('@') ? `${user}@${addr}` : addr;
-  const save = () =>
-    submit({ id: editing?.id ?? hostId(label.trim() || undefined, target), label: label.trim() || undefined, target, session: session.trim() || undefined });
+  const id = editing?.id ?? hostId(label.trim() || undefined, target);
+  const clash = target ? hostClash({ id, target }, others, editing?.id) : null;
+  const save = () => { if (!clash) submit({ id, label: label.trim() || undefined, target, session: session.trim() || undefined }); };
 
   const probe = (to = target) => {
     const n = ++probeSeq.current;
@@ -800,7 +805,7 @@ export function AddHostSheet({
       open={open}
       title={editing ? 'Edit Host' : 'New Host'}
       onClose={onClose}
-      save={{ label: busy ? 'Saving…' : 'Save', onSave: save, disabled: !addr, busy }}
+      save={{ label: busy ? 'Saving…' : 'Save', onSave: save, disabled: !addr || !!clash, busy }}
     >
       {error && (
         <div ref={errorRef} className="rounded-card bg-danger/8 py-1 pr-1 pl-4">
@@ -848,6 +853,13 @@ export function AddHostSheet({
             onChange={(e) => setLabel(e.target.value)}
           />
         </section>
+        {clash && (
+          <p role="alert" className="-mt-2 px-4 text-caption text-danger">
+            {clash.kind === 'label'
+              ? `A Host called ${clash.label} already exists. Pick another label.`
+              : `This machine is already a Host (${clash.label}).`}
+          </p>
+        )}
         <section>
           <div className={CARD}>
             <Field label="herdr Mux" enterKeyHint="done" placeholder="Discover all" value={session} onChange={(e) => setSession(e.target.value)} />
