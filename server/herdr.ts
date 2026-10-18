@@ -535,10 +535,12 @@ export class HerdrMux implements Mux {
         try {
           const message = JSON.parse(line);
           if (message.error) {
-            // Any error reply refuses the subscription set: drop the newest optional variant
-            // (0.8 answers `unknown variant …` and closes the socket) without matching the
-            // wording, so the reconnect subscribes without it instead of looping.
-            this.optionalEvents.shift();
+            // An error before subscription_started refuses the subscription set: drop the
+            // newest optional variant (0.8 answers `unknown variant …` and closes the socket)
+            // without matching the wording, so the reconnect subscribes without it instead of
+            // looping. After it, the error is 0.9.2's `events_lost`: the set was fine, so the
+            // reconnect keeps it, and its subscription_started re-reads everything.
+            if (!started) this.optionalEvents.shift();
             fail();
             continue;
           }
