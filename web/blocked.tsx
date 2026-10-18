@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { offeredKeys, readBox } from '../shared/blocked.ts';
+import { asksPrompt, offeredKeys, readBox } from '../shared/blocked.ts';
 import type { Explain, InputBody } from '../shared/types.ts';
 import { haptic } from './app.tsx';
 import { keyGlyph } from './keys.ts';
@@ -12,7 +12,11 @@ export type ExplainResponse = Explain & { promptId?: string };
 /** Explain for one Pane, null when it is not blocked. Rejects when offline, so a caller can
  *  keep the Explain it already shows. */
 export const fetchExplain = (paneKey: string): Promise<ExplainResponse | null> =>
-  fetch(`/api/panes/${encodeURIComponent(paneKey)}/explain`).then((r) => r.json() as Promise<ExplainResponse | null>);
+  fetch(`/api/panes/${encodeURIComponent(paneKey)}/explain`)
+    .then((r) => r.json() as Promise<ExplainResponse | null>)
+    // A blocked Status over a Screen that asks nothing is stale (herdr lags an answered
+    // prompt): no card, rather than one that asks about the footer (`[PONYTAIL]`).
+    .then((explain) => (explain && asksPrompt(readBox(explain.detection)) ? explain : null));
 
 /**
  * The one send for an answer to a blocked prompt: the Pane's card, the Chat view's approval

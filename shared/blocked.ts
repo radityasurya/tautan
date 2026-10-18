@@ -82,6 +82,19 @@ const RULE = /^\s*─{20,}\s*$/;
 /** A numbered menu row: `❯ 1. Yes` on the cursor, `  2. No` off it. */
 const OPTION = /^(\s*)(❯\s*)?(\d+)\.\s+(.*\S)\s*$/;
 /** The question tabs over a form of several questions: `←  ☐ One  ☐ Two  ✔ Submit  →`. */
+
+/** What makes lines a prompt: a numbered menu row, an answer hint, or a question that is not
+ *  the user's own draft on the `❯` line. Claude's idle footer has none of these. */
+const HINT = /esc to cancel|enter to (?:confirm|select|submit|continue)|\(y\/n\)|press enter/i;
+const cue = (line: string) => {
+  const text = plain(line).trim();
+  return OPTION.test(plain(line)) || HINT.test(text) || (/\?$/.test(text) && !text.startsWith('❯'));
+};
+
+/** The box asks for an answer: a menu, or a line that asks. A Status that says blocked over a
+ *  Screen without one is stale, and no card should ask about whatever the Screen shows. */
+export const asksPrompt = (box: { head: string; rest: string[]; menu: MenuOption[] }): boolean =>
+  box.menu.length > 0 || [box.head, ...box.rest].some(cue);
 const TABS = /^←.*→$/;
 
 /** One row of an Agent's numbered menu, and the keys that pick it: arrows from the cursor
@@ -100,14 +113,18 @@ export function readBox(detection: string): { head: string; rest: string[]; menu
   const raw = detection.split(/\r?\n/);
   const firstText = (from: number) => raw.slice(from).find((line) => plain(line).trim());
   let start = 0;
+  let end = raw.length;
   for (let i = raw.length - 1; i >= 0; i--) {
     if (!RULE.test(plain(raw[i]!))) continue;
     const next = firstText(i + 1);
     if (next !== undefined && OPTION.test(plain(next))) continue;
-    if (raw.slice(i + 1).filter((line) => plain(line).trim()).length >= 2) start = i + 1;
+    const below = raw.slice(i + 1, end).filter((line) => plain(line).trim());
+    // A footer under the box asks nothing (a status line, the mode line): the box is above it.
+    if (!below.some(cue)) { end = i; continue; }
+    if (below.length >= 2) start = i + 1;
     break;
   }
-  const lines = raw.slice(start).filter((line) => !RULE.test(plain(line)));
+  const lines = raw.slice(start, end).filter((line) => !RULE.test(plain(line)));
   // A row wraps only at the terminal's right edge, which the box's full-width rule spans —
   // solid ─ or dashed ╌, whichever the Agent drew. The longest line on screen is not that
   // edge: an unwrapped row can be the longest thing there, and a longer line can hide a wrap.
