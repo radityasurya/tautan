@@ -240,3 +240,14 @@
     display: none;
   }
 }
+
+/* Diff rows (the Diff view, and the Chat view's edit rows). 12 % of the status colour over
+   whatever surface is under them, so one pair of tints works in every theme and the text keeps
+   its own contrast. Restored: ef9b051 dropped them while web/diff.tsx still used both. */
+@utility diff-add {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+@utility diff-del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}

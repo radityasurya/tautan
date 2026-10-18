@@ -1,8 +1,10 @@
 // Diff review (#/diff/<workspaceKey>[?worktree=<path>]). The Hub parses `git diff` in the
 // Workspace cwd, or in that worktree, and sends `DiffResult`; this file is the whole renderer —
 // a table of rows, no highlighting. The branch chip lives here too: Files shows it as well.
+// `DiffRow` also draws the Chat view's edit rows, which add syntax colours and drop the numbers.
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { BranchList, DiffFile, DiffResult, DiffScope, State, SwitchBody, Worktree } from '../shared/types.ts';
+import type { BranchList, DiffFile, DiffLine, DiffResult, DiffScope, State, SwitchBody, Worktree } from '../shared/types.ts';
+import type { Run } from './highlight.ts';
 import { api, Link, navigate, useDesktop } from './app.tsx';
 import { Back, ChevronDown, ChevronRight, Refresh } from './icons.tsx';
 import { FADE } from './composer.tsx';
@@ -35,6 +37,37 @@ const MARK = { add: '+', del: '-', ctx: ' ', meta: ' ' } as const;
 const TINT = { add: 'diff-add', del: 'diff-del', ctx: '', meta: '' } as const;
 const MARK_COLOR = { add: 'text-ok', del: 'text-danger', ctx: 'text-muted', meta: 'text-muted' } as const;
 
+/** One diff line: the old and new numbers, the `+`/`-` mark, then the text, tinted by its kind.
+ *  `wrap` reflows a long line to the column; without it the line runs on and the box scrolls.
+ *  The Chat view's edit rows pass `numbers={false}` (a snippet has no file line numbers) and
+ *  `runs`, the line's text in syntax colours. */
+export function DiffRow({ line, wrap, numbers = true, runs }: { line: DiffLine; wrap: boolean; numbers?: boolean; runs?: Run[] }) {
+  return (
+    <div className={`flex font-mono text-caption ${TINT[line.type]}`}>
+      {numbers && (
+        <>
+          <span aria-hidden className="w-9 shrink-0 px-1.5 text-right tabular-nums text-muted select-none">
+            {line.oldNo ?? ''}
+          </span>
+          <span aria-hidden className="w-9 shrink-0 px-1.5 text-right tabular-nums text-muted select-none">
+            {line.newNo ?? ''}
+          </span>
+        </>
+      )}
+      <span className={`w-3.5 shrink-0 text-center select-none ${MARK_COLOR[line.type]} ${numbers ? '' : 'ml-1'}`}>
+        {MARK[line.type]}
+      </span>
+      <span
+        className={`pr-4 ${line.type === 'meta' ? 'text-muted italic' : 'text-fg'} ${
+          wrap ? 'min-w-0 flex-1 break-all whitespace-pre-wrap' : 'whitespace-pre'
+        }`}
+      >
+        {runs ? runs.map(([text, cls], n) => (cls ? <span key={n} className={cls}>{text}</span> : text)) : line.text}
+      </span>
+    </div>
+  );
+}
+
 /** git names an old path for every file, so only a different, real one is a rename. */
 const renamedFrom = (file: DiffFile) =>
   file.oldPath && file.oldPath !== file.path && file.oldPath !== '/dev/null' ? file.oldPath : undefined;
@@ -56,8 +89,9 @@ function Path({ file }: { file: DiffFile }) {
   );
 }
 
-/** `+12 −3`, always in that order, so two files line up down the list. */
-function Counts({ file }: { file: DiffFile }) {
+/** `+12 −3`, always in that order, so two files line up down the list. The Chat view's edit
+ *  rows show their counts with it too. */
+export function Counts({ file }: { file: Pick<DiffFile, 'additions' | 'deletions'> }) {
   return (
     <span className="shrink-0 font-mono text-caption tabular-nums">
       <span className="text-ok">+{file.additions}</span> <span className="text-danger">−{file.deletions}</span>
@@ -126,24 +160,7 @@ function FileSection({
                   <Fragment key={h}>
                     <div className="bg-surface px-3 py-1 font-mono text-caption text-muted">{hunk.header}</div>
                     {hunk.lines.map((line, i) => (
-                      <div key={i} className={`flex font-mono text-caption ${TINT[line.type]}`}>
-                        <span aria-hidden className="w-9 shrink-0 px-1.5 text-right tabular-nums text-muted select-none">
-                          {line.oldNo ?? ''}
-                        </span>
-                        <span aria-hidden className="w-9 shrink-0 px-1.5 text-right tabular-nums text-muted select-none">
-                          {line.newNo ?? ''}
-                        </span>
-                        <span className={`w-3.5 shrink-0 text-center select-none ${MARK_COLOR[line.type]}`}>
-                          {MARK[line.type]}
-                        </span>
-                        <span
-                          className={`pr-4 ${line.type === 'meta' ? 'text-muted italic' : 'text-fg'} ${
-                            wrap ? 'min-w-0 flex-1 break-all whitespace-pre-wrap' : 'whitespace-pre'
-                          }`}
-                        >
-                          {line.text}
-                        </span>
-                      </div>
+                      <DiffRow key={i} line={line} wrap={wrap} />
                     ))}
                   </Fragment>
                 ))}

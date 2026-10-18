@@ -6,13 +6,16 @@ import { CopyButton, Markdown, ShellRun } from './markdown.tsx';
 import { haptic } from './app.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
-import { CHAT_PAGE_TURNS, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, editSpans, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
 import { CHAT_EVENT, mergeTurns } from '../shared/chat-merge.ts';
 import { toolLabel, type AgentKind } from '../shared/tool-label.ts';
 import type { Span, Status } from '../shared/types.ts';
 import { deliver, dropPending, pendingSnapshot, settled, subscribePending, trackPending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
 import { toolbarFromScreen, type Profile, type ToolbarData } from './profiles.ts';
+import { Counts } from './diff.tsx';
+import { EditDiff } from './edit-diff.tsx';
+import { runSummary, toolRuns } from './tool-groups.ts';
 import { store } from './store.tsx';
 import { finishedIn, readSubagent, setShowing, subagentChips, subagentName, subagentRows, subagentRunning, writeSubagent } from './subagents.ts';
 
@@ -281,6 +284,16 @@ function useFullOutput(paneKey: string, agent: string | undefined, tool: Tool, o
   return key ? outputs.get(key) : undefined;
 }
 const SUMMARY = 'cursor-pointer list-none rounded-chip [&::-webkit-details-marker]:hidden';
+/** No result, output or error yet: running, or waiting for an approval. */
+const unfinished = (tool: Tool) => tool.result === undefined && tool.output === undefined && !tool.isError;
+
+/** Edit, MultiEdit and Write (pi's `edit`, `write`): their input reads back as a diff. */
+const EDIT = /^(?:edit|multiedit|write)$/i;
+
+/** The spans of an edit row's input, once its whole text is here: a cut head shows as text
+ *  until the rest loads, because half a span would read as lines removed. */
+const editOf = (tool: Tool, input: string, whole: boolean) =>
+  EDIT.test(tool.name) && (whole || !tool.detailTruncated) ? editSpans(input) : undefined;
 
 /** The open part of a tool row: the image, the page preview, the input, and the output. */
 function ToolBody({ tool, image, preview, full, wholeDetail }: { tool: Tool; image?: ReturnType<typeof toolImage>; preview?: { src: string; title: string }; full?: string; wholeDetail?: string }) {
@@ -290,6 +303,7 @@ function ToolBody({ tool, image, preview, full, wholeDetail }: { tool: Tool; ima
   const size = tool.detailTruncated
     ? wholeDetail === undefined ? `first ${input.split('\n').length} of ${count(tool.detailLines ?? 1, 'line')}` : count(tool.detailLines ?? 1, 'line')
     : undefined;
+  const edit = useMemo(() => editOf(tool, input, wholeDetail !== undefined), [tool, input, wholeDetail]);
   return (
     <>
       {image && (
@@ -302,6 +316,11 @@ function ToolBody({ tool, image, preview, full, wholeDetail }: { tool: Tool; ima
           <Preview {...preview} />
         </div>
       )}
+      {edit ? (
+        <section aria-label={`${tool.name} changes`} className="border-t border-border p-2">
+          <EditDiff edit={edit} copy={input} />
+        </section>
+      ) : (
       <div className="relative border-t border-border">
         {size && (
           <p className="flex min-h-6 items-center px-3 pt-1.5 pr-16 text-[10px] tabular-nums text-muted">Input · {size}</p>
@@ -316,6 +335,7 @@ function ToolBody({ tool, image, preview, full, wholeDetail }: { tool: Tool; ima
           className="absolute right-1.5 top-1.5 min-h-8 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg"
         />
       </div>
+      )}
       {tool.result !== undefined && <ToolResult tool={tool} full={full} />}
       {tool.result === undefined && tool.isError && (
         <p className="border-t border-border px-3 py-1.5 text-[11px] font-semibold text-danger">Error, no output</p>
@@ -368,6 +388,14 @@ function ToolRow({
   const preview = tool.previewId !== undefined ? { src: previewSrc(paneKey, tool.previewId, agent), title } : undefined;
   const brief = subagent ? subagentName(subagent) : tool.brief;
   const label = toolLabel(tool.name, kind);
+  // An edit names its file and its `+N −M`; a call with a description leads with it.
+  const path = EDIT.test(tool.name) ? tool.detail.split('\n', 1)[0] || tool.brief : undefined;
+  const file = path?.split('/').filter(Boolean).at(-1);
+  const counted = tool.additions !== undefined && tool.deletions !== undefined && !tool.isError && !running;
+  const described = tool.description && !subagent ? tool.description : undefined;
+  // A described row's line count moves under its command on the phone, so the description
+  // keeps the width; the error dot and the running pulse stay at the end.
+  const lines = described && !running && !tool.isError && tool.result !== undefined ? count(tool.resultLines ?? 1, 'line') : undefined;
   const [opened, setOpened] = useState(false);
   const full = useFullOutput(paneKey, agent, tool, opened);
   const wholeDetail = useFullOutput(paneKey, agent, tool, opened, 'detail');
@@ -414,10 +442,26 @@ function ToolRow({
             </span>
             <span className="flex min-w-0 items-center gap-2">
               {image && <Thumb src={image.src} />}
-              <span title={brief} className={`truncate ${subagent ? 'font-sans text-fg' : 'text-muted'}`}>{brief}</span>
+              {described ? (
+                // Phone: the description, the command under it. Desktop: one line, and the
+                // command gives way first.
+                <span className="flex min-w-0 flex-1 flex-col lg:flex-row lg:items-baseline lg:gap-2">
+                  <span title={described} className="max-w-full shrink-0 truncate font-sans text-[13px] text-fg">{described}</span>
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span title={brief} className="min-w-0 truncate text-[11px] text-muted">{brief}</span>
+                    {lines && <span className="shrink-0 text-[10px] tabular-nums text-muted lg:hidden">{lines}</span>}
+                  </span>
+                </span>
+              ) : file ? (
+                <span title={path} className="truncate text-fg">{file}</span>
+              ) : (
+                <span title={brief} className={`truncate ${subagent ? 'font-sans text-fg' : 'text-muted'}`}>{brief}</span>
+              )}
             </span>
             <span className="flex items-center gap-2">
-              <ResultHint tool={tool} running={running} />
+              {counted ? <Counts file={{ additions: tool.additions!, deletions: tool.deletions! }} />
+                : lines ? <span className="hidden lg:contents"><ResultHint tool={tool} running={running} /></span>
+                : <ResultHint tool={tool} running={running} />}
               <Stamp at={at} />
             </span>
             <ChevronRight className="text-muted transition-transform group-open:rotate-90" />
@@ -435,6 +479,39 @@ function ToolRow({
           <ChevronRight size={16} />
         </button>
       )}
+    </li>
+  );
+}
+
+/**
+ * A run of finished tool rows folded into one line, as Claude Code prints it: "Ran 3 shell
+ * commands, read 2 files". A failure shows on the line; the rows render only once it opens,
+ * each still opening on its own.
+ */
+function ToolGroup({ tools, at, rows }: { tools: Tool[]; at?: number; rows: () => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const { text, failed } = runSummary(tools);
+  return (
+    <li className="min-w-0">
+      {/* A named group: the rows inside are `group`s of their own, and their chevrons must
+          not turn with this one. */}
+      <details className="group/run" onToggle={(event) => setOpen(event.currentTarget.open)}>
+        <summary className={`${SUMMARY} ${ROW} flex min-h-11 items-center gap-2 px-2 py-1 text-caption lg:min-h-8`}>
+          {/* Two lines before it cuts: on a phone the kinds rarely fit one. */}
+          <span title={text} className="line-clamp-2 min-w-0 flex-1 pl-1 text-[13px] text-fg">{text}</span>
+          {failed > 0 && (
+            <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-danger">
+              <span aria-hidden className="size-2 rounded-full bg-danger" />
+              {failed} failed
+            </span>
+          )}
+          <Stamp at={at} />
+          <ChevronRight className="shrink-0 text-muted transition-transform group-open/run:rotate-90 motion-reduce:transition-none" />
+        </summary>
+        {/* A 2 px rule and 8 px in on the phone, so the rows keep their width; desktop has room
+            to sit in a little further. */}
+        {open && <ul className="mt-1 flex flex-col gap-1 border-l-2 border-border pl-2 lg:ml-2">{rows()}</ul>}
+      </details>
     </li>
   );
 }
@@ -552,6 +629,7 @@ function ApprovalItem({ approval, agent, tool, at, kind, queued }: { approval: A
     );
   }
   const input = tool.detail || tool.brief;
+  const edit = editOf(tool, input, false);
   return (
     <li ref={queued ? undefined : ref} data-approval aria-label={`${toolLabel(tool.name, kind)} ${queued ? 'also needs your approval' : 'needs your approval'}`} className="min-w-0 scroll-my-4 rounded-chip border border-warn/40 bg-warn/8">
       <div className="flex min-h-11 items-center gap-2 px-2 py-1 lg:min-h-8">
@@ -564,7 +642,9 @@ function ApprovalItem({ approval, agent, tool, at, kind, queued }: { approval: A
         </span>
         <Stamp at={at} />
       </div>
-      {input && (
+      {edit ? (
+        <div className="px-2"><EditDiff edit={edit} copy={input} tall={false} /></div>
+      ) : input && (
         <pre className="mx-2 max-h-48 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded-[6px] border border-border bg-bg px-2 py-1.5 font-mono text-caption text-fg">
           {input}
         </pre>
@@ -1220,6 +1300,8 @@ export function Chat({
   const openRunning = open ? running(open) : false;
   /** The conversation on screen still runs: its last turn's unfinished calls are running. */
   const liveTurn = selected ? openRunning : status === 'working';
+  /** The last turn's unfinished calls stay out of a folded run: running, or asked about. */
+  const liveRows = liveTurn || (!selected && status === 'blocked');
   const pendingShown = selected ? [] : waiting;
   /** Every pending tool of the final turn, oldest first: the first is the one the on-screen
    *  prompt asks about, the rest queue behind it (18.4). */
@@ -1298,6 +1380,48 @@ export function Chat({
               {view.turns.map((turn, turnIndex) => {
                 const assistant = turn.role === 'assistant';
                 const tools = assistant ? turn.tools : [];
+                const newest = turnIndex === view.turns.length - 1;
+                // Each call stamps its own time. A transcript without one (pi, Codex) stamps the
+                // turn once: on the row with the Blocked card — the first pending tool — or else
+                // on the last row, when no bubble above has it.
+                const stampTurn = !turn.text && !targets.some(item => item.turn === turnIndex);
+                const rowKey = (toolIndex: number) => tools[toolIndex]!.id ?? `${tools[toolIndex]!.name}-${toolIndex}`;
+                // A row inside a folded run shows no time of its own: the run's line has it.
+                const row = (toolIndex: number, grouped = false) => {
+                  const tool = tools[toolIndex]!;
+                  const pending = targets.find(item => item.turn === turnIndex && item.tool === toolIndex);
+                  const subagent = tool.subagentId ? byId.get(tool.subagentId) : undefined;
+                  return pending && approval ? (
+                    <ApprovalItem
+                      key={rowKey(toolIndex)}
+                      approval={approval}
+                      agent={agent}
+                      tool={tool}
+                      kind={view?.agentKind}
+                      at={pending === targets[0] ? tool.at ?? turn.at : undefined}
+                      queued={pending !== targets[0]}
+                    />
+                  ) : (
+                    <ToolRow
+                      key={rowKey(toolIndex)}
+                      paneKey={paneKey}
+                      agent={selected}
+                      tool={tool}
+                      kind={view?.agentKind}
+                      at={grouped ? undefined : tool.at ?? (stampTurn && toolIndex === tools.length - 1 ? turn.at : undefined)}
+                      subagent={subagent}
+                      running={subagent ? running(subagent) : liveTurn && newest && unfinished(tool)}
+                      onOpenSubagent={pick}
+                    />
+                  );
+                };
+                // Finished calls fold into runs. Outside any run: a call of the newest turn that
+                // has not finished while the conversation runs (working, or asking about it), a
+                // subagent's row (it opens that Agent), a link card, and an image.
+                const items = toolRuns(tools.length, (toolIndex) => {
+                  const tool = tools[toolIndex]!;
+                  return (newest && liveRows && unfinished(tool)) || !!tool.subagentId || !!tool.link || tool.image !== undefined || tool.imageId !== undefined;
+                });
                 if (turn.from) return (
                   <li key={turn.id ?? turnIndex} className="flex flex-col items-start">
                     <PeerMessage from={turn.from} text={turn.text} />
@@ -1337,38 +1461,15 @@ export function Chat({
                     )}
                     {tools.length > 0 && (
                       <ul className="mt-1.5 flex w-[min(92%,42rem)] flex-col gap-1">
-                        {tools.map((tool, toolIndex) => {
-                          const pending = targets.find(item => item.turn === turnIndex && item.tool === toolIndex);
-                          // Each call stamps its own time. A transcript without one (pi, Codex)
-                          // stamps the turn once: on the row with the Blocked card — the first
-                          // pending tool — or else on the last row, when no bubble above has it.
-                          const lastRow = !turn.text && !targets.some(item => item.turn === turnIndex) && toolIndex === tools.length - 1;
-                          const subagent = tool.subagentId ? byId.get(tool.subagentId) : undefined;
-                          return pending && approval ? (
-                            <ApprovalItem
-                              key={tool.id ?? `${tool.name}-${toolIndex}`}
-                              approval={approval}
-                              agent={agent}
-                              tool={tool}
-                              kind={view?.agentKind}
-                              at={pending === targets[0] ? tool.at ?? turn.at : undefined}
-                              queued={pending !== targets[0]}
-                            />
-                          ) : (
-                          <ToolRow
-                            key={tool.id ?? `${tool.name}-${toolIndex}`}
-                            paneKey={paneKey}
-                            agent={selected}
-                            tool={tool}
-                            kind={view?.agentKind}
-                            at={tool.at ?? (lastRow ? turn.at : undefined)}
-                            subagent={subagent}
-                            running={subagent ? running(subagent)
-                              : liveTurn && turnIndex === view.turns.length - 1 && tool.result === undefined && tool.output === undefined && !tool.isError}
-                            onOpenSubagent={pick}
+                        {items.map((item) => 'row' in item ? row(item.row) : (
+                          <ToolGroup
+                            key={`run-${rowKey(item.run[0]!)}`}
+                            tools={item.run.map((toolIndex) => tools[toolIndex]!)}
+                            // The run's first call's time; without one, the turn's when it ends the list.
+                            at={tools[item.run[0]!]!.at ?? (stampTurn && item.run.includes(tools.length - 1) ? turn.at : undefined)}
+                            rows={() => item.run.map((toolIndex) => row(toolIndex, true))}
                           />
-                          );
-                        })}
+                        ))}
                       </ul>
                     )}
                   </li>

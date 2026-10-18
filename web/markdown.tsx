@@ -10,7 +10,7 @@
 // needs one of those.
 import { createContext, Fragment, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Picture, safeImage } from './image.tsx';
-import type { Lang } from './highlight.ts';
+import type { Lang, Run } from './highlight.ts';
 
 type Align = 'left' | 'center' | 'right' | undefined;
 type Block =
@@ -396,11 +396,9 @@ export function codeLang(label: string, text: string): Lang | undefined {
 
 let highlighter: typeof import('./highlight.ts') | undefined;
 
-/** A block's text: plain until the highlighter and its language are in, then the same text
- *  in coloured spans. Colour only, so nothing moves. Offline the lazy chunk is not cached
- *  and the block stays plain. */
-function CodeText({ lang, text }: { lang: string; text: string }) {
-  const known = codeLang(lang, text);
+/** `text` in coloured runs once the highlighter chunk and `known`'s parser are in; undefined
+ *  until then, for no language, and offline, where the lazy chunk is not cached. */
+export function useRuns(known: Lang | undefined, text: string): Run[] | undefined {
   const [loads, setLoads] = useState(0);
   // `loads` re-runs this once the chunk arrives: the highlighter is module state, not React's.
   const runs = useMemo(() => (known ? highlighter?.highlight(known, text) : undefined), [known, text, loads]);
@@ -416,6 +414,13 @@ function CodeText({ lang, text }: { lang: string; text: string }) {
       .then(() => live && setLoads((n) => n + 1), () => {});
     return () => { live = false; };
   }, [waiting]);
+  return runs;
+}
+
+/** A block's text: plain until the highlighter and its language are in, then the same text
+ *  in coloured spans. Colour only, so nothing moves. */
+function CodeText({ lang, text }: { lang: string; text: string }) {
+  const runs = useRuns(codeLang(lang, text), text);
   return <code>{runs ? runs.map(([s, cls], n) => (cls ? <span key={n} className={cls}>{s}</span> : s)) : text}</code>;
 }
 
