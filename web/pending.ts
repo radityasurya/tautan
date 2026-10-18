@@ -17,6 +17,8 @@ export interface Pending {
   at: number;
   /** Why a held reply waits beyond the Agent working: the terminal's own box has text. */
   reason?: 'draft';
+  /** It went out with Claude's Ctrl+Enter, past the queue. */
+  now?: true;
 }
 
 /** How long a sent reply waits for its turn before it says so. */
@@ -68,9 +70,10 @@ export const heldOf = (list: Pending[], paneKey: string) => list.filter((p) => p
 
 /**
  * Type the reply into the Pane and press Enter. Resolves false when the Hub refused it or
- * the request never landed; the entry then reads "Not sent · Retry".
+ * the request never landed; the entry then reads "Not sent · Retry". `now` presses Claude's
+ * Ctrl+Enter instead: while it works, the reply and everything queued go at once.
  */
-export async function deliver(id: number): Promise<boolean> {
+export async function deliver(id: number, now = false): Promise<boolean> {
   const entry = pending.find((p) => p.id === id);
   if (!entry) return false;
   set(id, { state: 'sending' });
@@ -78,7 +81,7 @@ export async function deliver(id: number): Promise<boolean> {
   const res = await fetch(`/api/panes/${encodeURIComponent(entry.paneKey)}/input`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text: entry.text, keys: ['enter'], held: true } satisfies InputBody),
+    body: JSON.stringify({ text: entry.text, keys: [now ? 'ctrl+enter' : 'enter'], held: true } satisfies InputBody),
   }).catch(() => undefined);
   const ok = !!res?.ok;
   if (!pending.some((p) => p.id === id)) return ok; // the transcript caught up first
@@ -91,7 +94,7 @@ export async function deliver(id: number): Promise<boolean> {
   }
   // A slash command (`/name args`) and a shell line (`!cmd`) are user turns too, so they
   // settle against the transcript like any other text.
-  set(id, ok ? { state: 'sent', at: Date.now(), reason: undefined } : { state: 'failed', reason: undefined });
+  set(id, ok ? { state: 'sent', at: Date.now(), reason: undefined, ...(now ? { now: true as const } : {}) } : { state: 'failed', reason: undefined });
   if (ok) setTimeout(() => { if (pending.find((p) => p.id === id)?.state === 'sent') set(id, { state: 'late' }); }, LATE_MS);
   return ok;
 }

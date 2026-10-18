@@ -13,7 +13,7 @@ export const PANE_TYPE = 'application/x-tautan-pane';
 export const TAB_TYPE = 'application/x-tautan-tab';
 export const WORKSPACE_TYPE = 'application/x-tautan-workspace';
 
-/** Where a Pane can be dropped. A Space takes the Pane into its first Tab: the tree carries no active one. */
+/** Where a Pane can be dropped. A Space takes the Pane into the Tab `spaceTab` picks. */
 export type PaneTarget =
   | { kind: 'cell'; pane: StatePane; tab?: StateTab }
   | { kind: 'tab'; tab: StateTab }
@@ -25,7 +25,13 @@ export type PaneDrop = { verb: 'Swap'; label: string; target: string } | { verb:
 const inTab = (p: StatePane, muxKey: string, workspaceId: string, tabId: string) =>
   p.muxKey === muxKey && p.workspaceId === workspaceId && p.tabId === tabId;
 /** A drop lands beside what is there; a desktop is wider than tall. */
-const into = (tab: StateTab): PaneDrop => ({ verb: 'Move', label: 'Move here', to: { tab: tab.key, split: 'right' } });
+const into = (tab: StateTab, label = 'Move here'): PaneDrop => ({ verb: 'Move', label, to: { tab: tab.key, split: 'right' } });
+
+/** The Tab a Pane dropped on a Space joins: the one the Mux shows there, else its first. */
+export const spaceTab = (space: StateWorkspace, tabs: StateTab[]): StateTab | undefined => {
+  const own = tabs.filter((t) => t.muxKey === space.muxKey && t.workspaceId === space.id);
+  return own.find((t) => t.id === space.activeTabId) ?? own[0];
+};
 
 /**
  * What dropping Pane `src` on `at` does, or null when the drop would change nothing or cannot
@@ -48,7 +54,8 @@ export function paneDrop(src: StatePane, at: PaneTarget, panes: StatePane[]): Pa
         ? { verb: 'Move', label: 'New Tab', to: { newTab: true } }
         : null;
     case 'space':
-      return at.tab && at.space.muxKey === src.muxKey && at.space.id !== src.workspaceId ? into(at.tab) : null;
+      // The row shows the Space, not the Tab, so the hint names where the Pane goes.
+      return at.tab && at.space.muxKey === src.muxKey && at.space.id !== src.workspaceId ? into(at.tab, `Move to ${at.tab.label}`) : null;
   }
 }
 

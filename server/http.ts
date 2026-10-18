@@ -6,7 +6,7 @@ import { CHAT_PAGE_TURNS, type ChatEvent } from '../shared/chat.ts';
 import { parseUnifiedDiff } from '../shared/diff.ts';
 import { promptId } from '../shared/blocked.ts';
 import { HerdrMux } from './herdr.ts';
-import { discoverLocalMuxes, discoverRemote, hostId, startRemoteHost, syncHosts, validTarget, validateHosts, writeHostsConfig } from './hosts.ts';
+import { discoverLocalMuxes, discoverRemote, hostId, parseTailnet, startRemoteHost, syncHosts, validTarget, validateHosts, writeHostsConfig } from './hosts.ts';
 import { mouseBytes, type Hub } from './mux.ts';
 import { LeaseError, LeaseHolder } from './lease.ts';
 import { ChatLens } from './chat.ts';
@@ -230,6 +230,8 @@ export function startHttp(hub: Hub, opts: {
   configPath?: string;
   /** Test seam: the chat transcript lens the chat routes read; the Hub's own when absent. */
   chats?: ChatLens;
+  /** Test seam: the `tailscale` binary GET /api/tailnet runs; `tailscale` on PATH when absent. */
+  tailscale?: string;
 }): ReturnType<typeof Bun.serve> {
   const root = resolve(opts.staticDir);
   const retries = new Set<string>(); let probes = 0;
@@ -554,6 +556,13 @@ export function startHttp(hub: Hub, opts: {
           }
           const host = (await hub.state()).hosts.find(host => host.id === id);
           return host ? json(host) : json({ error: 'host not found' }, 404);
+        }
+        if (req.method === 'GET' && url.pathname === '/api/tailnet') {
+          // Read only: the Hub's own `tailscale status`, never up, set or serve. The output is
+          // used whatever the exit code; a missing binary, a timeout or junk reads `unavailable`.
+          let status: unknown;
+          try { status = JSON.parse((await runSpawn([opts.tailscale ?? 'tailscale', 'status', '--json'], { timeoutMs: 5_000 })).stdout); } catch {}
+          return json(parseTailnet(status, (await hub.state()).hosts));
         }
         if (req.method === 'POST' && url.pathname === '/api/hosts/probe') {
           let body: ProbeBody;

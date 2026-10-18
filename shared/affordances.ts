@@ -35,7 +35,7 @@ const generic: { pattern: RegExp; action: (match: RegExpExecArray) => Action; la
     action: m => ({ keys: [herdrKey(m[1]!)] }), label: m => m[2]!.trim(),
   },
   {
-    pattern: /\b(esc|enter|tab|space|shift\+tab|ctrl\+[a-z]|[↑↓←→]|[a-z]|\d) to ([a-z][a-z ]{1,24}?)(?=[,.)·]|\s{2,}|$)/gi,
+    pattern: /\b(esc|enter|tab|space|shift\+tab|ctrl\+(?:enter|[a-z])|[↑↓←→]|[a-z]|\d) to ([a-z][a-z ]{1,24}?)(?=[,.)·]|\s{2,}|$)/gi,
     action: m => ({ keys: [herdrKey(m[1]!)] }), label: m => m[2]!.trim(),
   },
 ];

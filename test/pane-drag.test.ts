@@ -1,12 +1,12 @@
 import { expect, test } from 'bun:test';
-import { paneDrop } from '../web/pane-drag.ts';
+import { paneDrop, spaceTab } from '../web/pane-drag.ts';
 import type { StatePane, StateTab, StateWorkspace } from '../shared/types.ts';
 
 const pane = (id: string, more: Partial<StatePane> = {}): StatePane => ({
   key: `h/m/${id}`, muxKey: 'h/m', workspaceId: 'w1', tabId: 'w1:t1', id, title: id, status: 'idle', revision: 1, seenRevision: 1, ...more,
 });
 const tab = (id: string, workspaceId = 'w1', muxKey = 'h/m'): StateTab => ({ key: `${muxKey}/${id}`, muxKey, workspaceId, id, label: id });
-const space = (id: string, muxKey = 'h/m'): StateWorkspace => ({ key: `${muxKey}/${id}`, muxKey, id, label: id });
+const space = (id: string, muxKey = 'h/m', more: Partial<StateWorkspace> = {}): StateWorkspace => ({ key: `${muxKey}/${id}`, muxKey, id, label: id, ...more });
 
 // w1: t1 split into a and b, t2 holding c; w2: t1 holding d; another Mux holds e.
 const a = pane('w1:p1');
@@ -43,10 +43,21 @@ test('the +: a Pane of this Workspace that shares its Tab moves to a new Tab; a 
   expect(paneDrop(e, plus, panes)).toBeNull();
 });
 
-test('a Space: another Space on the Mux takes the Pane into its first Tab; its own Space, a Space without Tabs and another Mux refuse', () => {
+test('a Space: another Space on the Mux takes the Pane into the given Tab and names it; its own Space, a Space without Tabs and another Mux refuse', () => {
   const w2t1 = tab('w2:t1', 'w2');
-  expect(paneDrop(a, { kind: 'space', space: space('w2'), tab: w2t1 }, panes)).toEqual({ verb: 'Move', label: 'Move here', to: { tab: w2t1.key, split: 'right' } });
+  expect(paneDrop(a, { kind: 'space', space: space('w2'), tab: w2t1 }, panes)).toEqual({ verb: 'Move', label: 'Move to w2:t1', to: { tab: w2t1.key, split: 'right' } });
   expect(paneDrop(c, { kind: 'space', space: space('w1'), tab: t1 }, panes)).toBeNull(); // already in w1, even from another Tab
   expect(paneDrop(a, { kind: 'space', space: space('w2') }, panes)).toBeNull();
   expect(paneDrop(e, { kind: 'space', space: space('w2'), tab: w2t1 }, panes)).toBeNull();
+});
+
+test('the Tab a Space takes: its active Tab, else its first; none when it has no Tab', () => {
+  const w2t1 = tab('w2:t1', 'w2');
+  const w2t2 = tab('w2:t2', 'w2');
+  const elsewhere = tab('w2:t3', 'w2', 'h/other'); // same ids on another Mux never count
+  const tabs = [t1, t2, elsewhere, w2t1, w2t2];
+  expect(spaceTab(space('w2', 'h/m', { activeTabId: 'w2:t2' }), tabs)).toBe(w2t2);
+  expect(spaceTab(space('w2'), tabs)).toBe(w2t1); // tmux: no active Tab in the tree
+  expect(spaceTab(space('w2', 'h/m', { activeTabId: 'w2:t3' }), tabs)).toBe(w2t1); // a stale id falls back
+  expect(spaceTab(space('w3'), tabs)).toBeUndefined();
 });

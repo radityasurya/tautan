@@ -9,12 +9,12 @@ export const GLYPH: Record<string, string> = {
 };
 
 /**
- * The glyph for a herdr key name. `ctrl+d` is `^d`, the way a footer prints it, and a
- * function key is upper case, the way its own cap prints it.
+ * The glyph for a herdr key name. `ctrl+d` is `^d`, the way a footer prints it, and
+ * `ctrl+enter` is `^↵`; a function key is upper case, the way its own cap prints it.
  */
 export const keyGlyph = (name: string): string =>
   GLYPH[name] ??
-  (name.startsWith('ctrl+') ? `^${name.slice(5)}` : /^f\d{1,2}$/.test(name) ? name.toUpperCase() : name);
+  (name.startsWith('ctrl+') ? `^${GLYPH[name.slice(5)] ?? name.slice(5)}` : /^f\d{1,2}$/.test(name) ? name.toUpperCase() : name);
 
 /** Herdr key names, with the label shown on the cap. Ordered by real use. Labels stay short:
  *  the open preset is a six-column grid, so a cap is about 55 px on a phone. */
@@ -216,6 +216,18 @@ const CSI_TILDE: Record<string, string> = { Insert: '2', Delete: '3', PageUp: '5
 const FN: Record<string, string> = { F1: 'P', F2: 'Q', F3: 'R', F4: 'S', F5: '15', F6: '17', F7: '18', F8: '19', F9: '20', F10: '21', F11: '23', F12: '24' };
 /** Ctrl on a symbol, as a terminal sends it. Not `-`, `=`, `0`: those are the browser's zoom. */
 const CTRL_SYMBOL: Record<string, string> = { ' ': '\x00', '@': '\x00', '[': '\x1b', '\\': '\x1c', ']': '\x1d', '^': '\x1e', '_': '\x1f', '/': '\x1f' };
+
+/**
+ * What Enter does in the Composer's field. `now` is Claude's own Ctrl+Enter: while Claude works,
+ * it sends the text and every queued message at once, interrupting the run. Cmd+Enter does the
+ * same on a Mac. While Claude does not work, a Ctrl+Enter is a plain send. Shift+Enter, and a
+ * bare Return on a touch screen, are the field's own line break (null).
+ */
+export function enterAction(e: { key: string; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }, o: { working: boolean; returnBreaks: boolean }): 'send' | 'now' | null {
+  if (e.key !== 'Enter' || e.shiftKey) return null;
+  if (e.ctrlKey || e.metaKey) return o.working ? 'now' : 'send';
+  return o.returnBreaks ? null : 'send';
+}
 
 /** A typed letter or symbol while a modifier is armed: `ctrl+r`, `alt+.`. */
 export const modified = (mod: Modifier, ch: string): string => `${mod}+${ch.toLowerCase()}`;

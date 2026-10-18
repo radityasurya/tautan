@@ -232,9 +232,10 @@ says so.
 
 Also on desktop, a Pane drags by a split cell's title row, a Pane row or an Agent row
 (`web/pane-drag.ts`). Drop it on another cell of its Tab to swap; on a Tab, a cell of
-another Tab or a Space row to move it there, split right (a Space takes it into its first
-Tab); or on the strip's + for a new Tab. The target under the pointer shows what a drop does
-— **Swap**, **Move here**, **New Tab**. A target on another Mux, or one where the drop
+another Tab or a Space row to move it there, split right (a Space takes it into the Tab
+herdr has open there, else its first); or on the strip's + for a new Tab. The target under
+the pointer shows what a drop does — **Swap**, **Move here**, **Move to** *Tab* on a Space
+row, **New Tab**. A target on another Mux, or one where the drop
 changes nothing, refuses it, and Escape cancels. A moved Pane on screen keeps the route on
 its new key, as **Move to…** does. Agents never reorder among themselves: their order is
 the Status sort's. The phone keeps the menus.
@@ -623,6 +624,17 @@ chevron's turn is off under reduced motion. A turn without the field shows no ro
 **Replies while the Agent works.** Claude and pi queue a reply typed mid-run in their own
 prompt (pi steers with it), so tautan sends it at once; its pending turn reads **Queued for
 Claude** with the send time until the transcript logs it. Any other Agent's reply is held.
+**Claude's queue.** Everything Claude has queued shows at the bottom of the Chat view as
+dimmed user bubbles marked **Queued**, whether it was typed in tautan or in the terminal:
+the transcript's `queue-operation` records (`queued` on the chat answer and every delta),
+the `❯` rows Claude draws above its `ctrl+enter to send now` hint, and tautan's own replies
+sent mid-run, each shown once. While Claude works, the last bubble carries **Send now**
+(**Send all 3 now** for three), which presses Claude's Ctrl+Enter: Claude stops the run and
+takes the whole queue at once — it has no per-message send. In the composer, Ctrl+Enter (or
+Cmd+Enter) does the same with the typed text, and with an empty field it sends the queue.
+While Claude is idle it is a plain send. On a phone, Send queues the reply and its bubble
+offers Send now. Claude's hint is also a **send now ^↵** pill in the suggestions and a tap
+on the Screen; both send Ctrl+Enter (the hint rule once read it as a plain Enter).
 **Held replies.** A held reply shows at once as a pending
 turn marked **Held until Claude is idle** (the Agent's own name), and the composer lists it
 under **1 held · sends when Claude is idle**. Held replies live in `web/pending.ts`, outside
@@ -949,8 +961,20 @@ saves nothing. The answer is one line under the button: a green Dot and
 `reachable`, with `· herdr: default, work` when the Hub named the Muxes it
 found; a red Dot and the ssh error when it was refused; and
 `Enter a target like user@host` for the 400 the Hub sends on a target it cannot
-parse. Probing is never required — **Add Host** saves a Host whose machine is
+parse. Three ssh errors are put in words, naming the machine: a refused login
+(turn on Tailscale SSH or add the Hub's key), herdr missing on the machine
+(install it, or `herdr machine add`), and an unknown host key (ssh to it once
+from the Hub). Probing is never required — **Add Host** saves a Host whose machine is
 still off, which is the point of the offline card.
+
+**On your tailnet.** When `GET /api/tailnet` answers `running` with peers, Add
+Host (not Edit) lists them above Address: a Dot for online, the MagicDNS short
+name, the OS, and a **Tailscale SSH** tag. Offline machines are dimmed; phones
+and tablets go last, muted, with `no herdr`; Windows says `needs WSL`. A machine
+a Host already names shows **Added** and cannot be picked. A tap fills Address
+and Label with the name, keeps a typed Username, runs the probe at once and
+scrolls the result into view. The card holds 5½ rows and scrolls inside the
+sheet. `needs-login` shows one muted line instead; `unavailable` shows nothing.
 
 Save PUTs `/api/settings` with the whole `hosts` array, new entry appended or
 the same `id` replaced. The sheet closes when the Hub answers and keeps

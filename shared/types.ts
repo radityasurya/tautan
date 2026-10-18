@@ -3,8 +3,8 @@
 
 export type Status = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
-/** the linked git worktree (herdr ≥ 0.9.3); mirrors StateWorkspace.worktree */
-export interface Workspace { id: string; label: string; cwd?: string; worktree?: { root: string; path: string } }
+/** the linked git worktree (herdr ≥ 0.9.3); mirrors StateWorkspace.worktree. `activeTabId`: herdr's `active_tab_id`; tmux leaves it absent */
+export interface Workspace { id: string; label: string; cwd?: string; worktree?: { root: string; path: string }; activeTabId?: string }
 export interface Tab { id: string; workspaceId: string; label: string }
 export interface Pane {
   id: string; tabId: string; workspaceId: string; title: string; cwd?: string;
@@ -140,6 +140,8 @@ export interface StateWorkspace {
   key: string; muxKey: string; id: string; label: string; cwd?: string;
   /** set only on a herdr linked worktree (`worktree.is_linked_worktree`): the main checkout and this one */
   worktree?: { root: string; path: string };
+  /** the Tab the Mux shows for this Workspace (herdr's `active_tab_id`); absent on tmux */
+  activeTabId?: string;
 }
 export interface StateTab { key: string; muxKey: string; workspaceId: string; id: string; label: string }
 export interface StatePane {
@@ -259,6 +261,27 @@ export interface HostConfig {
 /** POST /api/hosts/probe body: run discovery once, save nothing. */
 export interface ProbeBody { target: string; session?: string }
 export interface ProbeResult { online: boolean; sessions?: string[]; error?: string }
+/** One machine on the Hub's tailnet, from `tailscale status --json`. */
+export interface TailnetPeer {
+  /** the MagicDNS short name, e.g. `vps-1`: what Add Host fills Address with */
+  name: string;
+  /** the full MagicDNS name, no trailing dot */
+  dnsName: string;
+  /** the machine's own OS host name, e.g. `vmi000001` */
+  hostName: string;
+  /** as Tailscale reports it: `linux`, `macOS`, `windows`, `android`, `iOS`, … */
+  os: string;
+  online: boolean;
+  /** the first Tailscale IPv4 address */
+  ip?: string;
+  /** Tailscale SSH is on: the peer advertises SSH host keys */
+  ssh: boolean;
+  /** the id of an existing Host whose target names this machine */
+  added?: string;
+}
+/** GET /api/tailnet: the Hub's own `tailscale status`, read only. A missing or failing
+ *  `tailscale` is `unavailable`, never an error; any backend state but Running is `needs-login`. */
+export interface Tailnet { state: 'running' | 'needs-login' | 'unavailable'; peers: TailnetPeer[] }
 /** PUT /api/settings body. `trustedUser: null` unlocks. Omitted keys are left unchanged. */
 export interface SettingsBody { trustedUser?: string | null; hosts?: HostConfig[] }
 /** GET /api/settings */

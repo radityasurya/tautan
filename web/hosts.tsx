@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { InputHTMLAttributes, KeyboardEvent, ReactNode } from 'react';
-import type { HostConfig, ProbeResult, Settings, State, StateHost, StateMux, StatePane, Status } from '../shared/types.ts';
+import type { HostConfig, ProbeResult, Settings, State, StateHost, StateMux, StatePane, Status, Tailnet, TailnetPeer } from '../shared/types.ts';
 import { api, Link, navigate, opensWith, useDesktop } from './app.tsx';
 import { Dot, statusText } from './home.tsx';
 import { Back, ChevronRight, HostsTab, Install, Plus } from './icons.tsx';
@@ -596,6 +596,91 @@ const splitTarget = (target: string): [string, string] => {
   return at > 0 ? [target.slice(0, at), target.slice(at + 1)] : ['', target];
 };
 
+/** The Hub's tailnet, read each time the sheet opens. The last answer stays while the next
+ *  one loads, so a reopened sheet does not jump; a failed read hides the list. */
+function useTailnet(open: boolean) {
+  const [net, setNet] = useState<Tailnet | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    api<Tailnet>('/api/tailnet', undefined, 'GET').then(
+      (n) => live && setNet(n),
+      () => live && setNet(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [open]);
+  return net;
+}
+
+/** Phones and tablets run Tailscale but not herdr; herdr runs on macOS and Linux. */
+const MOBILE = new Set(['android', 'iOS', 'iPadOS']);
+const OS_NAME: Record<string, string> = { linux: 'Linux', windows: 'Windows', android: 'Android', freebsd: 'FreeBSD', openbsd: 'OpenBSD' };
+/** The OS, and what it means for herdr where that is not plain. */
+const osNote = (p: TailnetPeer) => {
+  const os = OS_NAME[p.os] ?? p.os;
+  return MOBILE.has(p.os) ? `${os} · no herdr` : p.os === 'windows' ? `${os} · needs WSL` : os;
+};
+
+/**
+ * Every other machine on the Hub's tailnet, one row each: online first, phones and tablets
+ * last. A tap picks it; a machine a Host already names is not a choice. Long lists scroll
+ * inside the card, so the form under it stays in reach.
+ */
+function TailnetPicker({ peers, picked, onPick }: { peers: TailnetPeer[]; picked: string; onPick: (p: TailnetPeer) => void }) {
+  const id = useId();
+  const sorted = [...peers.filter((p) => !MOBILE.has(p.os)), ...peers.filter((p) => MOBILE.has(p.os))];
+  return (
+    <section aria-labelledby={id}>
+      <h3 id={id} className="px-4 pb-1.5 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">
+        On your tailnet
+      </h3>
+      {/* 5½ rows, so a cut row says there is more. */}
+      <ul className="max-h-[242px] divide-y divide-border overflow-y-auto overscroll-contain rounded-card bg-elevated">
+        {sorted.map((p) => {
+          const on = picked === p.name;
+          const quiet = !p.online || MOBILE.has(p.os);
+          return (
+            <li key={p.dnsName}>
+              <button
+                type="button"
+                disabled={Boolean(p.added)}
+                aria-pressed={p.added ? undefined : on}
+                aria-label={[p.name, osNote(p), p.online ? 'online' : 'offline', p.ssh && 'Tailscale SSH', p.added && 'added'].filter(Boolean).join(', ')}
+                title={p.dnsName}
+                onClick={() => onPick(p)}
+                className={`flex min-h-11 w-full items-center gap-2.5 px-4 py-2 text-left outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)] enabled:active:bg-surface disabled:cursor-default ${
+                  on ? 'bg-accent/8 shadow-[inset_2px_0_0_var(--accent)]' : ''
+                }`}
+              >
+                <span aria-hidden className={`flex min-w-0 flex-1 items-center gap-2.5 ${quiet || p.added ? 'opacity-55' : ''}`}>
+                  <StatusDot status={p.online ? 'online' : 'offline'} />
+                  <span className={`min-w-0 truncate text-body ${MOBILE.has(p.os) ? 'text-muted' : 'text-fg'} ${on ? 'font-semibold' : ''}`}>
+                    {p.name}
+                  </span>
+                  <span className="ml-auto shrink-0 text-caption text-muted">{osNote(p)}</span>
+                </span>
+                {p.added ? (
+                  <span aria-hidden className="shrink-0 text-caption font-medium text-muted">
+                    Added
+                  </span>
+                ) : (
+                  p.ssh && (
+                    <span aria-hidden className={`shrink-0 rounded-[5px] bg-accent/12 px-1.5 py-px text-[11px] font-medium text-accent ${quiet ? 'opacity-55' : ''}`}>
+                      Tailscale SSH
+                    </span>
+                  )
+                )}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 /** A grouped card of form rows, iOS Settings style: lighter than the sheet behind it. */
 const CARD = 'overflow-hidden rounded-card bg-elevated divide-y divide-border';
 /** A caption under a card, inset to the rows' text. */
@@ -643,8 +728,14 @@ export function AddHostSheet({
   const [username, setUsername] = useState('');
   const [session, setSession] = useState('');
   const [probing, setProbing] = useState(false);
-  const [result, setResult] = useState<(ProbeResult & { code?: string }) | null>(null);
+  const [result, setResult] = useState<ProbeShown | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
+  const testRef = useRef<HTMLElement>(null);
+  /** The latest probe: an answer to an earlier one, for a machine picked before, is dropped. */
+  const probeSeq = useRef(0);
+  /** A pick's probe keeps the Test row in view until it answers: below the fold on a phone. */
+  const follow = useRef(false);
+  const net = useTailnet(open && !editing);
 
   // A reopened sheet starts clean, the same rule the write hook follows.
   useEffect(() => {
@@ -656,11 +747,18 @@ export function AddHostSheet({
       setSession(editing?.session ?? '');
       setProbing(false);
       setResult(null);
+      probeSeq.current++;
+      follow.current = false;
     }
   }, [open, editing]);
   useEffect(() => {
     if (error) errorRef.current?.scrollIntoView({ block: 'nearest' });
   }, [error]);
+  useEffect(() => {
+    if (!follow.current) return;
+    testRef.current?.scrollIntoView({ block: 'nearest' });
+    if (result) follow.current = false;
+  }, [probing, result]);
 
   const addr = address.trim();
   const user = username.trim();
@@ -669,13 +767,22 @@ export function AddHostSheet({
   const save = () =>
     submit({ id: editing?.id ?? hostId(label.trim() || undefined, target), label: label.trim() || undefined, target, session: session.trim() || undefined });
 
-  const probe = () => {
+  const probe = (to = target) => {
+    const n = ++probeSeq.current;
     setProbing(true);
     setResult(null);
-    api<ProbeResult>('/api/hosts/probe', { target, session: session.trim() || undefined })
-      .then(setResult)
-      .catch((e: unknown) => setResult({ online: false, code: (e instanceof Error && e.message) || 'network' }))
-      .finally(() => setProbing(false));
+    api<ProbeResult>('/api/hosts/probe', { target: to, session: session.trim() || undefined })
+      .then((r) => n === probeSeq.current && setResult({ ...r, target: to }))
+      .catch((e: unknown) => n === probeSeq.current && setResult({ online: false, code: (e instanceof Error && e.message) || 'network', target: to }))
+      .finally(() => n === probeSeq.current && setProbing(false));
+  };
+
+  // A picked machine fills Address and Label, keeps a typed Username, and is tested at once.
+  const pick = (p: TailnetPeer) => {
+    setAddress(p.name);
+    setLabel(p.name);
+    follow.current = true;
+    probe(user ? `${user}@${p.name}` : p.name);
   };
 
   // Enter moves to the next field; in the last one it saves.
@@ -699,6 +806,13 @@ export function AddHostSheet({
         <div ref={errorRef} className="rounded-card bg-danger/8 py-1 pr-1 pl-4">
           <ErrorLine error={error} busy={busy} onRetry={retry} />
         </div>
+      )}
+      {/* Edit keeps its machine: the list is for adding one. */}
+      {!editing && net?.state === 'running' && net.peers.length > 0 && <TailnetPicker peers={net.peers} picked={addr} onPick={pick} />}
+      {!editing && net?.state === 'needs-login' && (
+        <p className="px-4 text-caption text-muted">
+          Tailscale is logged out on this Hub · run <Code>tailscale login</Code>
+        </p>
       )}
       <div className="contents" onKeyDown={onKeyDown}>
         <section>
@@ -741,7 +855,7 @@ export function AddHostSheet({
           <p className={NOTE}>Leave it empty to show every herdr Mux on the Host.</p>
         </section>
       </div>
-      <section className={CARD}>
+      <section ref={testRef} className={`${CARD} scroll-mb-5`}>
         <button
           type="button"
           onClick={() => {
@@ -763,8 +877,16 @@ export function AddHostSheet({
   );
 }
 
+/** A probe's answer, with the target it dialled, so the words name the machine. */
+type ProbeShown = ProbeResult & { code?: string; target: string };
+
+/** A command or file name inside a sentence. */
+const Code = ({ children }: { children: ReactNode }) => (
+  <code className="rounded-chip bg-bg px-1 py-px font-mono text-[0.86em] [overflow-wrap:anywhere]">{children}</code>
+);
+
 /** What one probe found: reachable plus the herdr Muxes it saw, or why it did not connect. */
-function ProbeLine({ result }: { result: ProbeResult & { code?: string } }) {
+function ProbeLine({ result }: { result: ProbeShown }) {
   const muxes = result.sessions?.length ? ` · herdr: ${result.sessions.join(', ')}` : '';
   return (
     <p role="status" className="flex items-start gap-2 text-[13px]">
@@ -772,11 +894,42 @@ function ProbeLine({ result }: { result: ProbeResult & { code?: string } }) {
         aria-hidden
         className={`mt-1.5 size-2 shrink-0 rounded-full ${result.online ? 'bg-ok' : 'bg-danger'}`}
       />
-      <span className={`min-w-0 break-words ${result.online ? 'text-fg' : 'text-danger'}`}>
-        {result.online ? `reachable${muxes}` : (result.error ?? why(result.code ?? 'network'))}
+      <span title={result.error} className={`min-w-0 break-words ${result.online ? 'text-fg' : 'text-danger'}`}>
+        {result.online ? `reachable${muxes}` : result.error ? failure(result.error, result.target) : why(result.code ?? 'network')}
       </span>
     </p>
   );
+}
+
+/**
+ * The probe's ssh failures a tailnet user meets first, in words. The Hub passes ssh's last
+ * stderr line through: OpenSSH's `user@host: Permission denied (publickey,…).`, and the
+ * shell's answer when neither `herdr` nor `~/.local/bin/herdr` exists (bash `No such file or
+ * directory`, zsh `no such file or directory:`, dash `not found`, fish `Unknown command`).
+ * Any other line shows as ssh wrote it.
+ */
+function failure(error: string, target: string): ReactNode {
+  const name = target.slice(target.lastIndexOf('@') + 1);
+  if (/Permission denied \(/.test(error))
+    return (
+      <>
+        SSH refused the login. Turn on Tailscale SSH on {name} (<Code>tailscale set --ssh</Code>) or add this Hub's key to its{' '}
+        <Code>authorized_keys</Code>.
+      </>
+    );
+  if (/herdr/.test(error) && /not found|no such file|unknown command/i.test(error))
+    return (
+      <>
+        herdr is not on {name}. Install it there, or run <Code>herdr machine add {target}</Code> on this Hub.
+      </>
+    );
+  if (/Host key verification failed/.test(error))
+    return (
+      <>
+        This Hub has not seen {name}'s host key yet. Run <Code>ssh {target}</Code> on this Hub once to accept it.
+      </>
+    );
+  return error;
 }
 
 /** The probe's own failures, in words. A bad target is the one the Hub answers with a 400. */

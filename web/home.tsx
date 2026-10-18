@@ -22,7 +22,7 @@ import { store } from './store.tsx';
 import { filesHash } from './folders-logic.ts';
 import { PROVIDER_LABELS } from './usage.tsx';
 import { paneKind, running, statusWord as paneStatusWord } from './pane-label.ts';
-import { carry, fromControl, paneDrop, paneSource, paneTarget, WORKSPACE_TYPE, type DropOver, type PaneDrop } from './pane-drag.ts';
+import { carry, fromControl, paneDrop, paneSource, paneTarget, spaceTab, WORKSPACE_TYPE, type DropOver, type PaneDrop } from './pane-drag.ts';
 
 // ---- status ----
 
@@ -559,8 +559,9 @@ export function DropHint({ label, className, big, style }: { label: string; clas
     </span>
   );
 }
-/** The hint's place on a list row: over the counts and ⋯ at its end. */
-const ROW_HINT = 'absolute top-1/2 right-2 -translate-y-1/2';
+/** The hint's place on a list row: over the counts and ⋯ at its end. A long Tab name in
+ *  "Move to …" truncates before it covers more than the row's end. */
+const ROW_HINT = 'absolute top-1/2 right-2 max-w-[60%] -translate-y-1/2 truncate';
 
 /**
  * A list group header, one row: chevron, the label (the first thing to truncate), the Host as
@@ -1297,11 +1298,11 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const dropAt = (w: StateWorkspace): DropMark =>
     dragging && drag?.over === w.key ? (slot(w).indexOf(dragging) > slot(w).indexOf(w) ? 'above' : 'below') : undefined;
 
-  // A Pane row drags to a Space row or Workspace header (desktop): into that Workspace's first
-  // Tab, split right, on the same Mux. The Pane on screen moved follows to its new key, as the
-  // Pane's Move to… does; a failure says why under the search, like a reorder's.
+  // A Pane row drags to a Space row or Workspace header (desktop): into that Workspace's open
+  // Tab (else its first), split right, on the same Mux. The Pane on screen moved follows to
+  // its new key, as the Pane's Move to… does; a failure says why under the search, like a
+  // reorder's.
   const paneDrag = (p: StatePane) => (desktop ? paneSource(p) : undefined);
-  const firstTab = (w: StateWorkspace) => state?.tabs.find((t) => t.muxKey === w.muxKey && t.workspaceId === w.id);
   const movePane = (src: StatePane, d: PaneDrop) => {
     if (d.verb !== 'Move') return;
     haptic();
@@ -1314,7 +1315,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
     desktop
       ? paneTarget({
           id: w.key,
-          decide: (src) => paneDrop(src, { kind: 'space', space: w, tab: firstTab(w) }, state?.panes ?? []),
+          decide: (src) => paneDrop(src, { kind: 'space', space: w, tab: spaceTab(w, state?.tabs ?? []) }, state?.panes ?? []),
           setOver: setPaneOver,
           onDrop: movePane,
           rest: manual ? dragProps(w) : undefined,

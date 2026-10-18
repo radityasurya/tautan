@@ -3,7 +3,7 @@
 // VITE_MOCK=1); it never loads for a real page.
 import type {
   BranchList, DiffFile, DiffHunk, DiffLine, DiffResult, DiffScope, SwitchBody, Worktree, WorktreeRemoveBody, WorktreeRemoveResult, WorktreeStatus,
-  Explain, HistoryMatch, HistoryResult, HostIntegrations, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, PluginAction, PluginRun, ProbeBody, ProbeResult, RenameBody, Screen, ScreenEvent,
+  Explain, HistoryMatch, HistoryResult, HostIntegrations, InputBody, MouseBody, NewTabBody, NewWorkspaceBody, PluginAction, PluginRun, ProbeBody, ProbeResult, RenameBody, Tailnet, TailnetPeer, Screen, ScreenEvent,
   ScreenMode, SeenBody, Settings, SettingsBody, State, StatePane, Status, SuggestSettingBody,
 } from '../shared/types.ts';
 import type { ChatResponse, Subagent, Turn } from '../shared/chat.ts';
@@ -1467,6 +1467,23 @@ function route(s: Store, url: URL, method: string, body: unknown, headers?: Head
     if (!found) return json({ error: 'host not found' }, 404);
     for (const es of sources) es.push(s, { state: true });
     return json(found);
+  }
+
+  // The Hub's tailnet: the vps the fixture already has, a Linux box with Tailscale SSH, a
+  // Windows desktop, an offline Mac and a phone, in the Hub's order (online first, then name).
+  if (method === 'GET' && url.pathname === '/api/tailnet') {
+    const peer = (name: string, os: string, online: boolean, more: Partial<TailnetPeer> = {}): TailnetPeer =>
+      ({ name, dnsName: `${name}.tail1234.ts.net`, hostName: name, os, online, ssh: false, ...more });
+    return json({
+      state: 'running',
+      peers: [
+        peer('desktop', 'windows', true),
+        peer('ok-box', 'linux', true, { ssh: true }),
+        peer('vps', 'linux', true, { added: 'vps' }),
+        peer('macbook', 'macOS', false),
+        peer('pixel', 'android', false),
+      ],
+    } satisfies Tailnet);
   }
 
   // One dial, nothing saved. A target containing `ok` answers; anything else is refused,

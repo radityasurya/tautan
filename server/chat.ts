@@ -1,7 +1,7 @@
 import { open, readFile, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { CHAT_PAGE_TURNS, HTML_FILE, PREVIEW_MAX, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, HTML_FILE, PREVIEW_MAX, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Queued, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
 import { codexHome, resolveCodexPath } from './codex-chat.ts';
 import type { State, StateHost } from '../shared/types.ts';
 
@@ -424,7 +424,7 @@ export async function resolveSession(hub: SessionHub, paneKey: string, io?: Tran
 }
 
 type AgentKind = NonNullable<ChatResponse['agentKind']>;
-type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; previewFiles: Map<number, string>; outputs: Map<string, string>; details: Map<string, string>; subagents: Subagent[]; at: number };
+type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; previewFiles: Map<number, string>; outputs: Map<string, string>; details: Map<string, string>; queued: Queued[]; subagents: Subagent[]; at: number };
 /** One remembered generation (ADR 0007): the cursor that names it, every Turn's fingerprint
  *  (none for an id-less transcript, which keeps its digest only), and the subagents digest
  *  at parse time. The lens keeps the newest eight per conversation. */
@@ -768,7 +768,7 @@ export class ChatLens {
     const value = await this.value(paneKey, agent);
     if (!value) return undefined;
     return {
-      chat: { sessionId: value.sessionId, turns: value.turns, at: value.at, subagents: value.subagents, agentKind: value.agentKind, ...(agent ? { agent } : {}) },
+      chat: { sessionId: value.sessionId, turns: value.turns, at: value.at, subagents: value.subagents, agentKind: value.agentKind, ...(value.queued.length ? { queued: value.queued } : {}), ...(agent ? { agent } : {}) },
       etag: `"${Bun.hash([value.sessionId, agent ?? '', value.signature.inode, value.signature.size, value.signature.mtime, value.at, subagentsDigest(value.subagents)].join('\u0000')).toString(36)}"`,
     };
   }
@@ -807,6 +807,7 @@ export class ChatLens {
         reset: false,
         upserts: [],
         agentKind: value.agentKind,
+        ...(value.queued.length ? { queued: value.queued } : {}),
         ...(total !== undefined ? { total } : {}),
         ...(gen.subs !== subagentsDigest(value.subagents) ? { subagents: value.subagents } : {}),
         ...(agent ? { agent } : {}),
@@ -821,6 +822,7 @@ export class ChatLens {
       reset,
       upserts: !gen || reset ? window : (from !== undefined && from > 0 ? value.turns.slice(from) : value.turns).filter(turn => gen.prints.get(turn.id!) !== print(turn)),
       agentKind: value.agentKind,
+      ...(value.queued.length ? { queued: value.queued } : {}),
       ...(total !== undefined ? { total } : {}),
       ...(!gen || reset || gen.subs !== subagentsDigest(value.subagents) ? { subagents: value.subagents } : {}),
       ...(agent ? { agent } : {}),
@@ -1012,9 +1014,10 @@ export class ChatLens {
     const previewFiles = new Map<number, string>();
     const outputs = new Map<string, string>();
     const details = new Map<string, string>();
+    const queued: Queued[] = [];
     const subagentIds = piLinks ?? new Map<string, string>();
     if (!piLinks) for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
-    const opts: ParseOpts = { images, previews, previewFiles, outputs, details, subagentIds, ...(agent ? { sidechain: true } : {}) };
+    const opts: ParseOpts = { images, previews, previewFiles, outputs, details, subagentIds, ...(agent ? { sidechain: true } : { queued }) };
     if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
     const parsed = resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
       : (resolved.agent === 'pi' || resolved.agent === 'omp' ? parsePiTranscript : parseTranscript)(jsonl, opts);
@@ -1031,7 +1034,7 @@ export class ChatLens {
         delete tool.detailLines;
       }
     }
-    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, previewFiles, outputs, details, subagents: list, at: Date.now() };
+    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, previewFiles, outputs, details, queued, subagents: list, at: Date.now() };
     this.cache.set(cacheKey, value);
     this.remember(paneKey, agent, cacheKey, value);
     return value;

@@ -233,6 +233,7 @@ capability flags: the UI hides write actions when `kind === 'tmux'`.
 | `POST /api/push/subscribe` (a `PushSubscription` as JSON) | store the subscription |
 | `DELETE /api/push/subscribe` `{endpoint}` | forget it |
 | `POST /api/hosts/probe` `{target, session?}` | dial a target once and save nothing → `{online, sessions?, error?}`; 400 `{error: 'target'}` for a target that is not `user@host` |
+| `GET /api/tailnet` | the Hub's own `tailscale status --json`, read only (5 s) → `{state: 'running' \| 'needs-login' \| 'unavailable', peers}`; every other machine, online first, with Tailscale SSH and an already-added Host marked. A missing or failing `tailscale` is `unavailable`, never an error |
 | `POST /api/hosts/:id/retry` | re-dial one Host, local or remote → the updated `StateHost`; the SSE `state` event is the receipt |
 | `GET /api/settings` | trusted user, the login this request carries, what serves the app, `hosts.json`, and the Smart replies provider, model and flag |
 | `PUT /api/settings` `{trustedUser?, hosts?}` | replace either; an omitted key is left alone, `trustedUser: null` unlocks → the new `Settings` |

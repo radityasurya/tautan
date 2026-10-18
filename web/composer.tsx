@@ -4,7 +4,7 @@ import { hintPills } from './affordances.tsx';
 import { haptic, post, reducedMotion } from './app.tsx';
 import { Blocked, type ExplainResponse } from './blocked.tsx';
 import { Attach, Keyboard, Mic, ScreenLens, Send } from './icons.tsx';
-import { applyKeyPrefs, capInput, directKey, editableCaps, modified, MODIFIERS, moveRow, moveRowTo, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
+import { applyKeyPrefs, capInput, directKey, editableCaps, enterAction, modified, MODIFIERS, moveRow, moveRowTo, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
 import { applyPick, Picker, tokenAt, useComplete, type Item } from './complete.tsx';
 import { toolbarFromScreen, type Profile } from './profiles.ts';
 import { quickReplies, type Pill } from './replies.ts';
@@ -458,15 +458,23 @@ export function Composer({
   /** An Agent's reply also goes to the Chat view as a pending turn. Claude and pi queue a reply
    *  typed while they work, so it goes out at once; any other Agent's is held while it works,
    *  and goes out by itself once the Pane is idle or done again. */
-  const say = (body: string) => {
+  const say = (body: string, now = false) => {
     if (status === 'working' && !QUEUES.has(agent ?? '')) trackPending(paneKey, body, true);
-    else void deliver(trackPending(paneKey, body));
+    else void deliver(trackPending(paneKey, body), now);
   };
 
-  const send = (override?: string) => {
+  /** Claude works: Enter queues a reply, and Ctrl+Enter sends it with the queue at once. */
+  const claudeWorking = status === 'working' && /^claude/i.test(agent ?? '');
+
+  /** `now` is Claude's Ctrl+Enter, only ever set while it works. With nothing typed it still
+   *  sends whatever Claude has queued, as Claude's own box does. */
+  const send = (override?: string, now = false) => {
     const raw = override ?? text;
     const sent = raw.trim();
-    if (!sent) return;
+    if (!sent) {
+      if (now) keys(['ctrl+enter']);
+      return;
+    }
     // A bare `/model` opens the card first; the same text with a space sends it as typed.
     // `/effort` does the same on Claude, the one Agent the Hub lists effort levels for. The
     // caret goes after the space, or the token under it is still the command.
@@ -481,7 +489,7 @@ export function Composer({
     // the line goes straight to the Pane, and the Screen shows what it did.
     // ponytail: one an Agent holds (it does not queue, and it works) still goes through `say`.
     const outside = !!agent && runsOutside(agent, sent) && (status !== 'working' || QUEUES.has(agent));
-    if (agent && !outside) say(body);
+    if (agent && !outside) say(body, now);
     else void post(paneKey, 'input', { text: body, keys: ['enter'] } satisfies InputBody);
     if (agent && hideCard && (outside || SCREEN_COMMAND.test(sent))) onScreenCommand?.();
     if (!agent && mayRemember(screenText)) setHistory(remember(sent));
@@ -1195,6 +1203,7 @@ export function Composer({
     ? explain
       ? desktop ? `Or tell ${agent} what to do instead` : 'Or type an answer'
       : subagentOpen ? desktop ? 'Reply goes to the main Agent' : 'Reply to main Agent…'
+      : desktop && claudeWorking ? `Reply to ${Agent} — Enter queues it, Ctrl+Enter sends now`
       : desktop ? `Reply to ${Agent} — / for commands, @ for files` : `Reply to ${Agent}…`
     : 'Type a command';
   const returnBreaks = COARSE && !!agent;
@@ -1243,6 +1252,13 @@ export function Composer({
           }
           return;
         }
+        const enter = composing ? null : enterAction(e, { working: claudeWorking, returnBreaks });
+        // Ctrl+Enter goes past the picker: it sends what is typed, as typed.
+        if (enter && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          send(undefined, enter === 'now');
+          return;
+        }
         if (open && !composing) {
           const item = items[active]!;
           // Already typed in full: Enter sends it, where Enter sends at all.
@@ -1263,7 +1279,7 @@ export function Composer({
             return;
           }
         }
-        if (e.key === 'Enter' && !e.shiftKey && !composing && !returnBreaks) {
+        if (enter === 'send') {
           e.preventDefault();
           send();
         }
