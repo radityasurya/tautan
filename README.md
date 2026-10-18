@@ -274,17 +274,22 @@ checklist before you expose a Hub.
 
 ## Status
 
-Version 0.1.1, released 2026-09-12 on [npm](https://www.npmjs.com/package/tautan),
+Version 0.2.0 (2026-10-18) is the current version; it ships on npm, GHCR and GitHub releases
+when the `v0.2.0` tag is pushed. Version 0.1.1 was released on 2026-09-12 on
+[npm](https://www.npmjs.com/package/tautan),
 [GHCR](https://github.com/radityasurya/tautan/pkgs/container/tautan) and
-[GitHub releases](https://github.com/radityasurya/tautan/releases). Every phase of
-[docs/ROADMAP.md](docs/ROADMAP.md) is built: every screen, a local herdr, triage, push,
-attachments, quick replies, remote Hosts over SSH, tmux, write operations, diff review, and
-packaging. See [CHANGELOG.md](CHANGELOG.md).
+[GitHub releases](https://github.com/radityasurya/tautan/releases). Phases 0–38 of
+[docs/ROADMAP.md](docs/ROADMAP.md) are built, except the web preview, Host meters, review
+notes and Host colours in Phase 38. What is built: every screen, a local herdr, triage, push,
+attachments, quick replies, remote Hosts over SSH, tmux, write operations, diff review,
+packaging, the Chat view, layout editing, split view, Files with Edit and branches, plugin
+actions, history search, and worktree removal. See [CHANGELOG.md](CHANGELOG.md).
 
 Confirmed on a real iPhone: the installed PWA, the Agents and Pane screens, and a push
 notification on a blocked agent. Items marked `[~]` in the roadmap are built and driven in an
 emulated phone but not yet confirmed on a device: the Explain card, Seen, tab swipes,
 dictation and read-aloud, a photo attachment, smart replies, and the SSH forwarder reconnect.
+Phases 24–38, which make up most of 0.2.0, also await verification on a real device.
 
 Two known limits: tmux reports Status `unknown` for every Pane, and a Pane cannot be resized
 to the phone's width, because herdr 0.9 shares one width between all clients.

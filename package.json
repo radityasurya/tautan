@@ -1,6 +1,6 @@
 {
   "name": "tautan",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Mobile-first PWA hub for herdr (and tmux): see every coding agent's state from your phone and reply, over Tailscale.",
   "license": "MIT",
   "repository": {

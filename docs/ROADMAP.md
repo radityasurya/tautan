@@ -1,10 +1,10 @@
 # Roadmap
 
-**Status (2026-09-12):** every phase through 23 is built; 0.1.1 is released. Phases 24–30,
-the [parity waves](./WAVES-PARITY.md), are built and await verification on a real device.
-Phases 32–37, from the [second parity round](./WAVES-PARITY-2.md) (2026-10-11), are built and
-await verification too. Phase 38 (2026-10-17) holds ideas from herdr-gpui; its worktree
-removal is built.
+**Status (2026-10-18):** every phase through 23 is built. 0.1.1 is released (2026-09-12), and
+0.2.0 (2026-10-18) ships when the `v0.2.0` tag is pushed. Phases 24–38 are built and await
+verification on a real device: 24–31 are the [parity waves](./WAVES-PARITY.md) and Files, 32–37
+come from the [second parity round](./WAVES-PARITY-2.md) (2026-10-11), and Phase 38
+(2026-10-17) holds ideas from herdr-gpui, of which only worktree removal is built.
 `[~]` marks work that is built and verified in an emulated phone but not yet on a real
 device.
 
