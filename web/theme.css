@@ -202,7 +202,8 @@
     animation: none !important;
   }
 
-  .press {
+  .press,
+  .scroll-autohide {
     transition: none !important;
   }
 
@@ -227,6 +228,68 @@
   textarea,
   select {
     font-size: max(16px, 1em) !important;
+  }
+}
+
+/* ---- scrollbars: thin, no arrows, a rounded thumb in the muted text colour ----
+   One skin per engine. Chromium 121+ ignores every `::-webkit-scrollbar` rule on an element
+   that sets `scrollbar-width` or `scrollbar-color`, and its standard `thin` bar still draws
+   arrows on Linux, so Chromium and Safari get only the `::-webkit-scrollbar` skin and
+   Firefox gets only the standard pair. The skin is not an overlay: it takes 6 px wherever
+   it applies, so it is limited to `data-scrollbars="classic"`, which app.tsx sets where
+   scrollbars already take space (Linux, Windows). macOS and phones keep their overlay bars.
+   `--scroll-thumb` is registered, so `scroll-autohide` can fade it; it inherits. */
+@property --scroll-thumb {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@layer base {
+  :root {
+    --scroll-thumb: color-mix(in srgb, var(--muted) 40%, transparent);
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--scroll-thumb) transparent;
+    }
+  }
+
+  /* The gate sits in `:where()`: Chromium never matches the thumb's `:hover` or `:active`
+     behind a plain combinator (`:root[…] ::-webkit-scrollbar-thumb:hover`). */
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+    background: transparent;
+  }
+
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: var(--scroll-thumb);
+  }
+
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar-thumb:hover,
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar-thumb:active {
+    background: color-mix(in srgb, var(--muted) 65%, transparent);
+  }
+
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* The desktop sidebar's thumb shows only while the pointer is over it or a list inside is
+   scrolling (`data-scrolling`, set by app.tsx for a second after the last scroll event).
+   The bar keeps its 6 px either way, so nothing moves when it fades. */
+@utility scroll-autohide {
+  --scroll-thumb: transparent;
+  transition: --scroll-thumb 300ms ease-out;
+  &:hover,
+  &[data-scrolling] {
+    --scroll-thumb: inherit;
+    transition-duration: 120ms;
   }
 }
 
