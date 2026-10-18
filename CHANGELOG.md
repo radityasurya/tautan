@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Adding a Host never replaces another.** A label that matches an existing Host, or an
+  address that already is one, shows why in the sheet and keeps Save off. Before, saving
+  silently dropped the other Host.
+- **The event stream keeps every event after herdr drops events.** herdr 0.9.2+ ends a
+  subscription that fell behind with `events_lost`; the Hub now subscribes again with the
+  same events and re-reads everything. It used to drop one optional event, `layout.updated`
+  first, until the next restart.
+- **The red button reads in dark mode.** Its text is the dark palette's ink (6.3:1) instead
+  of white (2.8:1), on every danger button: Close, Remove worktree, the sheet actions.
+
 ## 0.2.0 — 2026-10-18
 
 tautan now shows an Agent's conversation beside its Screen, edits layout, files and branches
