@@ -127,6 +127,7 @@ export class HerdrMux implements Mux {
       return {
         id: w.workspace_id, label: w.label || w.workspace_id, ...(cwd ? { cwd } : {}),
         ...(linked ? { worktree: { root: w.worktree.repo_root, path: w.worktree.checkout_path } } : {}),
+        ...(typeof w.active_tab_id === 'string' ? { activeTabId: w.active_tab_id } : {}),
       };
     });
     this.paneContexts = new Map(panes.map(pane => [pane.id, {

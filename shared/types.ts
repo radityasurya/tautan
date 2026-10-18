@@ -3,8 +3,8 @@
 
 export type Status = 'idle' | 'working' | 'blocked' | 'done' | 'unknown';
 
-/** the linked git worktree (herdr ≥ 0.9.3); mirrors StateWorkspace.worktree */
-export interface Workspace { id: string; label: string; cwd?: string; worktree?: { root: string; path: string } }
+/** the linked git worktree (herdr ≥ 0.9.3); mirrors StateWorkspace.worktree. `activeTabId`: herdr's `active_tab_id`; tmux leaves it absent */
+export interface Workspace { id: string; label: string; cwd?: string; worktree?: { root: string; path: string }; activeTabId?: string }
 export interface Tab { id: string; workspaceId: string; label: string }
 export interface Pane {
   id: string; tabId: string; workspaceId: string; title: string; cwd?: string;
@@ -140,6 +140,8 @@ export interface StateWorkspace {
   key: string; muxKey: string; id: string; label: string; cwd?: string;
   /** set only on a herdr linked worktree (`worktree.is_linked_worktree`): the main checkout and this one */
   worktree?: { root: string; path: string };
+  /** the Tab the Mux shows for this Workspace (herdr's `active_tab_id`); absent on tmux */
+  activeTabId?: string;
 }
 export interface StateTab { key: string; muxKey: string; workspaceId: string; id: string; label: string }
 export interface StatePane {

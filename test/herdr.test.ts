@@ -27,7 +27,7 @@ let server: Server;
 const snapshot = {
   snapshot: {
     workspaces: [
-      { workspace_id: 'w1', label: 'w1' },
+      { workspace_id: 'w1', label: 'w1', active_tab_id: 'w1:t2' },
       // herdr 0.9.2 links a Workspace to a git worktree; 0.9.0 omits the field entirely.
       { workspace_id: 'w2', label: 'w2', worktree: { checkout_path: '/wt/checkout', repo_root: '/wt/repo', is_linked_worktree: true, repo_key: 'k', repo_name: 'r' } },
       { workspace_id: 'w3', label: 'w3' },
@@ -166,6 +166,16 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tr
     expect(workspaces.find(w => w.id === 'w2')!.worktree).toEqual({ root: '/wt/repo', path: '/wt/checkout' });
     expect(workspaces.find(w => w.id === 'w1')!.worktree).toBeUndefined();
     expect(workspaces.find(w => w.id === 'w4')!.worktree).toBeUndefined();
+    mux.close();
+  });
+});
+
+describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1')('HerdrMux.tree active Tab', () => {
+  test('carries active_tab_id, and leaves it absent when herdr sends none', async () => {
+    const mux = new HerdrMux('test', socketPath);
+    const workspaces = (await mux.tree()).workspaces;
+    expect(workspaces.find(w => w.id === 'w1')!.activeTabId).toBe('w1:t2');
+    expect(workspaces.find(w => w.id === 'w2')!.activeTabId).toBeUndefined();
     mux.close();
   });
 });
