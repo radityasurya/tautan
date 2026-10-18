@@ -3,15 +3,16 @@ import { Blocked, ON_WARN, type ExplainResponse } from './blocked.tsx';
 import { Dot } from './home.tsx';
 import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown, ShellRun } from './markdown.tsx';
-import { haptic } from './app.tsx';
+import { haptic, post } from './app.tsx';
 import { Check, ChevronRight, Down } from './icons.tsx';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
-import { CHAT_PAGE_TURNS, editSpans, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, editSpans, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type Queued, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
 import { CHAT_EVENT, mergeTurns } from '../shared/chat-merge.ts';
 import { toolLabel, type AgentKind } from '../shared/tool-label.ts';
 import type { Span, Status } from '../shared/types.ts';
 import { deliver, dropPending, pendingSnapshot, settled, subscribePending, trackPending, type Pending } from './pending.ts';
 import { Preview, linkLabel, previewSrc, safeLink } from './preview.tsx';
+import { queueShown, screenQueue, type QueuedItem } from './queued.ts';
 import { toolbarFromScreen, type Profile, type ToolbarData } from './profiles.ts';
 import { Counts } from './diff.tsx';
 import { EditDiff } from './edit-diff.tsx';
@@ -128,6 +129,38 @@ function PendingTurn({ entry, agent, working }: { entry: Pending; agent: string;
             </button>
           </>
         )}
+      </span>
+    </li>
+  );
+}
+
+/**
+ * A message waiting in Claude's queue: dimmed like a pending reply. The last one carries Send
+ * now, Claude's own Ctrl+Enter, which interrupts the run and sends the whole queue at once —
+ * so it is one action under the queue, not one per message, as Claude draws its hint.
+ */
+function QueuedTurn({ item, count, onSendNow, sending }: { item: QueuedItem; count: number; onSendNow?: () => void; sending?: boolean }) {
+  return (
+    <li className="flex flex-col items-end">
+      <div className="min-w-0 max-w-[88%] whitespace-pre-wrap break-words rounded-card bg-accent/10 px-3 py-2.5 text-body text-fg opacity-60">
+        {item.text}
+      </div>
+      <span aria-live={onSendNow ? 'polite' : undefined} className="mt-1 px-1 text-right text-[11px] text-muted">
+        Queued{item.at !== undefined && ` · ${clock(item.at)}`}
+        {onSendNow && (sending ? ' · Sending now…' : (
+          <>
+            {' · '}
+            <button
+              type="button"
+              onClick={onSendNow}
+              aria-label={count > 1 ? `Send all ${count} queued messages now` : 'Send the queued message now'}
+              title="Ctrl+Enter"
+              className={`${LINK} text-accent`}
+            >
+              {count > 1 ? `Send all ${count} now` : 'Send now'}
+            </button>
+          </>
+        ))}
       </span>
     </li>
   );
@@ -983,6 +1016,8 @@ export function Chat({
   /** The approval row appeared below while the user reads further up. */
   const [asking, setAsking] = useState(false);
   const shown = useRef<ChatResponse | null>(null);
+  /** Claude's queue as Main's transcript last said; a delta without it says the queue is empty. */
+  const [recorded, setRecorded] = useState<Queued[]>([]);
   const all = useSyncExternalStore(subscribePending, pendingSnapshot);
   const waiting = all.filter((p) => p.paneKey === paneKey);
   // The Hub re-reads the transcript on a revision, which may come late or not at all for a
@@ -1066,9 +1101,13 @@ export function Chat({
         // starts over instead of failing the view.
         const answer = (await response.json()) as ChatDelta & Pick<ChatResponse, 'turns'>;
         const delta: ChatDelta | null = Array.isArray(answer.upserts) ? answer
-          : Array.isArray(answer.turns) ? { sessionId: answer.sessionId, cursor: '', reset: true, upserts: answer.turns, subagents: answer.subagents, agent: answer.agent }
+          : Array.isArray(answer.turns) ? { sessionId: answer.sessionId, cursor: '', reset: true, upserts: answer.turns, subagents: answer.subagents, agent: answer.agent, queued: answer.queued }
           : null;
         if (!delta) throw new Error('invalid chat');
+        // The queue is no Turn: it rides every answer whole, and a change to it alone moves
+        // the cursor with no upserts, so it is taken before the quiet check below.
+        const queue = selected ? [] : delta.queued ?? [];
+        setRecorded((prev) => (JSON.stringify(prev) === JSON.stringify(queue) ? prev : queue));
         const merged = mergeTurns(turns, delta);
         missSince = 0;
         misses = 0;
@@ -1302,7 +1341,25 @@ export function Chat({
   const liveTurn = selected ? openRunning : status === 'working';
   /** The last turn's unfinished calls stay out of a folded run: running, or asked about. */
   const liveRows = liveTurn || (!selected && status === 'blocked');
-  const pendingShown = selected ? [] : waiting;
+  // Claude's queue: the transcript's (stale once the Pane is idle or done, when Claude has
+  // taken it all), the Screen's rows, and tautan's own replies sent while Claude works.
+  const claude = /^claude/i.test(agent);
+  const onScreen = useMemo(() => (claude && lines ? screenQueue(lines) : []), [claude, lines]);
+  const queue = selected || !claude ? { items: [], covered: [] } : queueShown(status === 'idle' || status === 'done' ? [] : recorded, onScreen, waiting, status === 'working');
+  const pendingShown = selected ? [] : waiting.filter((p) => !queue.covered.includes(p.id));
+  const queueKey = queue.items.map((item) => item.text).join('\0');
+  /** The queue Send now went out for: its button waits until the queue changes. */
+  const [sentNow, setSentNow] = useState<string | null>(null);
+  const sendNow = async () => {
+    haptic();
+    const key = queueKey;
+    setSentNow(key);
+    // A queue that has not moved by then offers the button again.
+    setTimeout(() => setSentNow((k) => (k === key ? null : k)), 6_000);
+    const res = await post(paneKey, 'input', { keys: ['ctrl+enter'] });
+    if (!res?.ok) return setSentNow(null);
+    for (const ms of [600, 2000]) setTimeout(() => setNudge((n) => n + 1), ms);
+  };
   /** Every pending tool of the final turn, oldest first: the first is the one the on-screen
    *  prompt asks about, the rest queue behind it (18.4). */
   const targets = approval && view ? pendingTools(view.turns) : [];
@@ -1366,7 +1423,7 @@ export function Chat({
               <Skeleton className="ml-auto h-11 w-2/3 rounded-card" />
               <Skeleton className="h-20 w-5/6 rounded-card" />
             </div>
-          ) : view.turns.length === 0 && !pendingShown.length && !approval ? (
+          ) : view.turns.length === 0 && !pendingShown.length && !queue.items.length && !approval ? (
             <p className="flex items-center gap-3 text-caption text-muted">
               No turns yet
               <button type="button" onClick={onUnavailable} className="press inline-flex min-h-9 items-center rounded-chip border border-border bg-surface px-3 text-caption text-fg">
@@ -1475,6 +1532,16 @@ export function Chat({
                   </li>
                 );
               })}
+              {queue.items.map((item, n) => (
+                <QueuedTurn
+                  key={`queued-${n}`}
+                  item={item}
+                  count={queue.items.length}
+                  // Ctrl+Enter only while Claude works: under a permission prompt it is untried.
+                  onSendNow={n === queue.items.length - 1 && status === 'working' ? () => void sendNow() : undefined}
+                  sending={sentNow === queueKey || queue.items.some((queued) => queued.now)}
+                />
+              ))}
               {pendingShown.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} agent={agent} working={status === 'working'} />)}
               {approval && !targets.length && <ApprovalItem approval={approval} agent={agent} />}
             </ol>

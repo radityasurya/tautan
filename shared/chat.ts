@@ -81,11 +81,18 @@ export interface Subagent {
   ended?: 'failed' | 'stopped';
 }
 
+/** A message the user queued while Claude worked, still waiting for its turn: Claude's
+ *  `queue-operation` records replayed (enqueue appends; dequeue takes the head; remove takes
+ *  the first with the same content; popAll empties it). */
+export interface Queued { text: string; at?: number }
+
 /** `GET /api/panes/:key/chat[?agent=<id>]`. `subagents` lists the whole tree, on both forms. */
 export interface ChatResponse {
   sessionId: string;
   turns: Turn[];
   at: number;
+  /** Claude's queue as the transcript left it, oldest first; absent when empty. */
+  queued?: Queued[];
   subagents?: Subagent[];
   /** Set when the response is a subagent's own conversation. */
   agent?: string;
@@ -100,6 +107,9 @@ export interface ChatDelta {
   cursor: string;         // names this parse; send it back as ?since next time
   reset: boolean;         // true: upserts is the whole conversation, replace the list
   upserts: Turn[];        // transcript order; merge by id
+  /** Claude's queue now, on every answer; absent means empty. It is no Turn, so it rides
+   *  whole beside the upserts: a queue change moves the cursor and nothing else. */
+  queued?: Queued[];
   subagents?: Subagent[]; // the whole tree, when it changed, and always on a reset
   /** The conversation's whole turn count, on a windowed answer (the amendment): the turns
    *  served are the last page, and `Load earlier` asks for the rest. */
@@ -460,6 +470,8 @@ export interface ParseOpts {
   subagentIds?: Map<string, string>;
   /** Keep isSidechain entries; every entry of a subagent's own file carries the flag. */
   sidechain?: boolean;
+  /** Claude's queue as the file leaves it: the user's own queued messages, oldest first. */
+  queued?: Queued[];
 }
 // ADR 0007: a result past this many lines keeps only its tail inline; the whole text moves
 // out of band to /chat/output/:id, so no large result rides in the turns.
@@ -553,6 +565,9 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
   };
   const artifactHtml = new Map<string, string>(); // Artifact tool_use id → the source its file_path matched
   const queuedText = new Set<string>(); // queued prompts already shown; a flushed copy is dropped below
+  // Claude's queue, replayed. An entry keeps its place without content (a `!` line is
+  // enqueued bare), so a later `dequeue` still takes the right head.
+  let queue: { text?: string; at?: number }[] = [];
   // Claude closes every turn with a `turn_duration` record. A reply after it is a new bubble,
   // even when what woke Claude (an agent's message, a task notification) is not shown.
   let ended = false;
@@ -565,6 +580,17 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       entry = value as Record<string, unknown>;
     } catch { continue; }
     if (entry.type === 'system' && entry.subtype === 'turn_duration') { ended = true; continue; }
+    if (entry.type === 'queue-operation') {
+      const content = str(entry.content);
+      if (entry.operation === 'enqueue') queue.push({ text: content, at: time(entry.timestamp) });
+      else if (entry.operation === 'dequeue') queue.shift();
+      else if (entry.operation === 'popAll') queue = [];
+      else if (entry.operation === 'remove') {
+        const at = queue.findIndex(item => item.text === content);
+        if (at >= 0) queue.splice(at, 1);
+      }
+      continue;
+    }
     // A queued prompt exists only as its attachment entry; when the queue flushes, Claude
     // also writes it as a user entry, which `queuedText` then keeps from showing twice.
     const peer = entry.type === 'attachment' ? peerMessage(entry) : undefined;
@@ -690,6 +716,8 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
     } else turns.push({ role, text, tools, ...(thinking ? { thinking } : {}), ...(uuid ? { id: uuid } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
     ended = false;
   }
+  // Task notifications and hook prompts queue too; only the user's own words are shown.
+  for (const item of queue) if (item.text?.trim() && !wrapper(item.text)) opts?.queued?.push({ text: capTurn(item.text), ...(item.at !== undefined ? { at: item.at } : {}) });
   return turns;
 }
 

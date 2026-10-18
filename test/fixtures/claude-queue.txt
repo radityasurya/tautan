@@ -1,0 +1,16 @@
+  Said it was the only quiet he got all week."
+
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ reply OK only. padding00 padding01 padding02 padding03 padding04 padding05 padding06 padding07 padding08 padding09 [0m[48;2;55;55;55m  [0m
+[0m[48;2;55;55;55m  [0m[38;2;153;153;153m[48;2;55;55;55mpadding10 padding11 padding12 padding13 padding14 padding15 padding16 padding17 padding18 padding19 padding20 [0m[48;2;55;55;55m       [0m
+[0m[48;2;55;55;55m  [0m[38;2;153;153;153m[48;2;55;55;55mpadding21 padding22 padding23 padding24 padding25 padding26 padding27 padding28 padding29[0m[48;2;55;55;55m                            [0m
+
+[0m[38;2;153;153;153m[48;2;55;55;55m❯ first line of two[0m[48;2;55;55;55m                                                                                                    [0m
+[0m[48;2;55;55;55m  [0m[38;2;153;153;153m[48;2;55;55;55msecond line, reply OK[0m[48;2;55;55;55m                                                                                                [0m
+  [0m[38;2;153;153;153mctrl+enter to send now[0m
+
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;153;153;153m❯ [0m[2mPress up to edit queued messages[0m
+[0m[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[0m
+  [0m[38;5;108m[PONYTAIL][0m
+  [0m[38;2;255;193;7m⏵⏵ auto mode on[0m[38;2;153;153;153m (shift+tab to cycle) · ← 2 agents[0m
