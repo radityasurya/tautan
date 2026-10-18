@@ -2,7 +2,7 @@ import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import type { HostConfig, StateHost } from '../shared/types.ts';
+import type { HostConfig, StateHost, Tailnet, TailnetPeer } from '../shared/types.ts';
 import { HerdrMux } from './herdr.ts';
 import { TmuxMux } from './tmux.ts';
 import { remoteTmuxSockets } from './tmux-discover.ts';
@@ -236,4 +236,36 @@ export async function syncHosts(hub: Hub, opts: RemoteOptions & { configPath?: s
     if (opts.discover && !opts.spawn) void opts.discover(host.target, host.session).then(found => hub.setHost({ ...host, online: found.length > 0, ...(found.length ? {} : { error: 'no running Muxes' }) })).catch(error => hub.setHost({ ...host, online: false, error: error instanceof Error ? error.message : String(error) }));
     else void startRemoteHost(hub, host, opts);
   }
+}
+
+/**
+ * `tailscale status --json` as Add Host shows it: every other machine on the tailnet, online
+ * first, then by name. `status` is the parsed output, or undefined when the command was
+ * missing, failed or timed out. `hosts` marks a machine some Host's target already names.
+ */
+export function parseTailnet(status: unknown, hosts: Pick<StateHost, 'id' | 'target'>[]): Tailnet {
+  if (!status || typeof status !== 'object') return { state: 'unavailable', peers: [] };
+  const s = status as Record<string, any>;
+  if (s.BackendState !== 'Running') return { state: 'needs-login', peers: [] };
+  // ssh splits a target at its last `@`; what follows is the machine.
+  const machine = (target: string) => target.slice(target.lastIndexOf('@') + 1).toLowerCase();
+  const peers = Object.values<Record<string, any>>(s.Peer ?? {})
+    // A shared-in node belongs to someone else's tailnet, and a node with a Location is a
+    // Mullvad exit node: neither is a machine of yours to ssh into.
+    .filter(p => p && p.ID !== s.Self?.ID && !p.ShareeNode && !p.Location && typeof p.DNSName === 'string' && p.DNSName)
+    .map((p): TailnetPeer => {
+      const dnsName = String(p.DNSName).replace(/\.$/, '');
+      const name = dnsName.split('.')[0]!;
+      const ips: string[] = Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs.filter((ip: unknown) => typeof ip === 'string') : [];
+      const ip = ips.find(a => /^\d+\.\d+\.\d+\.\d+$/.test(a));
+      const hostName = typeof p.HostName === 'string' ? p.HostName : '';
+      const names = new Set([name, dnsName, hostName, ...ips].map(n => n.toLowerCase()).filter(Boolean));
+      const added = hosts.find(h => h.target && names.has(machine(h.target)))?.id;
+      return {
+        name, dnsName, hostName, os: typeof p.OS === 'string' ? p.OS : '', online: p.Online === true,
+        ...(ip ? { ip } : {}), ssh: Array.isArray(p.sshHostKeys) && p.sshHostKeys.length > 0, ...(added ? { added } : {}),
+      };
+    })
+    .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+  return { state: 'running', peers };
 }

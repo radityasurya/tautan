@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
-import { discoverRemote, forwarderArgs, herdrSupportsMachines, hostId, listHosts, localSockPath, nextBackoff, readHostsConfig, runtimeDir, startRemoteHost, stopRemoteHost, validTarget, validateHosts, writeHostsConfig } from '../server/hosts.ts';
+import { discoverRemote, forwarderArgs, herdrSupportsMachines, hostId, listHosts, localSockPath, nextBackoff, parseTailnet, readHostsConfig, runtimeDir, startRemoteHost, stopRemoteHost, validTarget, validateHosts, writeHostsConfig } from '../server/hosts.ts';
 import { remoteAttachmentCommand, remoteAttachmentResult } from '../server/attach.ts';
 import { startHttp } from '../server/http.ts';
 import { Hub } from '../server/mux.ts';
@@ -132,14 +132,14 @@ test('remote attachment command and returned paths are stable', () => {
   expect(validTarget('me@host')).toBe(true); expect(validTarget('-bad')).toBe(false); expect(validTarget('bad host')).toBe(false);
 });
 
-async function routeHarness(discoverRemote: (target: string, session?: string) => Promise<{ name: string; socketPath: string }[]>) {
+async function routeHarness(discoverRemote: (target: string, session?: string) => Promise<{ name: string; socketPath: string }[]>, more: { tailscale?: string } = {}) {
   const dir = await mkdtemp(join(os.tmpdir(), 'tautan-routes-')); dirs.push(dir);
   const oldConfig = process.env.XDG_CONFIG_HOME, oldState = process.env.XDG_STATE_HOME;
   process.env.XDG_CONFIG_HOME = join(dir, 'config'); process.env.XDG_STATE_HOME = join(dir, 'state');
   const hub = new Hub({ refreshMs: 0, suggest: null }); hub.setHost({ id: hostId, label: hostId, online: true, source: 'local' });
   let handle: ((request: Request) => Response | Promise<Response>) | undefined; const serve = Bun.serve;
   try { Bun.serve = ((options: { fetch: typeof handle }) => { handle = options.fetch; return {} as ReturnType<typeof Bun.serve>; }) as typeof Bun.serve;
-    startHttp(hub, { port: 0, hostname: '127.0.0.1', staticDir: dir, discoverRemote });
+    startHttp(hub, { port: 0, hostname: '127.0.0.1', staticDir: dir, discoverRemote, ...more });
   } finally { Bun.serve = serve; }
   const request = (path: string, body?: unknown, login?: string) => handle!(new Request(`http://tautan.test${path}`, {
     method: body === undefined ? 'GET' : path === '/api/settings' ? 'PUT' : 'POST', headers: { host: 'tautan.test', origin: 'http://tautan.test', ...(login ? { 'tailscale-user-login': login } : {}) },
@@ -178,4 +178,60 @@ test('retry reuses the current host while discovery is in flight', async () => {
     expect(second.status).toBe(200); expect(calls).toBe(1);
     release(); await first;
   } finally { release(); h.restore(); }
+});
+
+// Captured from `tailscale status --json` on the Hub machine, stripped to seven peers and
+// their 100.x addresses. hub is Self; bento-box is the one with Tailscale SSH on.
+const tailscaleStatus = JSON.parse(await readFile(join(import.meta.dir, 'fixtures/tailscale-status.json'), 'utf8'));
+
+test('tailnet: other machines, online first then by name, with Tailscale SSH and Added marked', () => {
+  const net = parseTailnet(tailscaleStatus, [{ id: hostId }, { id: 'vps', target: 'dev@VPS-1' }, { id: 'nas', target: '100.64.0.28' }]);
+  expect(net.state).toBe('running');
+  expect(net.peers.map(p => `${p.online ? '+' : '-'}${p.name}`)).toEqual([
+    '+desktop-1', '+tower', '+vps-1',
+    '-bento-box', '-galaxy-s20-5g', '-iphone-14-pro-max', '-old-macbook',
+  ]);
+  expect(net.peers.some(p => p.name === 'hub')).toBe(false); // the Hub's own node
+  expect(net.peers.find(p => p.name === 'vps-1')).toEqual({
+    name: 'vps-1', dnsName: 'vps-1.tail0000.ts.net', hostName: 'vmi000001', os: 'linux', online: true, ip: '100.64.0.27', ssh: false, added: 'vps',
+  });
+  expect(net.peers.find(p => p.name === 'tower')!.added).toBe('nas'); // a target by Tailscale IP
+  expect(net.peers.find(p => p.name === 'bento-box')!.ssh).toBe(true);
+  expect(net.peers.find(p => p.name === 'desktop-1')!.added).toBeUndefined();
+});
+
+test('tailnet: IPv4 picked past IPv6; shared-in and Mullvad nodes left out; logged out and junk', () => {
+  const peer = { ID: 'x', HostName: 'box', DNSName: 'box.t.ts.net.', OS: 'linux', Online: true, TailscaleIPs: ['fd7a:115c:a1e0::1', '100.64.0.9'] };
+  const net = parseTailnet({ BackendState: 'Running', Self: { ID: 'me' }, Peer: {
+    a: peer, b: { ...peer, ID: 'y', DNSName: 'theirs.t.ts.net.', ShareeNode: true }, c: { ...peer, ID: 'z', DNSName: 'nl-ams.mullvad.ts.net.', Location: { Country: 'NL' } },
+    d: { ...peer, ID: 'me', DNSName: 'me.t.ts.net.' },
+  } }, []);
+  expect(net.peers.map(p => [p.name, p.ip])).toEqual([['box', '100.64.0.9']]);
+  expect(parseTailnet({ BackendState: 'Running' }, [])).toEqual({ state: 'running', peers: [] });
+  expect(parseTailnet({ ...tailscaleStatus, BackendState: 'NeedsLogin' }, [])).toEqual({ state: 'needs-login', peers: [] });
+  expect(parseTailnet(undefined, [])).toEqual({ state: 'unavailable', peers: [] });
+  expect(parseTailnet('nope', [])).toEqual({ state: 'unavailable', peers: [] });
+});
+
+test('GET /api/tailnet runs tailscale status, answers unavailable when it is missing or fails, and keeps the login lock', async () => {
+  const bin = await mkdtemp(join(os.tmpdir(), 'tautan-ts-')); dirs.push(bin);
+  const tailscale = join(bin, 'tailscale');
+  const fake = async (script: string) => { await writeFile(tailscale, `#!/bin/sh\n${script}\n`); await chmod(tailscale, 0o755); };
+  await writeFile(join(bin, 'status.json'), JSON.stringify(tailscaleStatus));
+  await fake(`[ "$1 $2" = "status --json" ] && exec cat '${join(bin, 'status.json')}'; exit 2`);
+  const h = await routeHarness(async () => [], { tailscale });
+  const missing = await routeHarness(async () => [], { tailscale: join(bin, 'absent') });
+  try {
+    let response = await h.request('/api/tailnet');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.state).toBe('running'); expect(body.peers).toHaveLength(7);
+    await fake('echo "failed to connect to local tailscaled" >&2; exit 1');
+    expect(await (await h.request('/api/tailnet')).json()).toEqual({ state: 'unavailable', peers: [] });
+    response = await missing.request('/api/tailnet');
+    expect(response.status).toBe(200); expect(await response.json()).toEqual({ state: 'unavailable', peers: [] });
+    h.hub.setTrustedUser('alice');
+    expect((await h.request('/api/tailnet', undefined, 'bob')).status).toBe(403);
+    expect((await h.request('/api/tailnet', undefined, 'alice')).status).toBe(200);
+  } finally { missing.restore(); h.restore(); }
 });

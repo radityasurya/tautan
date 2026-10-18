@@ -1,0 +1,89 @@
+{
+  "BackendState": "Running",
+  "Self": {
+    "ID": "nKEHGzf1UD11CNTRL",
+    "HostName": "Hub",
+    "DNSName": "hub.tail0000.ts.net.",
+    "OS": "linux",
+    "TailscaleIPs": [
+      "100.64.0.22"
+    ],
+    "Online": true
+  },
+  "MagicDNSSuffix": "tail0000.ts.net",
+  "Peer": {
+    "nodekey:01": {
+      "ID": "n8Nx7dQjvF11CNTRL",
+      "HostName": "Galaxy S20+ 5G",
+      "DNSName": "galaxy-s20-5g.tail0000.ts.net.",
+      "OS": "android",
+      "TailscaleIPs": [
+        "100.64.0.24"
+      ],
+      "Online": false
+    },
+    "nodekey:02": {
+      "ID": "nUaLpsaqB221CNTRL",
+      "HostName": "vmi000001",
+      "DNSName": "vps-1.tail0000.ts.net.",
+      "OS": "linux",
+      "TailscaleIPs": [
+        "100.64.0.27"
+      ],
+      "Online": true
+    },
+    "nodekey:03": {
+      "ID": "nTRHL7kNgB21CNTRL",
+      "HostName": "Tower",
+      "DNSName": "tower.tail0000.ts.net.",
+      "OS": "linux",
+      "TailscaleIPs": [
+        "100.64.0.28"
+      ],
+      "Online": true
+    },
+    "nodekey:04": {
+      "ID": "nFLr5vLMwG11CNTRL",
+      "HostName": "localhost",
+      "DNSName": "iphone-14-pro-max.tail0000.ts.net.",
+      "OS": "iOS",
+      "TailscaleIPs": [
+        "100.64.0.21"
+      ],
+      "Online": false
+    },
+    "nodekey:05": {
+      "ID": "nT9LDEqhaH11CNTRL",
+      "HostName": "bento-box",
+      "DNSName": "bento-box.tail0000.ts.net.",
+      "OS": "linux",
+      "TailscaleIPs": [
+        "100.64.0.23"
+      ],
+      "Online": false,
+      "sshHostKeys": [
+        "ssh-ed25519 AAAA…"
+      ]
+    },
+    "nodekey:06": {
+      "ID": "nXNZUhm3Gu11CNTRL",
+      "HostName": "Old MacBook Pro",
+      "DNSName": "old-macbook.tail0000.ts.net.",
+      "OS": "macOS",
+      "TailscaleIPs": [
+        "100.64.0.25"
+      ],
+      "Online": false
+    },
+    "nodekey:07": {
+      "ID": "npr2ZzqoCX11CNTRL",
+      "HostName": "DESKTOP-1",
+      "DNSName": "desktop-1.tail0000.ts.net.",
+      "OS": "windows",
+      "TailscaleIPs": [
+        "100.64.0.26"
+      ],
+      "Online": true
+    }
+  }
+}

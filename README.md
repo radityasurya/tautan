@@ -237,6 +237,13 @@ You do not have to edit the file. The **Hosts** tab writes it: add a Host, press
 dial the target once, then **Save**. Hosts that come from `herdr machine list` appear there
 too, read-only.
 
+When the Hub runs Tailscale, **Add Host** lists the other machines on your tailnet. Tap one to
+fill in its MagicDNS name and test the connection at once. A machine is ready when it has two
+things: SSH that lets the Hub user in without a password, and herdr installed. Tailscale SSH
+(`tailscale set --ssh` on that machine) is the easiest way to get the first. The Hub only reads
+`tailscale status`; it never changes your Tailscale settings. Machines you added with
+`herdr machine add` need no entry here: the Hub finds them in `herdr machine list`.
+
 ### Trusted login
 
 Anyone on your tailnet who can reach the Hub can read every screen and type into every agent.

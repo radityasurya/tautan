@@ -261,6 +261,27 @@ export interface HostConfig {
 /** POST /api/hosts/probe body: run discovery once, save nothing. */
 export interface ProbeBody { target: string; session?: string }
 export interface ProbeResult { online: boolean; sessions?: string[]; error?: string }
+/** One machine on the Hub's tailnet, from `tailscale status --json`. */
+export interface TailnetPeer {
+  /** the MagicDNS short name, e.g. `vps-1`: what Add Host fills Address with */
+  name: string;
+  /** the full MagicDNS name, no trailing dot */
+  dnsName: string;
+  /** the machine's own OS host name, e.g. `vmi000001` */
+  hostName: string;
+  /** as Tailscale reports it: `linux`, `macOS`, `windows`, `android`, `iOS`, … */
+  os: string;
+  online: boolean;
+  /** the first Tailscale IPv4 address */
+  ip?: string;
+  /** Tailscale SSH is on: the peer advertises SSH host keys */
+  ssh: boolean;
+  /** the id of an existing Host whose target names this machine */
+  added?: string;
+}
+/** GET /api/tailnet: the Hub's own `tailscale status`, read only. A missing or failing
+ *  `tailscale` is `unavailable`, never an error; any backend state but Running is `needs-login`. */
+export interface Tailnet { state: 'running' | 'needs-login' | 'unavailable'; peers: TailnetPeer[] }
 /** PUT /api/settings body. `trustedUser: null` unlocks. Omitted keys are left unchanged. */
 export interface SettingsBody { trustedUser?: string | null; hosts?: HostConfig[] }
 /** GET /api/settings */
