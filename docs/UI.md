@@ -77,8 +77,9 @@ or the ⋯ button opens the group menu. Collapsed, it summarises the most urgent
 
 **Workspace order.** The group order in the list is tautan's own: herdr has no
 Workspace reorder, so the order lives on this device (`tautan.workspaceOrder`,
-per Mux) and is never written to a Mux. On desktop, drag a group header; a drop
-mark shows above or below the group you cross. On the phone, the group menu's
+per Mux) and is never written to a Mux. On desktop, drag a group header, or a Space row
+in the Spaces list while its sort is Manual; a drop mark shows above or below the row you
+cross. On the phone, the group menu's
 **Move up** and **Move down** do the same one step at a time, disabled at the
 ends. Renaming a Workspace changes its id, so a rename resets its place.
 
@@ -176,11 +177,25 @@ stop work asks first, and any other Tab closes at once.
   `touchend`, and it is ignored when the strip itself scrolled. A drag that starts on the Pane
   chips row (`data-noswipe`) is that row's scroll, never a Tab switch.
 - **Desktop.** Browser tabs: the open Tab takes the Pane's background and a 2 px accent
-  top edge. Close (×) shows on hover and always on the open Tab. Right-click opens the Tab's
-  menu. Press ⌘1–⌘9 to open Tab *n* and ⌘T for New Tab. Both are **Meta only**: Ctrl+T and
+  top edge. Close (×) shows on hover and always on the open Tab, and the open Tab shows ⋯ on
+  hover. Right-click opens the Tab's menu at the pointer; Shift+F10 or the ContextMenu key
+  opens it under the focused Tab. Press ⌘1–⌘9 to open Tab *n* and ⌘T for New Tab. Both are **Meta only**: Ctrl+T and
   Ctrl+digits belong to the browser and the terminal, so there is no Ctrl fallback, and the
   hint beside the strip shows only on a Mac. The shortcuts read `code`, so an AZERTY row
   still counts as digits.
+- **Menus.** One item list per target (`web/menus.ts`). The Tab menu: its Panes when it
+  is split, New Tab, Duplicate Tab, Rename Tab…, Move left and right, Close Tab, Close other
+  Tabs. The Pane menu (right-click on the Screen, a split cell's title row or the cell's
+  Screen): Split right and down, Duplicate Pane, Zoom or Unzoom, Rename Pane…, Rename
+  Agent…, Copy path, Close Pane. Duplicate is "the same thing again, next to it": a Tab
+  right after its source, or a split (right on desktop, down on a phone), in the same folder
+  with a fresh Agent of the same kind, never its conversation. Close other Tabs asks first
+  only when it would stop an Agent at work. A tmux Mux lists only the moves, splits and zoom.
+  On desktop every action menu (`MenuSheet`) is a menu at its trigger or at the pointer: arrow
+  keys, Home and End move, Escape closes and gives focus back, and it flips to stay on
+  screen. On the phone it stays a sheet. A Screen whose program reads the mouse keeps the
+  right button (ADR 0003), and Shift+right-click, a link or a text selection keeps the
+  browser's own menu.
 - **Pane chips.** When the open Tab holds more than one Pane, a row of Pane chips sits
   under the Tabs, at both widths. On desktop, the split view replaces it while its rule
   holds; when the rule breaks, the chips row comes back.
@@ -214,6 +229,15 @@ new Tab in this Workspace, a new Workspace, or a place below any Tab's Panes) an
 open for more than one step). On desktop, dragging a split divider is CSS-only while you
 drag and sends one `/resize` on release. A herdr older than 0.9 answers 501 and the sheet
 says so.
+
+Also on desktop, a Pane drags by a split cell's title row, a Pane row or an Agent row
+(`web/pane-drag.ts`). Drop it on another cell of its Tab to swap; on a Tab, a cell of
+another Tab or a Space row to move it there, split right (a Space takes it into its first
+Tab); or on the strip's + for a new Tab. The target under the pointer shows what a drop does
+— **Swap**, **Move here**, **New Tab**. A target on another Mux, or one where the drop
+changes nothing, refuses it, and Escape cancels. A moved Pane on screen keeps the route on
+its new key, as **Move to…** does. Agents never reorder among themselves: their order is
+the Status sort's. The phone keeps the menus.
 
 The grid renders the `visible` screen as styled ANSI spans, pinned to the
 bottom until you scroll up, when a **New output** pill appears. Content wider
@@ -342,22 +366,32 @@ permission box matches `live_blocked_form`, never `bash_permission_prompt`.
 `yesNoKeys()` returns the Yes and No keys only for a plain yes/no prompt, never for one
 with an Always option. The Pane list uses it for its Yes and No.
 
-The composer is the only place with input: one box, and two trays that open above it.
+The composer is the only place with input. It has one box, and one strip that opens in it
+at a time. The composer prints no `↵ send · ⇧↵ newline` legend.
 
 | Part | Agent Pane | Shell Pane |
 |---|---|---|
-| Suggestions tray | the pills, one scrolling row; open by default | recent commands; closed by default |
-| Keys tray | the key grid; closed by default | the key grid; open by default |
-| Box, line 1 | the field, behind `›` | the field, behind the `$` prompt |
-| Box, line 2, phone | ✦ and Keys toggles, `esc` `^C`, attach, `/` `@`, then the mic or Send | ✦ and Keys toggles, attach, then the mic or Run |
+| Suggestions strip | the pills, one scrolling row; open by default | recent commands; closed by default |
+| Keys strip | the key grid; closed by default | the key grid; open by default |
+| Field | behind `›` | behind the `$` prompt |
+| Bar, phone | ✦ and Keys toggles, `esc` `^C`, attach, `/` `@`, then the mic or Send | ✦ and Keys toggles, attach, then the mic or Run |
+| Bar, desktop | Suggestions, Keys and Type directly on the left; model and context, attach, mic and Send on the right | the same, with no model or context, and Run for Send |
 
-`esc` and `^C` sit on an Agent Pane's resting row in every Status: `esc` backs out of a
-menu or a prompt, `^C` stops the run. On pi it is the other way round, as pi binds them:
-`esc` aborts (danger red) and `^C` clears the editor. Neither sits beside Send, where a slip
-would interrupt instead of reply. A shell's keys are in its tray, which opens by default.
+On the phone, `esc` and `^C` sit on an Agent Pane's resting row in every Status: `esc`
+backs out of a menu or a prompt, `^C` stops the run. On pi it is the other way round, as pi
+binds them: `esc` aborts (danger red) and `^C` clears the editor. Neither sits beside Send,
+where a slip would interrupt instead of reply. On desktop the bar has no `esc` or `^C`
+cap: they are the first caps of the Control group in the Keys strip. A shell's keys are in
+its strip, which opens by default.
 
-The open tray is a four-column grid on the phone (48 px caps) and a wrapping row on desktop
-(44 px caps). Each cap has two lines: the key as a footer prints it (`^O`, `⌥P`, `esc esc`)
+Both widths open one strip at a time. A toggle opens its strip and closes the other, and
+both closed leave only the field. On the phone the strip sits above a rounded box. On desktop
+the strip sits inside the box, above the field.
+
+The open Keys strip is a four-column grid on the phone (48 px caps; it scrolls inside past
+44 % of the screen). On desktop it is a compact grid of groups, three rows tall at most, that
+scrolls inside past that (36 px caps), with **Edit keys** in its corner. Each cap has two
+lines: the key as a footer prints it (`^O`, `⌥P`, `esc esc`)
 and, under it, what the key does on this Pane (`transcript`, `model`, `rewind`). The groups
 follow the Pane: **Control** (an Agent's `^D` reads as exit, in red; pi gets `esc` abort, `^C`
 clear), the Agent's own keys (**Claude**: mode, rewind, transcript, tasks, background,
@@ -365,37 +399,55 @@ model, thinking, from Claude Code 2.1.296's keybinding table; **pi**: thinking l
 next model, tool output, show thinking, follow-up, dequeue, from pi's
 `docs/keybindings.md`), **Menu** (`1`…`5` for a numbered menu on an Agent Pane), then
 **Navigate** and **Edit**. Alt chords go out as `ESC` plus the letter. It is the only place
-the arrows, `tab` and `⇧tab` live for an agent Pane.
+the arrows, `tab` and `⇧tab` live for an agent Pane. On desktop it is also where `esc`, `^C`
+and the mode key (`⇧⇥` on Claude) live.
 
-Each toggle is outlined while its tray is closed and accent-tinted while it is open.
-The pills scroll behind the same right-edge fade the grid uses (`FADE`). A toggle
-carries `aria-pressed` and remembers its tray per kind (`tautan.tray.keys.agent`,
-`tautan.tray.suggest.shell`, …), and the tray it opens rises into place with `.rise`,
-which reduced motion turns off. Both trays can be open at once; they stack. Which caps
+Each toggle is outlined while its strip is closed and accent-tinted while it is open. On
+desktop a closed toggle is a quiet ghost, like attach and the mic. The pills scroll behind
+the same right-edge fade the grid uses (`FADE`). A toggle carries `aria-pressed` and
+remembers its strip per kind (`tautan.tray.keys.agent`, `tautan.tray.suggest.shell`, …), and
+the strip it opens rises into place with `.rise`, which reduced motion turns off. Which caps
 the grid holds is the App profile's call (`web/profiles.ts`): an agent Pane gets the
 agent set, htop and less also get `F1`…`F10`, because their own footer offers them.
 
 **Type directly.** On the Screen and on a shell, a **Type directly** toggle (the terminal
 icon) stops the field composing a line: each key goes to the Pane as it is typed, in typing
-order. The Composer shrinks to one bar: the ✦, Keys and Type directly toggles, then a status
-that reads **Typing into the Pane** beside a blinking caret, or **Tap to type** when the
-field has lost focus. The field itself stays mounted out of sight, so the phone's keyboard
-still opens for it; a tap on the status or on the Screen focuses it. While it has focus, the
-Screen draws a blinking `▍` where the input most likely is (`caretAt` in
-`shared/layout.ts`: Claude's `❯` row, else the row inside pi's editor, else the last row with
-text), because herdr reports no cursor. Reduced motion keeps both carets steady. Text rides `beforeinput`, an IME's word goes out whole at
-`compositionend`, and Enter, Backspace, esc, Tab, the arrows, Home/End/PgUp/PgDn/Delete and
-Ctrl or Alt chords go out as keys (`web/keys.ts` `directKey`); a Cmd chord stays the
-browser's. An armed `ctrl` or `alt` folds into the next typed key. The toggle is remembered
-per kind (`tautan.direct.agent`, `tautan.direct.shell`) and is hidden in the Chat view, where
-a line is what the Agent reads.
+order. A shell Pane types directly by default, and an Agent Pane composes until you turn it
+on. The Composer shrinks to one bar: the Suggestions, Keys and Type directly toggles, then
+a quiet label that reads **Typing into the Pane**. When the field has lost focus, the label
+reads **Tap to type** on the phone and **Click here or the Screen to type** on desktop. The
+bar draws no caret: the Screen alone shows it. The field itself stays mounted out of sight,
+so the phone's keyboard still opens for it; a tap on the label or on the Screen focuses it.
+While the field has focus, the Screen draws a blinking `▍` where the input most likely is
+(`caretAt` in `shared/layout.ts`: Claude's `❯` row, else the row inside pi's editor, else
+the last row with text), because herdr reports no cursor. Reduced motion keeps it steady.
+
+Text rides `beforeinput`, and an IME's word goes out whole at `compositionend`. A key
+combo reaches the Pane in xterm form (`directKey` in `web/keys.ts`; the modifier is 1 plus
+Shift 1, Alt 2 and Ctrl 4):
+
+- Enter, Backspace, esc, Tab and the plain arrows go out as named keys.
+- Arrows, Home, End, PgUp, PgDn, Insert and Delete with a modifier go out as `CSI` sequences.
+- F1 to F12 go out plain or with a modifier.
+- Shift+Enter and Alt+Enter go out as `ESC CR`, which Claude and most line editors read as
+  a new line.
+- Ctrl+Backspace and Alt+Backspace go out as their terminal bytes.
+- Ctrl plus a letter or a symbol goes out as its control byte. Alt plus a character goes
+  out as `ESC` plus the character.
+
+Copy and paste stay the browser's: Ctrl+V, Ctrl+Shift+V, Ctrl+Shift+C, and Ctrl+C over a
+selection. A Cmd chord, browser zoom keys and AltGr text stay the browser's too. An armed
+`ctrl` or `alt` folds into the next typed key. The toggle is remembered per kind
+(`tautan.direct.agent`, `tautan.direct.shell`) and is hidden in the Chat view, where a line
+is what the Agent reads.
 
 No control in the dock takes focus from the field: each one prevents `pointerdown`'s
 default, as the completion list does, so a tap on a key, a pill or a toggle leaves the
 phone's keyboard up.
 
 **Quick replies** (`web/replies.ts`, a pure function; `web/composer.tsx` renders
-them) scroll horizontally in one row, 8 px radius, 13 px:
+them) scroll horizontally in one row, 13 px, under a **Suggested** label on desktop (**Recent** for a shell).
+The phone pills have an 8 px radius; the desktop pills are round:
 
 | Pill | Looks like | A tap |
 |---|---|---|
@@ -428,9 +480,9 @@ lands in the composer for review, appended after what you have already typed, li
 dictation. On a touch screen the field is not focused, so the keyboard stays down and
 Send is one tap away. Drafts appear only while **Smart replies** is on (`tautan.smart`); a
 blocked Pane with no drafts for the current revision asks the Hub for one, once, with
-`POST /api/panes/:key/suggest`. A blocked prompt opens the suggestions tray by itself only
-while it holds a draft for the prompt, and closing the tray then dismisses only that
-prompt's opening. Hint pills come only from this Pane's own Screen, never from the last
+`POST /api/panes/:key/suggest`. A blocked prompt opens the Suggestions strip by itself only
+while it holds a draft for the prompt and the Keys strip is closed, and closing the strip
+then dismisses only that prompt's opening. Hint pills come only from this Pane's own Screen, never from the last
 Pane's Screen held on the grid during a switch.
 
 **Theme colors** (on by default, `tautan.themedColors`, toggled in ⋯) snaps every
@@ -452,26 +504,33 @@ the line. Nothing sends while an input method is composing, and Safari's closing
 (keyCode 229) counts as composing. A trailing newline does not go out. A transcript from
 the mic lands in the field for review and is never sent on its own.
 
-- **Phone.** The trays above, then the box: the field with the agent's glyph before the
-  placeholder, and under it the ✦ and Keys toggles, `esc` `^C`, attach, `/` and `@`, then
-  one slot on the right — the mic while the field is empty or while it listens, **Send**
-  as soon as there is text. With no `webkitSpeechRecognition` the slot is always Send.
-- **Desktop.** The trays above a bordered box. The box has a two-line textarea and a
-  toolbar: the ✦ and Keys toggles, `esc` `^C`, attach, `/`, `@`, the mic, then the mode
-  chip, model and context left, and Send. The mode chip sends `shift+tab`, and the next
-  Screen says which mode the Agent landed in.
+- **Phone.** The open strip above, then the rounded box: the field with the agent's glyph
+  before the placeholder, and under it the ✦ and Keys toggles, `esc` `^C`, attach, `/` and
+  `@`, then one slot on the right — the mic while the field is empty or while it listens,
+  **Send** as soon as there is text. With no `webkitSpeechRecognition` the slot is always Send.
+- **Desktop.** One full-width box, flush with the Pane column under one hairline: no outer
+  padding and no inner rounded card. The hairline turns accent while the field has focus.
+  The open strip sits inside the box, above the field, and the field spans the width (two
+  rows for an Agent). Under it is one bar. On the left are **Suggestions**, **Keys** and
+  **Type directly**. On the right are the model and context as muted read-only text,
+  attach, the mic, and Send (**Run** on a shell). The bar has no `esc` or `^C` caps, no
+  **Type /** or **Type @** button and no mode chip: `/` and `@` are typed in the field, and
+  `esc`, `^C` and `⇧⇥` are in the Keys strip. A press anywhere in the box, the empty middle
+  of the bar included, focuses the field.
 - **Keyboard, phone.** iOS keeps the layout viewport when the keyboard opens and ignores
   `interactive-widget`, so `web/app.tsx` follows `visualViewport`: the Pane screen is
   `fixed` at `--vv-top` and `--vv-h` tall, and the composer sits on the keyboard.
   `--safe-b` drops the home-indicator inset while the keyboard is up. A pinned Chat or
   Screen stays on its newest line as the keyboard shrinks it; a reader who scrolled up
   stays where they were. A pinch zoom (`visualViewport.scale` above 1) moves nothing.
-- **Mode, model and context** come only from this Pane's Screen, through
-  `toolbarFromScreen()` in `web/profiles.ts`. The Claude Code recogniser reads the last 15
-  lines: the `⏵⏵` or `⏸` mode line, a literal model name on that line, and a context
-  figure that says `left`. A value the Screen does not state is hidden, never guessed, so
-  default mode shows no chip. A held Screen from the previous Pane states nothing. Profiles
-  without a recogniser show none of the three.
+- **Mode, model and context** come only from this Pane's Screen. The model and context
+  read through `toolbarFromScreen()` in `web/profiles.ts` and show as muted text in the
+  desktop bar. The mode has no chip: it shows as a Suggestions pill, from the Screen's
+  own Hint (`auto mode ⇧⇥`), and the Keys strip has `⇧⇥` to cycle it. The Claude Code
+  recogniser reads the last 15 lines: the `⏵⏵` or `⏸` mode line, a literal model name on
+  that line, and a context figure that says `left`. A value the Screen does not state is
+  hidden, never guessed. A held Screen from the previous Pane states nothing. Profiles
+  without a recogniser show no model or context.
 - **Shell Panes** get a mono `$` prompt in place of the agent's glyph, and the chips are
   the recent commands sent from this device (eight at most). A line typed while the last
   non-empty Screen line asks for a password, passphrase, PIN, token or secret is not
@@ -498,10 +557,13 @@ Code offers).
 brings back that Pane's own draft, and the 1024 px frame change — which remounts the
 composer — rides through it. Sending clears the draft with the field.
 
-**Edit keys.** The open key tray ends in an **Edit keys** button. It replaces the caps
-with one row per cap the App profile carries: a switch for whether it shows, its glyph and
-name, and ▲▼ to move it. Every change saves at once; **Reset** puts the profile's default
-order back, **Done** returns to the caps.
+**Edit keys.** The open Keys strip has an **Edit keys** button in its corner. It replaces
+the caps with one row per cap the App profile carries: a checkbox for whether it shows, its
+glyph and name, and ▲▼ to move it. On desktop a row also reorders by drag: an accent drop
+line shows where the key lands. The drag carries only `application/x-tautan-key` and no
+text, so a drop on the field types nothing into the Pane. The phone keeps ▲▼ alone, because
+a touch drag would fight the strip's scroll. Every change saves at once; **Reset** puts the
+profile's default order back, **Done** returns to the caps.
 
 Attach opens the photo library, never the camera: the hidden input has
 `accept="image/*,video/*"`, `multiple`, and no `capture`. Each file goes out on
@@ -585,6 +647,26 @@ Opening a row loads what was cut on the way in — the whole input (the head cou
 `/chat/output/:id`, an image or an HTML preview the Agent wrote loads from its own route,
 and a preview over the inline limit serves by id. The output half renders as Markdown; an
 `Output cut short by …` line says who cut it.
+
+A call that carries a description (Claude's Bash and Task) leads with it in sans `--fg`, the
+command after it in smaller muted mono: one line on desktop, where the command truncates
+first, and two lines on the phone. An edit row (Edit, MultiEdit, Write; pi's `edit` and
+`write`) names its file and its `+N −M` in `--ok` and `--danger`, counted by the Hub over
+the whole input. Open, it draws the change with the Diff view's rows (`DiffRow`): `+`/`-`
+marks, the `diff-add` and `diff-del` tints, three lines of context around each change and
+`⋯ N unchanged lines` for the rest, no line numbers (a snippet has none), and syntax colours
+by the file's extension. A Write reads as all added; an HTML Write keeps its preview instead
+of its source. Long lines scroll sideways inside the box. A pending edit's approval row
+draws the same diff.
+
+**Runs.** Two or more finished calls in a row fold into one line, the way Claude Code
+prints it: `Ran 3 shell commands, read 2 files, edited 1 file`, kinds in the order they
+first ran, `Used 4 tools` when none is known. A failure adds a red `1 failed`; the line
+stamps its first call's time and opens to the rows, each still opening on its own. Rows
+inside a run show no time of their own and sit behind a 2 px rule, and on the phone a
+described row's line count moves under its command, so the description keeps the width. A
+running or pending call, a subagent's row, a link card and an image stay out of every run,
+so the newest turn shows what is still in flight.
 
 **Transport.** The view keeps a cursor and asks the Hub for what changed since it
 (`?since=`, [ADR 0007](./adr/0007-chat-deltas.md)); a `chat` event on the event stream

@@ -366,7 +366,8 @@ export class TmuxMux implements Mux {
     await this.run(['resize-pane', '-Z', '-t', paneId]);
   }
   async closeWorkspace(_workspaceId: string): Promise<void> { throw new Error('unsupported'); }
-  async split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string }): Promise<string> {
+  async split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string; agent?: string }): Promise<string> {
+    if (o.agent) throw new Error('unsupported'); // tmux has no agent.start; tautan offers no Agent duplicate there
     // `-l` is the NEW Pane's share — the API ratio, no complement (unlike herdr).
     return (await this.run(['split-window', '-d', o.direction === 'right' ? '-h' : '-v', '-t', paneId,
       ...(o.ratio !== undefined ? ['-l', `${Math.round(o.ratio * 100)}%`] : []), ...(o.cwd ? ['-c', o.cwd] : []),

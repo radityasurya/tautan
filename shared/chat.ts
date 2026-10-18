@@ -1,3 +1,5 @@
+import { diffLines, diffStat, textLines } from './line-diff.ts';
+
 export interface Tool {
   /** The row's native id (Claude's tool_use `toolu_…`, pi's `toolCallId`): when
    *  `resultTruncated` is set, the whole text serves from
@@ -5,6 +7,13 @@ export interface Tool {
   id?: string;
   name: string;
   brief: string;
+  /** What the call is for, in the Agent's words: the input's `description` (Claude's Bash and
+   *  Task/Agent carry one), whitespace folded to one line. The row's main line when present. */
+  description?: string;
+  /** An edit's lines added and removed — an Edit or MultiEdit (pi's `edit`) diffed old against
+   *  new, a Write counted as all new — over the whole input, not the capped `detail`. */
+  additions?: number;
+  deletions?: number;
   /** The tool's whole input, or its head when it was cut: the first `DETAIL_LINES` lines
    *  within `DETAIL_CHARS` characters (ADR 0007's amendment), with `detailTruncated` set and
    *  the whole text served from `GET /api/panes/:key/chat/output/<id>?part=detail`. Every
@@ -253,11 +262,27 @@ const TURN_CHARS = 16_000;
 const capTurn = (text: string) => text.length > TURN_CHARS ? `${text.slice(0, TURN_CHARS - 1)}…` : text;
 
 const str = (value: unknown) => typeof value === 'string' && value.trim() ? value : undefined;
-const preview = (text: string) => text.length > 600 ? `${text.slice(0, 599)}…` : text;
+const inputOf = (input: unknown) => input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
 
-/** The full tool input for the expanded row: newlines kept, capped like turn text. */
+const WRITE = /^write$/i;
+/** An edit's changed spans: each old and new string of an Edit or MultiEdit (pi's `oldText` and
+ *  `newText`), or a Write's whole file as one span with no old side. */
+function changes(name: string, value: Record<string, unknown>): { oldText?: string; newText: string }[] {
+  if (WRITE.test(name)) return typeof value.content === 'string' ? [{ newText: value.content }] : [];
+  const out: { oldText: string; newText: string }[] = [];
+  for (const edit of Array.isArray(value.edits) ? value.edits as Record<string, unknown>[] : [value]) {
+    const oldText = typeof edit?.old_string === 'string' ? edit.old_string : typeof edit?.oldText === 'string' ? edit.oldText : undefined;
+    const newText = typeof edit?.new_string === 'string' ? edit.new_string : typeof edit?.newText === 'string' ? edit.newText : undefined;
+    if (oldText !== undefined && newText !== undefined) out.push({ oldText, newText });
+  }
+  return out;
+}
+
+/** The full tool input for the expanded row: newlines kept, capped like turn text. An edit is
+ *  its path, then one block per span — every old line as `- `, every new line as `+ `, blocks
+ *  apart by a blank line — which the Chat view draws as a diff and an older one reads as text. */
 function detail(name: string, input: unknown): string {
-  const value = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const value = inputOf(input);
   const filePath = str(value.file_path) ?? str(value.path);
   const lines: string[] = [];
   if (str(value.command) ?? str(value.cmd)) {
@@ -268,16 +293,56 @@ function detail(name: string, input: unknown): string {
     if (str(value.path)) lines.push(`in ${value.path as string}`);
   } else if (filePath) {
     lines.push(filePath);
-    const edits = Array.isArray(value.edits) ? value.edits as Record<string, unknown>[] : [value];
-    for (const edit of edits) {
-      const oldText = typeof edit?.old_string === 'string' ? edit.old_string : typeof edit?.oldText === 'string' ? edit.oldText : undefined;
-      const newText = typeof edit?.new_string === 'string' ? edit.new_string : typeof edit?.newText === 'string' ? edit.newText : undefined;
-      if (oldText === undefined || newText === undefined) continue;
-      lines.push('', `- ${preview(oldText).replace(/\n/g, '\n- ')}`, `+ ${preview(newText).replace(/\n/g, '\n+ ')}`);
+    // An HTML Write shows as its preview, and its source never rides in the chat JSON.
+    for (const { oldText, newText } of WRITE.test(name) && HTML_FILE.test(filePath) ? [] : changes(name, value)) {
+      lines.push('');
+      if (oldText !== undefined) lines.push(`- ${oldText.replace(/\n/g, '\n- ')}`);
+      lines.push(`+ ${newText.replace(/\n/g, '\n+ ')}`);
     }
   }
   if (lines.length) return cap(lines.join('\n'));
   try { return cap(JSON.stringify(input, null, 2) ?? name); } catch { return ''; }
+}
+
+/** An edit row's detail read back: its path and each span's old and new text, as `detail()`
+ *  wrote them (a Write's span has no old side). `cut` when the 4 000 cap ended it mid-span; the
+ *  cap's `…` is taken off. Undefined when no span is there: another tool, or a detail an older
+ *  Hub wrote without the file. */
+export function editSpans(detail: string): { path: string; spans: { oldText?: string; newText: string }[]; cut: boolean } | undefined {
+  const cut = detail.length >= 4_000 && detail.endsWith('…');
+  const [path = '', ...lines] = (cut ? detail.slice(0, -1) : detail).split('\n');
+  const spans: { old: string[]; new: string[] }[] = [];
+  let open = false;
+  for (const line of lines) {
+    if (line === '') { open = false; continue; }
+    const mark = line.slice(0, 2);
+    if (mark !== '- ' && mark !== '+ ') return undefined;
+    if (!open) { spans.push({ old: [], new: [] }); open = true; }
+    spans.at(-1)![mark === '- ' ? 'old' : 'new'].push(line.slice(2));
+  }
+  if (!spans.length) return undefined;
+  return { path, cut, spans: spans.map((span) => ({ ...(span.old.length ? { oldText: span.old.join('\n') } : {}), newText: span.new.join('\n') })) };
+}
+
+const DESCRIPTION_CHARS = 200;
+/** A tool row's fields from its input: the brief, the detail, the input's `description`, and
+ *  an edit's `+N −M`, counted over the whole spans so a capped detail cannot shrink them. */
+function fromInput(name: string, input: unknown): Pick<Tool, 'brief' | 'detail' | 'description' | 'additions' | 'deletions'> {
+  const value = inputOf(input);
+  const description = str(value.description)?.replace(/\s+/g, ' ').trim();
+  const spans = str(value.file_path) ?? str(value.path) ? changes(name, value) : [];
+  let additions = 0, deletions = 0;
+  for (const { oldText, newText } of spans) {
+    const stat = diffStat(diffLines(textLines(oldText ?? ''), textLines(newText)));
+    additions += stat.additions;
+    deletions += stat.deletions;
+  }
+  return {
+    brief: brief(input),
+    detail: detail(name, input),
+    ...(description ? { description: description.length > DESCRIPTION_CHARS ? `${description.slice(0, DESCRIPTION_CHARS - 1)}…` : description } : {}),
+    ...(spans.length ? { additions, deletions } : {}),
+  };
 }
 
 // z.ai (GLM) runs its built-in tools server side and writes them into the assistant text:
@@ -537,7 +602,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         thinking += (thinking ? '\n\n' : '') + capTurn(block.thinking);
       if (block.type === 'tool_use' && typeof block.name === 'string') {
         const image = block.name === 'Read' ? readImage(block.input) : undefined;
-        const tool: Tool = { name: block.name, brief: brief(block.input), detail: detail(block.name, block.input), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}), ...(at !== undefined ? { at } : {}) };
+        const tool: Tool = { name: block.name, ...fromInput(block.name, block.input), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}), ...(at !== undefined ? { at } : {}) };
         const input = block.input && typeof block.input === 'object' && !Array.isArray(block.input) ? block.input as Record<string, unknown> : {};
         const filePath = str(input.file_path);
         if (block.name === 'Write' && filePath && HTML_FILE.test(filePath)) {
@@ -718,7 +783,7 @@ export function parsePiTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         }
         if (block.type === 'toolCall' && typeof block.name === 'string') {
           const image = block.name === 'read' ? readImage(block.arguments) : undefined;
-          const tool: Tool = { name: block.name, brief: brief(block.arguments), detail: detail(block.name, block.arguments), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
+          const tool: Tool = { name: block.name, ...fromInput(block.name, block.arguments), ...(typeof block.id === 'string' ? { id: block.id } : {}), ...(image ? { image } : {}) };
           if (block.name === 'Agent' && typeof block.id === 'string') {
             const subagent = opts?.subagentIds?.get(block.id);
             if (subagent) tool.subagentId = subagent;
@@ -856,7 +921,7 @@ export function parseCodexRollout(jsonl: string, opts?: ParseOpts): Turn[] | und
         } else {
           let input: unknown = record.arguments;
           if (typeof input === 'string') { try { input = JSON.parse(input); } catch { /* not JSON: the brief shows it raw */ } }
-          tool = { name, brief: brief(input), detail: detail(name, input) };
+          tool = { name, ...fromInput(name, input) };
         }
         const id = str(record.call_id);
         if (id) { tool.id = id; calls.set(id, tool); }

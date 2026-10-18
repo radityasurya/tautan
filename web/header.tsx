@@ -4,6 +4,7 @@ import { Link } from './app.tsx';
 import { LensSwitch, type LensMode } from './chat.tsx';
 import { Dot, statusText } from './home.tsx';
 import { Back, ChatLens, ChevronDown, More, ScreenLens } from './icons.tsx';
+import { paneKind, statusWord as paneStatusWord } from './pane-label.ts';
 
 /**
  * Sticky top bar, shared by the root screens and the Pane. One 56 px row + safe area, 16 px
@@ -67,9 +68,6 @@ export function TopBar({
   );
 }
 
-/** The header's word for a Status. Blocked is said as what it asks of you. */
-const word = (s: Status) => (s === 'blocked' ? 'needs you' : s);
-
 /** The desktop Status chip, tinted with its own colour at 12 %. */
 const TINT: Record<Status, string> = {
   blocked: 'bg-warn/12',
@@ -95,10 +93,12 @@ export function PaneHeader({
   path,
   status,
   agent,
+  command,
   lens,
   onLens,
   onSwitch,
   onMore,
+  moreOpen,
 }: {
   desktop: boolean;
   title: string;
@@ -107,11 +107,15 @@ export function PaneHeader({
   path: (string | undefined)[];
   status: Status;
   agent?: string;
+  /** The program in front of a shell Pane's prompt (`make`): herdr gives a shell no Status. */
+  command?: string;
   lens: LensMode;
   /** Absent for a shell Pane: there is no Chat to switch to. */
   onLens?: (mode: LensMode) => void;
   onSwitch: () => void;
   onMore: () => void;
+  /** the ⋯ menu is open: on desktop a second press closes it */
+  moreOpen?: boolean;
 }) {
   const blocked = status === 'blocked';
   const back = (
@@ -127,8 +131,10 @@ export function PaneHeader({
     <button
       type="button"
       aria-label="More"
+      aria-haspopup={desktop ? 'menu' : 'dialog'}
+      aria-expanded={!!moreOpen}
       onClick={onMore}
-      className={`press flex shrink-0 items-center justify-center text-muted ${desktop ? 'size-9' : 'h-10 w-11'}`}
+      className={`press flex shrink-0 items-center justify-center rounded-chip text-muted ${desktop ? 'size-9' : 'h-10 w-11'} ${desktop && moreOpen ? 'bg-fg/6 text-fg' : ''}`}
     >
       <More size={desktop ? 18 : 20} />
     </button>
@@ -143,9 +149,12 @@ export function PaneHeader({
   ) : (
     title
   );
-  const statusWord = (
+  // A shell Pane says what it runs (`running · make`, or `shell` at its prompt), not `unknown`.
+  const label = paneStatusWord({ agent, command, status });
+  const kind = paneKind({ agent, command });
+  const statusWord = label && (
     <span aria-live="polite" className={`shrink-0 font-medium ${statusText[status]}`}>
-      {word(status)}
+      {label}
     </span>
   );
 
@@ -171,13 +180,13 @@ export function PaneHeader({
           </div>
           <button
             type="button"
-            aria-label={`Switch Pane, ${word(status)}`}
+            aria-label={`Switch Pane, ${label ?? kind}`}
             onClick={onSwitch}
             className={`press flex h-9 shrink-0 items-center gap-1.5 rounded-composer px-3 text-[12px] ${TINT[status]}`}
           >
             <Dot status={status} size={7} />
             {statusWord}
-            <span className="text-muted">· {agent ?? 'shell'}</span>
+            <span className="text-muted">{label && '· '}{kind}</span>
             <span aria-hidden className="flex text-muted">
               <ChevronDown />
             </span>
@@ -201,7 +210,7 @@ export function PaneHeader({
               <span className="flex w-full min-w-0 items-center gap-1.5 text-[12px] font-normal text-muted">
                 <Dot status={status} size={7} />
                 {statusWord}
-                <span className="shrink-0">· {agent ?? 'shell'}</span>
+                <span className="shrink-0">{label && '· '}{kind}</span>
                 {parts.length > 0 && <span className="min-w-0 truncate">· {parts.join(' / ')}</span>}
                 <span aria-hidden className="flex shrink-0">
                   <ChevronDown />

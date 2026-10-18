@@ -202,7 +202,8 @@
     animation: none !important;
   }
 
-  .press {
+  .press,
+  .scroll-autohide {
     transition: none !important;
   }
 
@@ -230,6 +231,68 @@
   }
 }
 
+/* ---- scrollbars: thin, no arrows, a rounded thumb in the muted text colour ----
+   One skin per engine. Chromium 121+ ignores every `::-webkit-scrollbar` rule on an element
+   that sets `scrollbar-width` or `scrollbar-color`, and its standard `thin` bar still draws
+   arrows on Linux, so Chromium and Safari get only the `::-webkit-scrollbar` skin and
+   Firefox gets only the standard pair. The skin is not an overlay: it takes 6 px wherever
+   it applies, so it is limited to `data-scrollbars="classic"`, which app.tsx sets where
+   scrollbars already take space (Linux, Windows). macOS and phones keep their overlay bars.
+   `--scroll-thumb` is registered, so `scroll-autohide` can fade it; it inherits. */
+@property --scroll-thumb {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@layer base {
+  :root {
+    --scroll-thumb: color-mix(in srgb, var(--muted) 40%, transparent);
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--scroll-thumb) transparent;
+    }
+  }
+
+  /* The gate sits in `:where()`: Chromium never matches the thumb's `:hover` or `:active`
+     behind a plain combinator (`:root[…] ::-webkit-scrollbar-thumb:hover`). */
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+    background: transparent;
+  }
+
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: var(--scroll-thumb);
+  }
+
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar-thumb:hover,
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar-thumb:active {
+    background: color-mix(in srgb, var(--muted) 65%, transparent);
+  }
+
+  :where(:root[data-scrollbars="classic"], :root[data-scrollbars="classic"] *)::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* The desktop sidebar's thumb shows only while the pointer is over it or a list inside is
+   scrolling (`data-scrolling`, set by app.tsx for a second after the last scroll event).
+   The bar keeps its 6 px either way, so nothing moves when it fades. */
+@utility scroll-autohide {
+  --scroll-thumb: transparent;
+  transition: --scroll-thumb 300ms ease-out;
+  &:hover,
+  &[data-scrolling] {
+    --scroll-thumb: inherit;
+    transition-duration: 120ms;
+  }
+}
+
 /* Horizontal strips (Tab strip, Pane chips, Host chips, suggestion pills) scroll without a
    scrollbar: the right-edge content and the swipe are the affordance. Restored: ef9b051
    dropped it while seven files still used it, so those strips could not scroll. */
@@ -239,4 +302,15 @@
   &::-webkit-scrollbar {
     display: none;
   }
+}
+
+/* Diff rows (the Diff view, and the Chat view's edit rows). 12 % of the status colour over
+   whatever surface is under them, so one pair of tints works in every theme and the text keeps
+   its own contrast. Restored: ef9b051 dropped them while web/diff.tsx still used both. */
+@utility diff-add {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+@utility diff-del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }

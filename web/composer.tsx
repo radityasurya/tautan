@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type HTMLAttributes, type RefObject } from 'react';
 import type { Affordance, InputBody, Span, StatePane } from '../shared/types.ts';
 import { hintPills } from './affordances.tsx';
 import { haptic, post, reducedMotion } from './app.tsx';
 import { Blocked, type ExplainResponse } from './blocked.tsx';
 import { Attach, Keyboard, Mic, ScreenLens, Send } from './icons.tsx';
-import { applyKeyPrefs, capInput, directKey, editableCaps, modified, MODIFIERS, moveRow, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
+import { applyKeyPrefs, capInput, directKey, editableCaps, modified, MODIFIERS, moveRow, moveRowTo, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
 import { applyPick, Picker, tokenAt, useComplete, type Item } from './complete.tsx';
-import { CYCLE_MODE_KEYS, toolbarFromScreen, type Profile } from './profiles.ts';
+import { toolbarFromScreen, type Profile } from './profiles.ts';
 import { quickReplies, type Pill } from './replies.ts';
 import { deliver, dropPending, flushHeld, heldOf, isFlushing, pendingSnapshot, runsOutside, subscribePending, trackPending } from './pending.ts';
 import { showingSubagent, subscribeShowing } from './subagents.ts';
@@ -16,8 +16,8 @@ import { store } from './store.tsx';
 export const FADE = 'linear-gradient(to right,#000 calc(100% - 24px),transparent)';
 
 /**
- * The two trays above the input, remembered per kind. An Agent opens on its suggestions; a
- * shell opens on its keys, and its recent commands live in the suggestions tray.
+ * The two trays above the input, remembered per kind, one open at a time. An Agent opens on its
+ * suggestions; a shell opens on its keys, and its recent commands live in the suggestions tray.
  */
 type Tray = 'suggest' | 'keys';
 const TRAY_DEFAULT: Record<'agent' | 'shell', Record<Tray, boolean>> = {
@@ -229,11 +229,6 @@ function ContextLeft({ left }: { left: number }) {
   );
 }
 
-/** A desktop shortcut cap, the header's `kbd` look, one step smaller for the legend. */
-const Kbd = ({ children }: { children: ReactNode }) => (
-  <kbd className="rounded-[3px] border border-border px-1 font-mono text-[10px] leading-[14px]">{children}</kbd>
-);
-
 /** Every composer control: a surface fill and `fg` ink on hover (Tailwind's `hover:` only
  *  matches a pointer that hovers, so a phone never sticks on it), and a visible focus ring. */
 const RING =
@@ -252,10 +247,12 @@ const COARSE = matchMedia('(pointer: coarse)').matches;
 
 /**
  * The dock under the Screen, at both widths. Two toggles, Suggestions and Keys, each open
- * their own tray above the input; both open stack them, both closed leave the input alone.
- * Send (Run for a shell) is always the right-most control and stands alone; everything else
- * sits to its left, in the toolbar under the field: the toggles, an Agent's esc and ^C,
- * attach, `/` and `@`, mic. Desktop (`lg`) adds mode, model and context read off the Screen.
+ * their own tray, one at a time; both closed leave the input alone. Send (Run for a shell) is
+ * always the right-most control and stands alone. On the phone the trays sit above a rounded
+ * box, and its toolbar holds the toggles, an Agent's esc and ^C, attach, `/` and `@`, mic.
+ * On desktop (`lg`) the box is the whole dock, flush with the column under one hairline: the
+ * open tray is a strip inside it above the field, and the bar holds the toggles, then the
+ * model and context read off the Screen, attach and mic; esc, ^C and ⇧⇥ live in Keys.
  * A blocked prompt keeps its card on top; a Pane with no Agent gets a `$` prompt, and its
  * recent commands are its suggestions. No dock control takes focus from the field, so the
  * phone's keyboard stays up through a tap on a key or a pill.
@@ -360,7 +357,8 @@ export function Composer({
   // On the Screen (and a shell), the field can stop composing a line: each key goes out as it
   // is typed, as in a terminal, and the field stays empty. Remembered per kind. `hideCard` is
   // true exactly while the Chat view shows this Pane, where a line is what the Agent reads.
-  const [direct, setDirect] = useState(() => ({ agent: store.get('tautan.direct.agent') === 'on', shell: store.get('tautan.direct.shell') === 'on' }));
+  // A shell is a terminal, so it types directly until the user turns that off; an Agent composes.
+  const [direct, setDirect] = useState(() => ({ agent: store.get('tautan.direct.agent') === 'on', shell: store.get('tautan.direct.shell') !== 'off' }));
   const directOn = direct[kind] && !hideCard;
   const toggleDirect = () => {
     haptic();
@@ -370,9 +368,24 @@ export function Composer({
     setText('');
     input.current?.focus();
   };
-  /** One lane per Composer, so keys reach the Pane in the order they were typed. */
+  /** One lane per Composer, so keys reach the Pane in the order they were typed. Text typed
+   *  while a request is out joins the one waiting its turn: a burst goes as one request, not
+   *  one round trip per key. */
   const lane = useRef<Promise<unknown>>(Promise.resolve());
-  const typeRaw = (body: InputBody) => { lane.current = lane.current.then(() => post(paneKey, 'input', body)); };
+  const queuedInput = useRef<{ paneKey: string; body: InputBody } | null>(null);
+  const typeRaw = (body: InputBody) => {
+    const next = queuedInput.current;
+    if (next?.paneKey === paneKey && next.body.text !== undefined && !next.body.keys && body.text !== undefined && !body.keys) {
+      next.body.text += body.text;
+      return;
+    }
+    const queued = { paneKey, body };
+    queuedInput.current = queued;
+    lane.current = lane.current.then(() => {
+      if (queuedInput.current === queued) queuedInput.current = null;
+      return post(queued.paneKey, 'input', body);
+    });
+  };
   const composing = useRef(false);
   const [focused, setFocused] = useState(false);
   useEffect(() => {
@@ -690,13 +703,12 @@ export function Composer({
   const replies = agent ? quickReplies({ agent, explain, suggestions: pane?.suggestions, smart, blocked: status === 'blocked' }) : [];
   // The keys the blocked prompt offers stay first, because answering it is why the Pane is
   // open; then the Hints the Screen itself printed, then the quick replies. Deduped, so a
-  // Hint that repeats the prompt's own `esc to cancel` is listed once.
-  // On desktop the mode chip already sends the cycle key, so its Hint pill would say it twice.
-  const modeInToolbar = desktop && !!agent && !!toolbar.mode;
+  // Hint that repeats the prompt's own `esc to cancel` is listed once. The mode's own Hint
+  // (`auto mode ⇧⇥`) is how the bar cycles the mode; the Keys tray has ⇧⇥ too.
   // While the card is up it carries the prompt's own keys, so the tray does not repeat them.
   const pills: Pill[] = [
     ...replies.filter((p) => p.kind === 'key' && !explain),
-    ...hintPills(affordances, replies).filter((p) => !(modeInToolbar && p.keys?.join() === CYCLE_MODE_KEYS.join())),
+    ...hintPills(affordances, replies),
     ...replies.filter((p) => p.kind === 'text'),
   ];
   const commands = agent ? [] : history;
@@ -708,6 +720,8 @@ export function Composer({
   // The user's own bar, per kind; null is the defaults.
   const [keyPrefs, setKeyPrefs] = useState(() => ({ agent: readKeyPrefs('agent'), shell: readKeyPrefs('shell') }));
   const [editing, setEditing] = useState(false);
+  // A key row in Edit keys on its way to a new place: where it came from, where it would land.
+  const [drag, setDrag] = useState<{ from: number; over: number } | null>(null);
   useEffect(() => { setEditing(false); }, [paneKey, kind]);
   const prefs = keyPrefs[kind];
   const groups = useMemo(() => applyKeyPrefs(defaults, prefs), [defaults, prefs]);
@@ -722,29 +736,31 @@ export function Composer({
     setKeyPrefs((k) => ({ ...k, [kind]: null }));
   };
   const waiting = pills.length + commands.length;
-  const gutter = desktop ? '' : 'px-4';
 
+  // One tray at a time, so the field moves by one tray at most: opening one closes the other.
   // A blocked prompt opens the suggestions while they hold a draft for it, without touching
-  // the remembered choice; with nothing to offer it leaves the tray as it was. Closing them
-  // then dismisses only this prompt's opening.
+  // the remembered choice, unless the keys are open: the user opened those on purpose. With
+  // nothing to offer it leaves the tray as it was. Closing them then dismisses only this
+  // prompt's opening.
   const forced = status === 'blocked' && !dismissed && pills.some((p) => p.generated);
-  const showSuggest = trays[kind].suggest || forced;
   const showKeys = trays[kind].keys;
-  const keep = (tray: Tray, v: boolean) => {
-    store.set(`tautan.tray.${tray}.${kind}`, v ? 'on' : 'off');
-    setTrays((t) => ({ ...t, [kind]: { ...t[kind], [tray]: v } }));
+  const showSuggest = !showKeys && (trays[kind].suggest || forced);
+  const keep = (next: Partial<Record<Tray, boolean>>) => {
+    for (const [tray, v] of Object.entries(next)) store.set(`tautan.tray.${tray}.${kind}`, v ? 'on' : 'off');
+    setTrays((t) => ({ ...t, [kind]: { ...t[kind], ...next } }));
   };
   const toggleTray = (tray: Tray) => {
     haptic();
-    if (tray === 'keys') return keep('keys', !showKeys);
-    if (!showSuggest) return keep('suggest', true);
-    if (trays[kind].suggest) keep('suggest', false);
+    if (tray === 'keys') return keep(showKeys ? { keys: false } : { keys: true, suggest: false });
+    if (!showSuggest) return keep({ suggest: true, keys: false });
+    if (trays[kind].suggest) keep({ suggest: false });
     if (status === 'blocked') setDismissed(true);
   };
 
   // ---- parts ----
+  // Desktop pills stand as tall as the bar's buttons, so the suggestions strip is one bar high.
   const chip = desktop
-    ? 'press flex h-[30px] shrink-0 items-center gap-1.5 px-3 text-[13px] whitespace-nowrap'
+    ? 'press flex h-8 shrink-0 items-center gap-1.5 px-3 text-[13px] whitespace-nowrap'
     : 'press flex h-9 shrink-0 items-center gap-1.5 px-3 text-[13px] whitespace-nowrap';
   // Replies are round on desktop (the Claude Code box); keys and commands stay 8 px caps.
   const pill = `${chip} ${desktop ? 'rounded-full' : 'rounded-chip'}`;
@@ -810,11 +826,15 @@ export function Composer({
     </button>
   ));
 
-  // The two toggles: accent tint while open, a plain outline while closed.
+  // The toggles: accent tint while open. Closed, an outline on the phone; on desktop a quiet
+  // ghost, like attach and the mic, so the bar reads as one row.
   const toggle = (on: boolean) =>
     `press flex shrink-0 items-center justify-center gap-1.5 rounded-composer border font-medium ${
       desktop ? 'h-8 px-2.5 text-[12px]' : 'h-9 min-w-10 px-2.5 text-[13px]'
-    } ${on ? `${RING} border-accent/45 bg-accent/12 text-accent hover:bg-accent/20` : `${HOVER} border-border bg-bg text-fg`}`;
+    } ${
+      on ? `${RING} border-accent/45 bg-accent/12 text-accent hover:bg-accent/20`
+      : desktop ? `${HOVER} border-transparent text-muted` : `${HOVER} border-border bg-bg text-fg`
+    }`;
   const suggestToggle = (
     <button
       type="button"
@@ -845,14 +865,13 @@ export function Composer({
     </button>
   );
   // The rest of the bar while typing directly: what the keys do now, and a tap that brings the
-  // keyboard back. The caret blinks here and on the Screen while the field has focus.
+  // keyboard back. The caret blinks on the Screen only, where the typing shows.
   const typingStatus = (
     <button
       type="button"
       onClick={() => input.current?.focus()}
       className={`press flex min-h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left text-caption ${focused ? 'text-fg' : 'text-muted'}`}
     >
-      <span aria-hidden className={`h-4 w-[2px] shrink-0 rounded-full bg-accent ${focused ? 'caret-blink' : 'opacity-40'}`} />
       <span className="truncate">{focused ? 'Typing into the Pane' : desktop ? 'Click here or the Screen to type' : 'Tap to type'}</span>
     </button>
   );
@@ -871,19 +890,20 @@ export function Composer({
     </button>
   );
 
-  const groupLabel = 'text-[10px] font-semibold uppercase tracking-[0.06em] text-muted';
+  // Desktop labels are a step smaller: there the trays are strips inside the box.
+  const groupLabel = `${desktop ? 'text-[9px] leading-3' : 'text-[10px]'} font-semibold uppercase tracking-[0.06em] text-muted`;
   // Two lines per cap: the key as its footer prints it, and under it what it does here.
   const capClass = `press flex min-w-0 flex-col items-center justify-center gap-0.5 rounded-chip border whitespace-nowrap ${
-    desktop ? 'h-11 min-w-14 px-2.5' : 'h-12 px-1'
+    desktop ? 'h-9 min-w-10 px-2' : 'h-12 px-1'
   }`;
   // A lone glyph (⌫, ␣, ▲) needs a size step to read like the word caps beside it.
   const capSize = (label: string) =>
-    [...label].length === 1 ? (desktop ? 'text-[14px]' : 'text-[16px]') : desktop ? 'text-[12px]' : 'text-[13px]';
-  const capRow = desktop ? 'flex flex-wrap gap-1.5' : 'grid grid-cols-4 gap-1.5';
+    [...label].length === 1 ? (desktop ? 'text-[13px]' : 'text-[16px]') : desktop ? 'text-[11.5px]' : 'text-[13px]';
+  const capRow = desktop ? 'flex flex-wrap gap-1' : 'grid grid-cols-4 gap-1.5';
   const capFace = (label: string, hint?: string) => (
     <>
       <span className={`font-mono leading-none ${capSize(label)}`}>{label}</span>
-      {hint && <span className="max-w-full truncate text-[10px] leading-none text-muted">{hint}</span>}
+      {hint && <span className={`max-w-full truncate leading-none text-muted ${desktop ? 'text-[9.5px]' : 'text-[10px]'}`}>{hint}</span>}
     </>
   );
   const capButton = (cap: Cap) => (
@@ -894,72 +914,106 @@ export function Composer({
       title={cap.name}
       onPointerDown={keepFocus}
       onClick={() => press(cap)}
-      className={`${capClass} border-border bg-surface active:bg-border ${cap.danger ? 'text-danger' : 'text-fg'}`}
+      className={`${capClass} ${RING} border-border bg-surface hover:bg-border/60 active:bg-border ${cap.danger ? 'text-danger' : 'text-fg'}`}
     >
       {capFace(cap.label, cap.hint)}
     </button>
   );
 
-  // Edit keys: every cap in a list, a switch for whether it shows and two buttons to move
-  // it. Each change saves at once; Reset puts the defaults back.
-  const smallBtn = `press flex size-9 shrink-0 items-center justify-center rounded-chip border border-border text-fg ${RING} disabled:opacity-40`;
+  // Edit keys: every cap in a list, a switch for whether it shows and ▲▼ to move it; on desktop
+  // a row also drags to its new place. Each change saves at once; Reset puts the defaults back.
+  // ponytail: native drag and drop, desktop only, as the Tab strip does: a touch drag would fight
+  // the tray's own scroll, so the phone keeps ▲▼. The drag carries its own type and no text,
+  // so a drop on the field types nothing into the Pane.
+  const rowDrag = (i: number): HTMLAttributes<HTMLLIElement> | undefined =>
+    desktop
+      ? {
+          draggable: true,
+          onDragStart: (e: DragEvent) => {
+            e.dataTransfer.setData('application/x-tautan-key', rows[i]!.cap.label);
+            e.dataTransfer.effectAllowed = 'move';
+            setDrag({ from: i, over: i });
+          },
+          onDragOver: (e: DragEvent) => {
+            if (!drag) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (drag.over !== i) setDrag({ from: drag.from, over: i });
+          },
+          onDrop: (e: DragEvent) => {
+            e.preventDefault();
+            if (drag) saveRows(moveRowTo(rows, drag.from, i));
+            setDrag(null);
+          },
+          onDragEnd: () => setDrag(null),
+        }
+      : undefined;
+  const smallBtn = `press flex shrink-0 items-center justify-center rounded-chip border border-border text-fg ${RING} disabled:opacity-40 ${
+    desktop ? 'size-7 text-[10px] hover:bg-surface' : 'size-9'
+  }`;
   const keysEditor = (
     <div className="flex min-w-0 flex-1 flex-col gap-1">
       <div className="flex items-center gap-2">
-        <span className={`${groupLabel} flex-1`}>Edit keys</span>
-        <button type="button" onClick={() => { haptic(); resetKeys(); }} disabled={!prefs} className="press min-h-8 px-1 text-caption font-medium text-muted disabled:opacity-40">
+        <span className={groupLabel}>Edit keys</span>
+        {desktop && <span className="min-w-0 truncate text-[11px] text-muted">Drag a key to move it, or use ▲ ▼</span>}
+        <span className="flex-1" />
+        <button type="button" onClick={() => { haptic(); resetKeys(); }} disabled={!prefs} className={`press min-h-8 rounded-chip px-1.5 text-caption font-medium text-muted disabled:opacity-40 ${HOVER}`}>
           Reset
         </button>
-        <button type="button" onClick={() => { haptic(); setEditing(false); }} className="press min-h-8 px-1 text-caption font-semibold text-accent">
+        <button type="button" onClick={() => { haptic(); setEditing(false); }} className={`press min-h-8 rounded-chip px-1.5 text-caption font-semibold text-accent ${RING}`}>
           Done
         </button>
       </div>
-      <ul className="flex flex-col">
-        {rows.map((row, i) => (
-          <li key={row.cap.label} className="flex min-h-10 items-center gap-2 border-t border-border/60 first:border-t-0">
-            <label className="flex min-h-10 min-w-0 flex-1 items-center gap-2.5">
-              <input
-                type="checkbox"
-                checked={row.on}
-                onChange={() => saveRows(rows.map((r, j) => (j === i ? { ...r, on: !r.on } : r)))}
-                className="size-4 shrink-0 accent-[var(--accent)]"
-              />
-              <span className="shrink-0 font-mono text-[13px] text-fg">{row.cap.label}</span>
-              <span className="min-w-0 truncate text-caption text-muted">{row.cap.name}</span>
-            </label>
-            <button type="button" aria-label={`Move ${row.cap.name} up`} disabled={i === 0} onClick={() => saveRows(moveRow(rows, i, -1))} className={smallBtn}>
-              ▲
-            </button>
-            <button type="button" aria-label={`Move ${row.cap.name} down`} disabled={i === rows.length - 1} onClick={() => saveRows(moveRow(rows, i, 1))} className={smallBtn}>
-              ▼
-            </button>
-          </li>
-        ))}
-      </ul>
+      {/* Desktop: the list flows down in columns, so ▲ and ▼ still mean earlier and later. The
+          wrapper scrolls; a height on the columns themselves would spill them sideways. */}
+      <div className={desktop ? 'max-h-[min(40vh,18rem)] overflow-y-auto overscroll-contain [scrollbar-width:thin]' : ''}>
+        <ul className={desktop ? 'columns-[15rem] gap-x-6' : 'flex flex-col'}>
+          {rows.map((row, i) => (
+            <li
+              key={row.cap.label}
+              data-keyrow
+              {...rowDrag(i)}
+              className={`relative flex items-center gap-2 ${
+                desktop ? 'min-h-9 cursor-grab break-inside-avoid rounded-chip pl-1 hover:bg-surface' : 'min-h-10 border-t border-border/60 first:border-t-0'
+              } ${drag?.from === i ? 'opacity-40' : ''}`}
+            >
+              {/* The drop marker: the cap lands in this row's place, pushing it the other way. */}
+              {drag && drag.over === i && drag.from !== i && (
+                <span aria-hidden className={`pointer-events-none absolute inset-x-1 h-0.5 rounded-full bg-accent ${drag.from > i ? '-top-px' : '-bottom-px'}`} />
+              )}
+              {desktop && <span aria-hidden className="font-mono text-[12px] leading-none text-muted/70">⠿</span>}
+              <label className={`flex min-w-0 flex-1 items-center gap-2.5 ${desktop ? 'min-h-9' : 'min-h-10'}`}>
+                <input
+                  type="checkbox"
+                  checked={row.on}
+                  onChange={() => saveRows(rows.map((r, j) => (j === i ? { ...r, on: !r.on } : r)))}
+                  className="size-4 shrink-0 accent-[var(--accent)]"
+                />
+                <span className={`shrink-0 font-mono text-fg ${desktop ? 'text-[12px]' : 'text-[13px]'}`}>{row.cap.label}</span>
+                <span className="min-w-0 truncate text-caption text-muted">{row.cap.name}</span>
+              </label>
+              <button type="button" aria-label={`Move ${row.cap.name} up`} disabled={i === 0} onClick={() => saveRows(moveRow(rows, i, -1))} className={smallBtn}>
+                ▲
+              </button>
+              <button type="button" aria-label={`Move ${row.cap.name} down`} disabled={i === rows.length - 1} onClick={() => saveRows(moveRow(rows, i, 1))} className={smallBtn}>
+                ▼
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 
-  // Groups with a tiny label each: one wrapping row on desktop, a four-column grid per group
-  // on the phone, which scrolls inside the tray past 38% of the screen.
-  const keysTray = (
-    <div
-      id="pane-keys"
-      role="group"
-      aria-label="Keys"
-      className={`rise ${
-        desktop
-          ? 'flex flex-wrap gap-x-4 gap-y-2 rounded-composer border border-border bg-bg p-2'
-          : 'flex max-h-[44vh] flex-col gap-2 overflow-y-auto overscroll-contain px-4'
-      }`}
-    >
-      {editing ? keysEditor : <>
+  const capGroups = (
+    <>
       {groups.map((group) => (
-        <div key={group.label} role="group" aria-label={group.label} className="flex min-w-0 flex-col gap-1">
+        <div key={group.label} role="group" aria-label={group.label} className={`flex min-w-0 flex-col ${desktop ? 'gap-0.5' : 'gap-1'}`}>
           <span aria-hidden className={groupLabel}>{group.label}</span>
           <div className={capRow}>{group.caps.map(capButton)}</div>
         </div>
       ))}
-      <div role="group" aria-label="Modifiers" className="flex min-w-0 flex-col gap-1">
+      <div role="group" aria-label="Modifiers" className={`flex min-w-0 flex-col ${desktop ? 'gap-0.5' : 'gap-1'}`}>
         <span aria-hidden className={groupLabel}>Modifiers</span>
         <div className={capRow}>
           {MODIFIERS.map((mod) => (
@@ -970,43 +1024,77 @@ export function Composer({
               aria-pressed={armed === mod}
               onPointerDown={keepFocus}
               onClick={() => arm(mod)}
-              className={`${capClass} ${armed === mod ? 'border-accent/45 bg-accent/12 text-accent' : 'border-border bg-surface text-fg active:bg-border'}`}
+              className={`${capClass} ${RING} ${armed === mod ? 'border-accent/45 bg-accent/12 text-accent' : 'border-border bg-surface text-fg hover:bg-border/60 active:bg-border'}`}
             >
               {capFace(mod, armed === mod ? 'armed' : 'next key')}
             </button>
           ))}
         </div>
       </div>
-      <button type="button" onClick={() => { haptic(); setEditing(true); }} className={`press self-start text-caption font-medium text-muted ${HOVER} min-h-8 px-1`}>
-        Edit keys
-      </button>
-      </>}
-    </div>
+    </>
   );
-
-  /** The replies (or a shell's recent commands): wrapped on desktop, one scrolling row on the phone. */
-  const suggestTray = (
-    <div id="pane-suggestions" role="group" aria-label={agent ? 'Suggestions' : 'Recent commands'} className="rise">
-      {waiting === 0 ? (
-        <p className={`text-caption text-muted ${gutter}`}>{agent ? 'No suggestions yet' : 'Commands you run show up here'}</p>
-      ) : desktop ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <span aria-hidden className={`${groupLabel} mr-1`}>{agent ? 'Suggested' : 'Recent'}</span>
-          {pillButtons}
-          {commandButtons}
-        </div>
+  const editKeys = (
+    <button type="button" onClick={() => { haptic(); setEditing(true); }} className={`press min-h-8 shrink-0 self-start rounded-chip px-1.5 text-caption font-medium text-muted ${HOVER}`}>
+      Edit keys
+    </button>
+  );
+  // Desktop: one strip of groups, three rows high at most, scrolling inside past that, with Edit
+  // keys in its corner. Phone: a four-column grid per group, scrolling inside past 44% of the screen.
+  const keysTray = (
+    <div
+      id="pane-keys"
+      role="group"
+      aria-label="Keys"
+      className={`rise ${desktop ? 'flex items-start gap-3 px-4 pt-2.5' : 'flex max-h-[44vh] flex-col gap-2 overflow-y-auto overscroll-contain px-4'}`}
+    >
+      {editing ? keysEditor : desktop ? (
+        <>
+          <div className="flex max-h-[162px] min-w-0 flex-1 flex-wrap content-start gap-x-4 gap-y-1.5 overflow-y-auto overscroll-contain [scrollbar-width:thin]">
+            {capGroups}
+          </div>
+          {editKeys}
+        </>
       ) : (
-        <div className="hscroll flex gap-1.5 px-4" style={{ maskImage: FADE, WebkitMaskImage: FADE }}>
-          {pillButtons}
-          {commandButtons}
-        </div>
+        <>
+          {capGroups}
+          {editKeys}
+        </>
       )}
     </div>
   );
 
-  // An Agent Pane keeps esc and ^C one tap away beside the toggles in every Status: esc
-  // backs out of a menu or a prompt, ^C stops the run. Never beside Send, where a slip would
-  // interrupt instead of reply. A shell's keys live in its tray, which opens by default.
+  /** The replies (or a shell's recent commands) in one row that scrolls sideways. On desktop a
+   *  strip with its label, as tall as the bar's buttons whatever the count. */
+  const suggestTray = (
+    <div
+      id="pane-suggestions"
+      role="group"
+      aria-label={agent ? 'Suggestions' : 'Recent commands'}
+      className={`rise ${desktop ? 'flex items-center gap-3 pt-2.5 pl-4' : ''}`}
+    >
+      {waiting === 0 ? (
+        <p className={`text-caption text-muted ${desktop ? 'flex h-8 items-center' : 'px-4'}`}>{agent ? 'No suggestions yet' : 'Commands you run show up here'}</p>
+      ) : (
+        <>
+          {desktop && <span aria-hidden className={`${groupLabel} shrink-0`}>{agent ? 'Suggested' : 'Recent'}</span>}
+          <div
+            className={`hscroll flex min-w-0 flex-1 items-center gap-1.5 ${desktop ? 'pr-4' : 'px-4'}`}
+            style={{ maskImage: FADE, WebkitMaskImage: FADE }}
+            // A mouse wheel has no sideways axis; the row takes its turn as one.
+            onWheel={desktop ? (e) => { if (!e.deltaX) e.currentTarget.scrollLeft += e.deltaY; } : undefined}
+          >
+            {pillButtons}
+            {commandButtons}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  // On the phone an Agent Pane keeps esc and ^C one tap away beside the toggles in every
+  // Status: esc backs out of a menu or a prompt, ^C stops the run. Never beside Send, where a
+  // slip would interrupt instead of reply. On desktop they lead the Keys tray's Control group,
+  // and a shell's keys live in its tray, which opens by default.
   const inlineKey = (label: string, name: string, key: string, danger?: boolean) => (
     <button
       type="button"
@@ -1147,7 +1235,7 @@ export function Composer({
       onKeyDown={(e) => {
         const composing = e.nativeEvent.isComposing || e.keyCode === 229;
         if (directOn) {
-          const sent = composing ? null : directKey(e);
+          const sent = composing ? null : directKey({ key: e.key, ctrlKey: e.ctrlKey, altKey: e.altKey, metaKey: e.metaKey, shiftKey: e.shiftKey, selected: !!getSelection()?.toString() });
           if (sent) {
             e.preventDefault();
             if (armed) setArmed(null);
@@ -1191,107 +1279,176 @@ export function Composer({
       spellCheck={agent && !directOn ? undefined : false}
       aria-label={directOn ? 'Type directly into the Pane' : agent ? `Reply to ${agent}` : 'Command'}
       placeholder={directHint}
-      className={`min-w-0 flex-1 resize-none self-center bg-transparent placeholder:truncate placeholder:text-muted focus:outline-none ${
-        desktop && agent
-          ? 'min-h-11 py-0 text-[15px] leading-[22px]'
-          : `max-h-24 min-h-9 py-2 leading-5 ${agent ? 'text-body' : 'font-mono text-[14px]'}`
+      className={`min-w-0 flex-1 resize-none bg-transparent placeholder:truncate placeholder:text-muted focus:outline-none ${
+        desktop
+          ? `block w-full py-0 leading-[22px] ${agent ? 'text-[15px]' : 'font-mono text-[14px]'}`
+          : `max-h-24 min-h-9 self-center py-2 leading-5 ${agent ? 'text-body' : 'font-mono text-[14px]'}`
       }`}
     />
   );
   // The prompt glyph labels the field from inside it: `›` for an Agent, `$` for a shell.
   // With the keys open on the phone, it becomes the way to close them.
   const glyph = (
-    <span aria-hidden className={`font-mono ${agent ? 'text-accent' : 'text-ok'} ${desktop && agent ? 'text-[15px] leading-[22px]' : 'self-center'}`}>
+    <span
+      aria-hidden
+      className={`font-mono ${agent ? 'text-accent' : 'text-ok'} ${
+        desktop ? `absolute top-3 left-4 leading-[22px] ${agent ? 'text-[15px]' : 'text-[14px]'}` : 'self-center'
+      }`}
+    >
       {agent ? '›' : '$'}
     </span>
   );
 
-  // One box at both widths: the field on top, the toolbar under it with Send alone at the
-  // right end. The phone gives the toolbar its own line rather than squeezing six controls
-  // beside the field, which left 60 px to type into while ^C showed.
-  const box = (
-    <div className="relative flex flex-col rounded-card border border-border bg-bg focus-within:border-accent/60">
-      {open && token && desktop && (
-        <Picker id={pickerId} kind={token.kind} items={items} active={active} desktop onActive={setActive} onPick={pick} />
+  const progressBar = inFlight.length > 0 && (
+    <div
+      role="progressbar"
+      aria-label="Uploading"
+      aria-valuenow={Math.round(progress * 100)}
+      className={`h-0.5 overflow-hidden bg-surface ${desktop ? '' : 'rounded-full'}`}
+    >
+      <div
+        className="h-full bg-accent transition-[width] duration-150 ease-out motion-reduce:transition-none"
+        style={{ width: `${progress * 100}%` }}
+      />
+    </div>
+  );
+
+  const attachments = uploads.length > 0 && (
+    <div className={`flex flex-col gap-1.5 ${desktop ? 'px-4 pt-2.5' : ''}`}>
+      <div className="flex flex-wrap gap-1.5">
+        {uploads.map((u) => (
+          <span
+            key={u.id}
+            title={u.display ?? u.file.name}
+            className={`flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-chip border border-border bg-bg py-0.5 pr-0.5 pl-2.5 text-caption ${
+              u.status === 'error' ? 'text-danger' : 'text-fg'
+            }`}
+          >
+            <span className="truncate">{u.file.name}</span>
+            <span className="shrink-0 text-muted">{human(u.file.size)}</span>
+            <button
+              type="button"
+              aria-label={`Remove ${u.file.name}`}
+              onClick={() => drop(u)}
+              className="press flex size-7 shrink-0 items-center justify-center rounded-chip text-muted"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+
+      {uploads.some((u) => u.status === 'error') && (
+        <div role="status" className="flex flex-col gap-1">
+          {uploads
+            .filter((u) => u.status === 'error')
+            .map((u) => (
+              <p key={u.id} className="text-caption text-muted">
+                {u.file.name} failed · {u.reason}{' '}
+                <button type="button" onClick={() => retry(u)} className="text-accent">
+                  Retry
+                </button>
+              </p>
+            ))}
+        </div>
       )}
+    </div>
+  );
+
+  // Read off the Screen, so muted: they report, they are not the work.
+  const readout = desktop && agent && (toolbar.model || toolbar.context !== undefined) && (
+    <div className="flex min-w-0 items-center gap-2 overflow-hidden px-1.5">
+      {toolbar.model && (
+        <span title="Model, from the Screen" className="truncate text-[12px] text-muted">
+          {toolbar.model}
+        </span>
+      )}
+      {toolbar.context !== undefined && <ContextLeft left={toolbar.context} />}
+    </div>
+  );
+
+  // The phone: one box, the field on top and the toolbar under it with Send alone at the right
+  // end; the trays sit above the box. The toolbar has its own line rather than six controls
+  // squeezed beside the field, which left 60 px to type into while ^C showed.
+  // Desktop: the box is the whole dock, flush with the column. The open tray is a strip inside
+  // it, then the attachments, the field, and one quiet bar: toggles left; the Screen's model
+  // and context, attach, mic and Send right.
+  const box = (
+    <div className={`relative flex flex-col ${desktop ? '' : 'rounded-card border border-border bg-bg focus-within:border-accent/60'}`}>
+      {desktop && (showSuggest ? suggestTray : showKeys ? keysTray : null)}
+      {desktop && attachments}
       {/* Typing directly, the field only catches keys: out of sight, still focusable, so the
           phone's keyboard still opens for it. The bar below is the whole Composer. */}
-      <div className={directOn ? 'pointer-events-none absolute bottom-0 left-0 h-px w-px overflow-hidden opacity-0' : `flex ${desktop ? 'gap-2.5 px-3 pt-3 pb-1.5' : 'gap-2 px-3 pt-1'}`}>
+      {/* Desktop: the field's padding is the field's too, so a press anywhere across the box's
+          width lands in it, and a scrolled draft still clips clean at the text. */}
+      <div
+        className={directOn ? 'pointer-events-none absolute bottom-0 left-0 h-px w-px overflow-hidden opacity-0' : desktop ? 'relative cursor-text pt-3 pr-4 pb-1 pl-9' : 'flex gap-2 px-3 pt-1'}
+        onMouseDown={desktop ? (e) => {
+          if (e.target !== input.current && !(e.target as Element).closest('[role="listbox"]')) {
+            e.preventDefault();
+            input.current?.focus();
+          }
+        } : undefined}
+      >
+        {/* The picker pops above the field, over the open strip and the Screen. */}
+        {open && token && desktop && (
+          <div className="absolute inset-x-3 top-0">
+            <Picker id={pickerId} kind={token.kind} items={items} active={active} desktop onActive={setActive} onPick={pick} />
+          </div>
+        )}
         {glyph}
         {textarea}
       </div>
-      <div role="toolbar" aria-label="Composer" className={`flex items-center gap-1 ${desktop ? `flex-wrap px-2 pb-2 ${directOn ? 'pt-2' : 'pt-1'}` : `px-1 pb-1 ${directOn ? 'pt-1' : ''}`}`}>
+      <div role="toolbar" aria-label="Composer" className={`flex items-center gap-1 ${desktop ? `px-2.5 pb-2.5 ${directOn ? 'pt-2.5' : 'pt-1'}` : `px-1 pb-1 ${directOn ? 'pt-1' : ''}`}`}>
         {suggestToggle}
         {keysToggle}
         {directToggle}
-        {directOn ? typingStatus : <>
-        {stopKeys}
-        {desktop && <Divider />}
-        {attachButton}
-        {agent && (
+        {directOn ? typingStatus : desktop ? (
           <>
-            <button
-              type="button"
-              aria-label="Type /"
-              title="Types / — the Agent shows its commands"
-              onPointerDown={keepFocus}
-              onClick={() => typeAtCaret('/')}
-              className={`press flex shrink-0 items-center justify-center rounded-chip font-mono text-muted ${HOVER} ${desktop ? 'size-8 text-[15px]' : 'h-9 w-8 text-[16px]'}`}
-            >
-              /
-            </button>
-            <button
-              type="button"
-              aria-label="Type @"
-              title="Types @ — the Agent offers files"
-              onPointerDown={keepFocus}
-              onClick={() => typeAtCaret('@')}
-              className={`press flex shrink-0 items-center justify-center rounded-chip font-mono text-muted ${HOVER} ${desktop ? 'size-8 text-[14px]' : 'h-9 w-8 text-[15px]'}`}
-            >
-              @
-            </button>
-          </>
-        )}
-        {micButton && desktop && (
-          <>
-            <Divider />
+            {/* The bar's empty middle is the field's too. */}
+            <span aria-hidden className="flex-1 self-stretch" onClick={() => input.current?.focus()} />
+            {readout}
+            {readout && <Divider />}
+            {attachButton}
             {micButton}
+            {sendButton}
           </>
-        )}
-        {desktop && agent && (toolbar.mode || toolbar.model || toolbar.context !== undefined) && (
+        ) : (
           <>
-            <Divider />
-            {/* Read off the Screen, so muted: they report, they are not the work. */}
-            <div className="flex min-w-0 items-center gap-1">
-              {toolbar.mode && (
-                // The chip follows the Screen: the tap only sends the key, the next Screen
-                // says which mode the Agent landed in.
+            {stopKeys}
+            {attachButton}
+            {agent && (
+              <>
                 <button
                   type="button"
-                  aria-label={`Mode: ${toolbar.mode}. Send shift+tab to cycle`}
+                  aria-label="Type /"
+                  title="Types / — the Agent shows its commands"
                   onPointerDown={keepFocus}
-                  onClick={() => keys(CYCLE_MODE_KEYS)}
-                  className={`press flex h-8 shrink-0 items-center gap-1.5 rounded-chip px-2 text-[12px] text-muted ${HOVER}`}
+                  onClick={() => typeAtCaret('/')}
+                  className={`press flex h-9 w-8 shrink-0 items-center justify-center rounded-chip font-mono text-[16px] text-muted ${HOVER}`}
                 >
-                  ⏵⏵ {toolbar.mode}
-                  <kbd className="rounded-[4px] border border-border px-[5px] font-mono text-[10.5px] font-normal">⇧⇥</kbd>
+                  /
                 </button>
-              )}
-              {toolbar.model && (
-                <span title="Model, from the Screen" className="shrink-0 px-1.5 text-[12px] text-muted">
-                  {toolbar.model}
-                </span>
-              )}
-              {toolbar.context !== undefined && <ContextLeft left={toolbar.context} />}
-            </div>
+                <button
+                  type="button"
+                  aria-label="Type @"
+                  title="Types @ — the Agent offers files"
+                  onPointerDown={keepFocus}
+                  onClick={() => typeAtCaret('@')}
+                  className={`press flex h-9 w-8 shrink-0 items-center justify-center rounded-chip font-mono text-[15px] text-muted ${HOVER}`}
+                >
+                  @
+                </button>
+              </>
+            )}
+            <span className="flex-1" />
+            {/* The phone has one slot on the right: the mic while the field is empty (or while it
+                listens), Send as soon as there is text. No dictation engine, Send keeps it. */}
+            {micButton && (listening || !hasText) ? micButton : sendButton}
           </>
         )}
-        <span className="flex-1" />
-        {/* The phone has one slot on the right: the mic while the field is empty (or while it
-            listens), Send as soon as there is text. No dictation engine, Send keeps it. */}
-        {micButton && !desktop && (listening || !hasText) ? micButton : sendButton}
-        </>}
       </div>
+      {desktop && progressBar}
     </div>
   );
 
@@ -1299,153 +1456,98 @@ export function Composer({
     <div
       className={`flex shrink-0 flex-col ${
         desktop
-          ? 'border-t border-border bg-elevated px-4 pt-3 pb-2'
-          : 'rounded-t-drawer bg-elevated pt-3 pb-[max(var(--safe-b,env(safe-area-inset-bottom)),8px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]'
+          ? 'border-t border-border bg-bg transition-colors duration-150 focus-within:border-accent/50'
+          : 'gap-2.5 rounded-t-drawer bg-elevated pt-3 pb-[max(var(--safe-b,env(safe-area-inset-bottom)),8px)] shadow-[0_-8px_24px_rgb(0_0_0/0.25)]'
       }`}
     >
-      <div className={`flex flex-col gap-2.5 ${desktop ? 'mx-auto w-full max-w-5xl' : ''}`}>
-        {/* The blocked card takes the replies' place. The live region must exist before the
-            card does, or a screen reader announces nothing: it stays mounted at zero height
-            while no prompt asks. */}
-        <div ref={cardRef} aria-live="polite" className={explain && !hideCard ? gutter : `-mb-2.5 h-0 overflow-hidden ${gutter}`}>
-          <div className={`transition-opacity duration-150 ${status === 'blocked' && explain ? 'opacity-100' : 'opacity-0'}`}>
-            {explain && !hideCard && (
-              <Blocked
-                key={explain.promptId ?? 'mock'}
-                explain={explain}
-                agent={agent}
-                stale={stale}
-                layout={desktop ? 'row' : 'rows'}
-                onSend={onAnswer}
-                onReread={onReread}
-              />
+      {/* The blocked card takes the replies' place. The live region must exist before the
+          card does, or a screen reader announces nothing: it stays mounted at zero height
+          while no prompt asks. */}
+      <div
+        ref={cardRef}
+        aria-live="polite"
+        className={explain && !hideCard ? (desktop ? 'px-4 pt-3' : 'px-4') : `h-0 overflow-hidden ${desktop ? '' : '-mb-2.5 px-4'}`}
+      >
+        <div className={`transition-opacity duration-150 ${status === 'blocked' && explain ? 'opacity-100' : 'opacity-0'}`}>
+          {explain && !hideCard && (
+            <Blocked
+              key={explain.promptId ?? 'mock'}
+              explain={explain}
+              agent={agent}
+              stale={stale}
+              layout={desktop ? 'row' : 'rows'}
+              onSend={onAnswer}
+              onReread={onReread}
+            />
+          )}
+        </div>
+      </div>
+
+      {!desktop && showSuggest && suggestTray}
+      {!desktop && showKeys && keysTray}
+      {open && token && !desktop && (
+        <Picker id={pickerId} kind={token.kind} items={items} active={active} desktop={false} onActive={setActive} onPick={pick} />
+      )}
+
+      {heldMessages.length > 0 && (
+        <section aria-label="Held messages" className={`overflow-hidden rounded-composer border border-border bg-bg ${desktop ? 'mx-4 mt-3' : 'mx-4'}`}>
+          <div className={`flex min-h-9 items-center gap-3 px-3 ${heldFolded ? '' : 'border-b border-border'}`}>
+            <span aria-live="polite" className="min-w-0 flex-1 truncate text-caption text-muted">
+              <span className="font-medium text-fg">{heldMessages.length} held</span> · {heldMessages.some((m) => m.reason === 'draft') ? "waiting: the terminal's box has text" : `sends when ${Agent || 'the Agent'} is idle`}
+            </span>
+            {status !== 'working' && !heldMessages.some((m) => m.reason === 'draft') && (
+              <button
+                type="button"
+                disabled={sendingHeld}
+                onPointerDown={keepFocus}
+                onClick={() => {
+                  haptic();
+                  void flushHeld(paneKey);
+                }}
+                className="press min-h-9 shrink-0 text-caption font-semibold text-accent disabled:text-muted"
+              >
+                {sendingHeld ? 'Sending…' : 'Send now'}
+              </button>
             )}
           </div>
-        </div>
+          {!heldFolded && (
+            <ul className="max-h-28 overflow-y-auto overscroll-contain">
+              {heldMessages.map((message) => (
+                <li key={message.id} className="flex min-h-10 items-center gap-2 border-t border-border/60 px-3 first:border-t-0">
+                  <span title={message.text} className="min-w-0 flex-1 truncate text-caption text-fg">
+                    {message.text}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={sendingHeld}
+                    aria-label={`Remove held message: ${message.text}`}
+                    onPointerDown={keepFocus}
+                    onClick={() => dropPending([message.id])}
+                    className="press flex size-9 shrink-0 items-center justify-center text-muted disabled:opacity-40"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
-        {showSuggest && suggestTray}
-        {showKeys && keysTray}
-        {open && token && !desktop && (
-          <Picker id={pickerId} kind={token.kind} items={items} active={active} desktop={false} onActive={setActive} onPick={pick} />
-        )}
-
-        {heldMessages.length > 0 && (
-          <section aria-label="Held messages" className={`overflow-hidden rounded-composer border border-border bg-bg ${desktop ? '' : 'mx-4'}`}>
-            <div className={`flex min-h-9 items-center gap-3 px-3 ${heldFolded ? '' : 'border-b border-border'}`}>
-              <span aria-live="polite" className="min-w-0 flex-1 truncate text-caption text-muted">
-                <span className="font-medium text-fg">{heldMessages.length} held</span> · {heldMessages.some((m) => m.reason === 'draft') ? "waiting: the terminal's box has text" : `sends when ${Agent || 'the Agent'} is idle`}
-              </span>
-              {status !== 'working' && !heldMessages.some((m) => m.reason === 'draft') && (
-                <button
-                  type="button"
-                  disabled={sendingHeld}
-                  onPointerDown={keepFocus}
-                  onClick={() => {
-                    haptic();
-                    void flushHeld(paneKey);
-                  }}
-                  className="press min-h-9 shrink-0 text-caption font-semibold text-accent disabled:text-muted"
-                >
-                  {sendingHeld ? 'Sending…' : 'Send now'}
-                </button>
-              )}
-            </div>
-            {!heldFolded && (
-              <ul className="max-h-28 overflow-y-auto overscroll-contain">
-                {heldMessages.map((message) => (
-                  <li key={message.id} className="flex min-h-10 items-center gap-2 border-t border-border/60 px-3 first:border-t-0">
-                    <span title={message.text} className="min-w-0 flex-1 truncate text-caption text-fg">
-                      {message.text}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={sendingHeld}
-                      aria-label={`Remove held message: ${message.text}`}
-                      onPointerDown={keepFocus}
-                      onClick={() => dropPending([message.id])}
-                      className="press flex size-9 shrink-0 items-center justify-center text-muted disabled:opacity-40"
-                    >
-                      ×
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        )}
-
-        <div className={`flex flex-col gap-1.5 ${gutter}`}>
-          {listening && (
+      <div className={`flex flex-col ${desktop ? '' : 'gap-1.5 px-4'}`}>
+        {listening && (
+          <div className={desktop ? 'px-4 pt-2.5' : ''}>
             <RecordingPill
               analyser={analyser}
               onCancel={() => stopDictation(false)}
               onDone={() => stopDictation(true)}
             />
-          )}
-          {fileInput}
-          {box}
-
-          {inFlight.length > 0 && (
-            <div
-              role="progressbar"
-              aria-label="Uploading"
-              aria-valuenow={Math.round(progress * 100)}
-              className="h-0.5 overflow-hidden rounded-full bg-surface"
-            >
-              <div
-                className="h-full bg-accent transition-[width] duration-150 ease-out motion-reduce:transition-none"
-                style={{ width: `${progress * 100}%` }}
-              />
-            </div>
-          )}
-
-          {uploads.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {uploads.map((u) => (
-                <span
-                  key={u.id}
-                  title={u.display ?? u.file.name}
-                  className={`flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-chip border border-border bg-bg py-0.5 pr-0.5 pl-2.5 text-caption ${
-                    u.status === 'error' ? 'text-danger' : 'text-fg'
-                  }`}
-                >
-                  <span className="truncate">{u.file.name}</span>
-                  <span className="shrink-0 text-muted">{human(u.file.size)}</span>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${u.file.name}`}
-                    onClick={() => drop(u)}
-                    className="press flex size-7 shrink-0 items-center justify-center rounded-chip text-muted"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          {uploads.some((u) => u.status === 'error') && (
-            <div role="status" className="flex flex-col gap-1">
-              {uploads
-                .filter((u) => u.status === 'error')
-                .map((u) => (
-                  <p key={u.id} className="text-caption text-muted">
-                    {u.file.name} failed · {u.reason}{' '}
-                    <button type="button" onClick={() => retry(u)} className="text-accent">
-                      Retry
-                    </button>
-                  </p>
-                ))}
-            </div>
-          )}
-
-          {/* The legend for Send, under it on the right. */}
-          {desktop && (
-            <p className="-mt-0.5 flex items-center justify-end gap-1 pr-1 text-[10.5px] leading-[14px] text-muted/80">
-              <Kbd>↵</Kbd> {agent ? 'send' : 'run'} · <Kbd>⇧↵</Kbd> newline
-            </p>
-          )}
-        </div>
+          </div>
+        )}
+        {fileInput}
+        {box}
+        {!desktop && progressBar}
+        {!desktop && attachments}
       </div>
     </div>
   );

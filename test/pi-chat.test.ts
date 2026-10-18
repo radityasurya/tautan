@@ -39,7 +39,7 @@ describe('parsePiTranscript', () => {
       { id: 'a1', role: 'assistant', text: 'I will inspect it.', thinking: 'hidden reasoning', at: Date.parse('2026-10-05T21:16:32.763Z'), tools: [
         { id: 'call_1', name: 'bash', brief: 'bun test chat', detail: 'bun test chat', result: 'test output', resultLines: 1 },
         { id: 'call_2', name: 'read', brief: 'shared/chat.ts', detail: 'shared/chat.ts' },
-        { id: 'call_3', name: 'edit', brief: 'server/chat.ts', detail: 'server/chat.ts\n\n- one\n- two\n+ three' },
+        { id: 'call_3', name: 'edit', brief: 'server/chat.ts', detail: 'server/chat.ts\n\n- one\n- two\n+ three', additions: 1, deletions: 2 },
         { id: 'call_4', name: 'grep', brief: 'TODO', detail: 'TODO\nin web' },
       ] },
       // Words after the tool rows open the next Turn, so the order on screen is the real one.

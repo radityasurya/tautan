@@ -278,19 +278,22 @@ export class HerdrMux implements Mux {
   async newTab(workspaceId: string, o: { cwd?: string; label?: string; agent?: string }): Promise<Pane> {
     const result = await this.rpc('tab.create', { workspace_id: workspaceId, cwd: o.cwd, label: o.label, focus: false });
     const pane = result.root_pane;
-    if (o.agent) {
-      // ponytail: herdr agent names are unique per session and label-free; the Tab carries the label.
-      const name = `${o.agent}-${pane.pane_id}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 32);
-      const params = { name, kind: o.agent, pane_id: pane.pane_id, timeout_ms: 30_000 };
-      try { await this.rpc('agent.start', params); }
-      catch (error) {
-        if (!(error instanceof Error) || !error.message.startsWith('agent_not_ready:')) throw error;
-        await Bun.sleep(1_000);
-        // ponytail: leave the Tab on agent failure; the user sees it and can close it. Retry from the sheet makes a new Tab.
-        await this.rpc('agent.start', params);
-      }
-    }
+    if (o.agent) await this.startAgent(pane.pane_id, o.agent);
     return this.paneRecord(pane);
+  }
+
+  /** Starts Agent `kind` in a fresh Pane: New Tab, Duplicate Tab and Duplicate Pane. */
+  private async startAgent(paneId: string, kind: string): Promise<void> {
+    // ponytail: herdr agent names are unique per session and label-free; the Tab carries the label.
+    const name = `${kind}-${paneId}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 32);
+    const params = { name, kind, pane_id: paneId, timeout_ms: 30_000 };
+    try { await this.rpc('agent.start', params); }
+    catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('agent_not_ready:')) throw error;
+      await Bun.sleep(1_000);
+      // ponytail: leave the Pane on agent failure; the user sees it and can close it. A retry makes a new one.
+      await this.rpc('agent.start', params);
+    }
   }
 
   async newWorkspace(o: { cwd?: string; label?: string; branch?: string }): Promise<Workspace> {
@@ -323,13 +326,14 @@ export class HerdrMux implements Mux {
     if (Number(major) === 0 && Number(minor) < 9) throw new Error('unsupported');
   }
 
-  async split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string }): Promise<string> {
+  async split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string; agent?: string }): Promise<string> {
     this.assertLayout();
     // herdr's ratio is the share the split Pane KEEPS (probed on 0.9.2); the API's is the new Pane's share.
     const result = await this.rpc('pane.split', {
       target_pane_id: paneId, direction: o.direction, focus: false,
       ...(o.ratio !== undefined ? { ratio: 1 - o.ratio } : {}), ...(o.cwd ? { cwd: o.cwd } : {}),
     });
+    if (o.agent) await this.startAgent(result.pane.pane_id, o.agent);
     return result.pane.pane_id;
   }
 

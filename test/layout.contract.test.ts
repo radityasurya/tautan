@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostId } from '../server/hosts.ts';
@@ -163,4 +163,55 @@ test.skipIf(!tmuxAvailable)('tmux: layout edits through the Hub', async () => {
     await tmux(['kill-server']);
     await rm(dir, { recursive: true, force: true });
   }
+}, 60_000);
+
+test.skipIf(!herdrAvailable)('herdr: Duplicate through the Hub — a new Tab lands after its source, a split takes the cwd and the Agent kind', async () => {
+  const fixture = await startThrowawayHerdr();
+  try {
+    const mux = herdrMux(fixture.sock);
+    const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'duplicate' });
+    const root = (await mux.tree()).panes.find(pane => pane.workspaceId === workspace.id)!;
+    const second = await mux.newTab(workspace.id, { cwd: fixture.dir, label: 'Second' });
+    const sub = join(fixture.dir, 'sub');
+    await mkdir(sub);
+    const api = await serve(mux, fixture.dir);
+    try {
+      const tabs = `/api/muxes/${encodeURIComponent(api.muxKey)}/tabs`;
+      const order = async () => (await api.state()).tabs.filter(tab => tab.workspaceId === workspace.id).map(tab => tab.id);
+
+      // Duplicate Tab: the copy opens in the source's folder, right after the source.
+      const made = await api.write(tabs, { workspaceId: workspace.id, cwd: sub, after: root.tabId });
+      expect(made.status).toBe(201);
+      const copyKey = ((await made.json()) as { paneKey: string }).paneKey;
+      const copy = (await api.state()).panes.find(pane => pane.key === copyKey)!;
+      // herdr reports a new Tab's cwd once its shell has started, about half a second later.
+      const cwdOf = async (id: string) => (await mux.tree()).panes.find(pane => pane.id === id)?.cwd;
+      for (let i = 0; i < 20 && await cwdOf(copy.id) !== sub; i++) await Bun.sleep(150);
+      expect(await cwdOf(copy.id)).toBe(sub);
+      expect(await order()).toEqual([root.tabId, copy.tabId, second.tabId]);
+      // After the last Tab it is already in place; with no `after` it goes last, as New Tab does.
+      const last = await api.write(tabs, { workspaceId: workspace.id, after: second.tabId });
+      const lastKey = ((await last.json()) as { paneKey: string }).paneKey;
+      const lastTab = (await api.state()).panes.find(pane => pane.key === lastKey)!.tabId;
+      expect((await order()).at(-1)).toBe(lastTab);
+
+      // Duplicate Pane, a shell: the split opens in the given folder.
+      const shell = await api.post(`${api.muxKey}/${root.id}`, 'split', { direction: 'right', cwd: sub });
+      expect(shell.status).toBe(201);
+      const shellId = ((await shell.json()) as { paneKey: string }).paneKey.slice(api.muxKey.length + 1);
+      for (let i = 0; i < 20 && await cwdOf(shellId) !== sub; i++) await Bun.sleep(150);
+      expect(await cwdOf(shellId)).toBe(sub);
+      // An Agent: the kind reaches herdr's agent.start for the new Pane. An unknown kind is herdr's
+      // own error code, and the split Pane stays for the user to see and close.
+      const before = (await mux.tree()).panes.filter(pane => pane.tabId === root.tabId).length;
+      const agent = await api.post(`${api.muxKey}/${root.id}`, 'split', { direction: 'down', cwd: sub, agent: 'no-such-agent' });
+      expect(agent.status).toBe(502);
+      expect(await agent.json()).toEqual({ error: 'unsupported_agent_kind' });
+      expect((await mux.tree()).panes.filter(pane => pane.tabId === root.tabId)).toHaveLength(before + 1);
+
+      // Bad bodies.
+      expect((await api.post(`${api.muxKey}/${root.id}`, 'split', { direction: 'right', agent: '' })).status).toBe(400);
+      expect((await api.write(tabs, { workspaceId: workspace.id, after: '' })).status).toBe(400);
+    } finally { api.stop(); }
+  } finally { await fixture.stop(); }
 }, 60_000);

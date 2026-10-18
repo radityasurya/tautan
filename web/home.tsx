@@ -1,8 +1,8 @@
 import { TopBar } from './header.tsx';
 import { useEffect, useId, useRef, useState } from 'react';
-import type { DragEvent, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
+import type { CSSProperties, DragEvent, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type {
-  NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, RenameBody, State, StatePane, StateWorkspace, Status,
+  MoveBody, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
 import { api, haptic, Link, navigate, opensWith, reducedMotion, useDesktop } from './app.tsx';
 import { dropMuxOrders, moveWorkspace, muxOrders, orderWorkspaces, readOrder, spliceIndex, writeOrder, type WorkspaceOrder } from './order.ts';
@@ -13,7 +13,7 @@ import {
   rollup, setAgentGroup, setAgentSort, setPaneList, setShowShells, setSpaceAgentsOnly, setSpaceSort, sortSpaces, tildePath,
   usePref, type AgentGroup, type AgentSort, type PaneList, type SpaceSort,
 } from './spaces.ts';
-import { ConfirmCloseSheet, MenuSheet, NewTabSheet, NewWorkspaceSheet, PluginActionsSheet, RemoveWorktreeSheet, RenameSheet, usePluginActions, why } from './sheets.tsx';
+import { atPointer, ConfirmCloseSheet, menuKey, MenuSheet, NewTabSheet, NewWorkspaceSheet, PluginActionsSheet, RemoveWorktreeSheet, RenameSheet, usePluginActions, why, type MenuAnchor } from './sheets.tsx';
 import { actionsFor } from './plugins.ts';
 import { isUnseen } from '../shared/seen.ts';
 import { yesNoKeys } from '../shared/blocked.ts';
@@ -21,6 +21,8 @@ import { fetchExplain, ON_WARN, promptLine, sendBlocked, type ExplainResponse } 
 import { store } from './store.tsx';
 import { filesHash } from './folders-logic.ts';
 import { PROVIDER_LABELS } from './usage.tsx';
+import { paneKind, running, statusWord as paneStatusWord } from './pane-label.ts';
+import { carry, fromControl, paneDrop, paneSource, paneTarget, WORKSPACE_TYPE, type DropOver, type PaneDrop } from './pane-drag.ts';
 
 // ---- status ----
 
@@ -124,7 +126,7 @@ export function placeOf(pane: StatePane, state: State | null): string | undefine
 export function matchPane(pane: StatePane, needle: string, state?: State | null): boolean {
   if (!needle) return true;
   const workspace = state?.workspaces.find((w) => w.muxKey === pane.muxKey && w.id === pane.workspaceId);
-  return `${pane.agentName ?? ''} ${pane.agent ?? 'shell'} ${pane.title} ${workspace?.label ?? ''}`.toLowerCase().includes(needle);
+  return `${pane.agentName ?? ''} ${paneKind(pane)} ${pane.title} ${workspace?.label ?? ''}`.toLowerCase().includes(needle);
 }
 
 /** A group's Status counts, most urgent first, as `[Status, n]`. `limit` keeps the top ones. */
@@ -174,7 +176,8 @@ const REVEAL = 144;
 
 /** What a row can do when its Mux writes. Passed in by Home, which owns the sheets. */
 export interface RowActions {
-  onMenu: (pane: StatePane) => void;
+  /** `at`: a right-click's point, so the desktop menu opens there */
+  onMenu: (pane: StatePane, at?: MenuAnchor) => void;
   onRename: (pane: StatePane) => void;
   onClose: (pane: StatePane) => void;
 }
@@ -186,7 +189,7 @@ export interface RowActions {
  * scrolls the page's. A tap on an open row closes it instead of navigating. Long-press
  * opens the same actions as a menu, which is also the desktop path.
  */
-export function Row({ pane, first, actions, context, compact, current }: {
+export function Row({ pane, first, actions, context, compact, current, paneDrag }: {
   pane: StatePane;
   first?: boolean;
   actions?: RowActions;
@@ -195,9 +198,14 @@ export function Row({ pane, first, actions, context, compact, current }: {
   compact?: boolean;
   /** The Pane on screen behind the Switch drawer. */
   current?: boolean;
+  /** Desktop only: the row drags its Pane to a Space, a Tab or a split cell. */
+  paneDrag?: HTMLAttributes<HTMLElement>;
 }) {
   const fresh = unseen(pane);
-  const word = pane.status[0]!.toUpperCase() + pane.status.slice(1); // UX §7: the dot never carries Status alone
+  // UX §7: the dot never carries Status alone. A shell has none from herdr: it reads Running
+  // while a program runs and shows no word at its prompt.
+  const status = pane.agent ? pane.status : running(pane) ? 'running' : undefined;
+  const word = status && status[0]!.toUpperCase() + status.slice(1);
   const when = timeAgo(pane.statusChangedAt);
   const press = useLongPress(() => actions?.onMenu(pane));
   const [x, setX] = useState(0);
@@ -207,7 +215,7 @@ export function Row({ pane, first, actions, context, compact, current }: {
   const body = (
     <Link
       to={`#/pane/${encodeURIComponent(pane.key)}`}
-      aria-label={[pane.agentName, pane.agent ?? 'shell', pane.title, pane.status, fresh ? 'unseen' : 'seen', when]
+      aria-label={[pane.agentName, paneKind(pane), pane.title, word, fresh ? 'unseen' : 'seen', when]
         .filter(Boolean)
         .join(', ')}
       onClick={(e) => {
@@ -218,10 +226,13 @@ export function Row({ pane, first, actions, context, compact, current }: {
         }
       }}
       aria-current={current ? 'page' : undefined}
+      onContextMenu={atPointer(actions && ((at) => actions.onMenu(pane, at)))}
+      onKeyDown={menuKey(actions && ((at) => actions.onMenu(pane, at)))}
       className={`press flex items-center [-webkit-touch-callout:none] ${RING} ${INSET} ${compact ? 'min-h-11 gap-2.5 py-1.5' : 'min-h-14 gap-3 py-2.5'} ${
         current ? 'bg-muted/20' : compact ? 'hover:bg-bg active:bg-bg' : 'hover:bg-surface active:bg-surface'
       }`}
       {...(actions ? press : {})}
+      {...paneDrag}
     >
       <Dot status={pane.status} seen={!fresh} />
       {compact ? (
@@ -239,7 +250,7 @@ export function Row({ pane, first, actions, context, compact, current }: {
         <span aria-hidden className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-baseline gap-2">
             {pane.agentName && <span className="max-w-[45%] shrink-0 truncate text-body font-medium text-fg">{pane.agentName}</span>}
-            <span className="shrink-0 text-body text-muted">{pane.agent ?? 'shell'}</span>
+            <span className="shrink-0 text-body text-muted">{paneKind(pane)}</span>
             <span className={`truncate text-body ${fresh ? 'font-medium text-fg' : 'text-muted'}`}>{pane.title}</span>
           </span>
           <span className={`truncate text-caption text-muted ${pane.lastLine ? '' : 'font-mono'}`}>
@@ -323,7 +334,7 @@ export function Row({ pane, first, actions, context, compact, current }: {
  * only here, so only blocked Panes cost a fetch. `compact` is the desktop sidebar: the title
  * over the Agent and where it waits, with Yes only; No stays in the Pane, and the row opens it.
  */
-function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: string; compact?: boolean }) {
+function NeedsYouCard({ pane, where, compact, paneDrag }: { pane: StatePane; where?: string; compact?: boolean; paneDrag?: HTMLAttributes<HTMLElement> }) {
   const [explain, setExplain] = useState<ExplainResponse | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [sending, setSending] = useState(false);
@@ -405,7 +416,7 @@ function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: strin
     return (
       <li className="px-2 py-0.5">
         <div className={`flex min-h-11 items-center gap-2 pr-1 ${frame}`}>
-          <Link to={to} aria-label={label} title={command} className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch py-1 pl-2">
+          <Link to={to} aria-label={label} title={command} className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch py-1 pl-2" {...paneDrag}>
             <Dot status="blocked" />
             <span aria-hidden className="flex min-w-0 flex-col">
               <span className="truncate text-[13px] font-medium text-fg">
@@ -505,7 +516,8 @@ function NeedsYouCard({ pane, where, compact }: { pane: StatePane; where?: strin
   );
 }
 
-/** 500 ms, cancelled by 10 px of movement, so a scroll never opens the menu. */
+/** 500 ms, cancelled by 10 px of movement, so a scroll never opens the menu. The main button
+ *  only: a right-button press is the context menu's (`atPointer`). */
 function useLongPress(fn: () => void) {
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const from = useRef({ x: 0, y: 0 });
@@ -513,6 +525,7 @@ function useLongPress(fn: () => void) {
   useEffect(() => stop, []);
   return {
     onPointerDown: (e: ReactPointerEvent) => {
+      if (e.button !== 0) return;
       from.current = { x: e.clientX, y: e.clientY };
       timer.current = setTimeout(fn, 500);
     },
@@ -527,6 +540,27 @@ function useLongPress(fn: () => void) {
 /** Where a dragged Workspace would land relative to the row under it. */
 type DropMark = 'above' | 'below' | undefined;
 const dropShadow = (d: DropMark) => (d === 'above' ? 'shadow-[inset_0_2px_0_var(--accent)]' : d === 'below' ? 'shadow-[inset_0_-2px_0_var(--accent)]' : '');
+
+/** A Pane drop target under the pointer: an accent wash inside an accent edge. It replaces the
+ *  target's own selected or drop-line shadow while it shows. */
+export const DROP_ON = 'bg-accent/10! shadow-[inset_0_0_0_2px_var(--accent)]';
+/** What a Pane drop there does — Swap, Move here, New Tab — on the target, never in its flow, so
+ *  nothing under the pointer moves. The caller places it (`absolute` in a `relative` parent, or `fixed`). */
+export function DropHint({ label, className, big, style }: { label: string; className: string; big?: boolean; style?: CSSProperties }) {
+  return (
+    <span
+      aria-hidden
+      style={style}
+      className={`pointer-events-none z-20 rounded-full bg-accent font-semibold whitespace-nowrap text-bg shadow-[0_1px_3px_rgb(0_0_0/0.25)] ${
+        big ? 'px-3 py-1 text-[13px] leading-5' : 'px-2 py-0.5 text-[11px] leading-4'
+      } ${className}`}
+    >
+      {label}
+    </span>
+  );
+}
+/** The hint's place on a list row: over the counts and ⋯ at its end. */
+const ROW_HINT = 'absolute top-1/2 right-2 -translate-y-1/2';
 
 /**
  * A list group header, one row: chevron, the label (the first thing to truncate), the Host as
@@ -544,8 +578,10 @@ export function GroupHeader({
   compact,
   onToggle,
   onMenu,
+  menuOpen,
   drag,
   drop,
+  dropLabel,
 }: {
   label: string;
   host?: string;
@@ -556,22 +592,29 @@ export function GroupHeader({
   /** The 300 px sidebar: one pill, the most urgent, so the label keeps its room. */
   compact?: boolean;
   onToggle: () => void;
-  onMenu?: () => void;
-  /** Desktop only: the drag handlers that reorder this Workspace, and where a drop would land. */
+  /** No point: under ⋯ or the header (a press, a long press); a point: a right-click. */
+  onMenu?: (at?: MenuAnchor) => void;
+  /** its menu is open, so ⋯ shows pressed and a second press closes it */
+  menuOpen?: boolean;
+  /** Desktop only: the drag handlers that reorder this Workspace and take a Pane, and where a reorder would land. */
   drag?: HTMLAttributes<HTMLElement>;
   drop?: DropMark;
+  /** A Pane is held over the header: what dropping it does. */
+  dropLabel?: string;
 }) {
   const press = useLongPress(() => onMenu?.());
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <h2
       {...drag}
-      className={`group/header flex items-center ${dropShadow(drop)} ${compact ? 'mt-2 hover:bg-bg' : 'mt-4 hover:bg-surface'} ${onMenu ? (compact ? 'pr-1.5' : 'pr-2') : 'pr-[var(--row-inset,1rem)]'}`}
+      onContextMenu={atPointer(onMenu)}
+      className={`group/header relative flex items-center ${dropLabel ? DROP_ON : dropShadow(drop)} ${compact ? 'mt-2 hover:bg-bg' : 'mt-4 hover:bg-surface'} ${onMenu ? (compact ? 'pr-1.5' : 'pr-2') : 'pr-[var(--row-inset,1rem)]'}`}
     >
       <button
         type="button"
         aria-expanded={open}
         onClick={onToggle}
+        onKeyDown={menuKey(onMenu)}
         {...(onMenu ? press : {})}
         className={`flex min-w-0 flex-1 items-center gap-2 self-stretch pl-[var(--row-inset,1rem)] text-left [-webkit-touch-callout:none] ${RING} ${
           compact ? 'min-h-9 py-1.5 pointer-coarse:min-h-11' : 'min-h-11 py-2'
@@ -594,7 +637,8 @@ export function GroupHeader({
             </span>
           )}
         </span>
-        <span className="flex shrink-0 items-center gap-1">
+        {/* A drop hint takes their place; `invisible` keeps their room, so nothing moves. */}
+        <span className={`flex shrink-0 items-center gap-1 ${dropLabel ? 'invisible' : ''}`}>
           {tally(panes, compact ? 1 : 2).map(([s, n]) => (
             <StatusPill key={s} status={s} n={n} />
           ))}
@@ -603,15 +647,19 @@ export function GroupHeader({
       {onMenu && (
         <button
           type="button"
+          data-nodrag
           aria-label={`${label} actions`}
-          onClick={onMenu}
-          className={`press ml-0.5 flex shrink-0 items-center justify-center rounded-chip text-muted transition-opacity hover:bg-fg/6 hover:text-fg [@media(hover:hover)]:opacity-60 group-hover/header:opacity-100 focus-visible:opacity-100 ${RING} ${
+          aria-haspopup="menu"
+          aria-expanded={!!menuOpen}
+          onClick={() => onMenu()}
+          className={`press ml-0.5 flex shrink-0 items-center justify-center rounded-chip text-muted transition-opacity hover:bg-fg/6 hover:text-fg [@media(hover:hover)]:opacity-60 group-hover/header:opacity-100 focus-visible:opacity-100 ${menuOpen ? 'bg-fg/6 text-fg opacity-100!' : ''} ${dropLabel ? 'invisible' : ''} ${RING} ${
             compact ? 'size-8' : 'size-10'
           }`}
         >
           <More size={18} />
         </button>
       )}
+      {dropLabel && <DropHint label={dropLabel} className={ROW_HINT} />}
     </h2>
   );
 }
@@ -668,8 +716,10 @@ function SpaceRow({
   compact,
   onSelect,
   onMenu,
+  menuOpen,
   drag,
   drop,
+  dropLabel,
 }: {
   label: string;
   host?: string;
@@ -680,9 +730,12 @@ function SpaceRow({
   offline?: boolean;
   compact?: boolean;
   onSelect: () => void;
-  onMenu?: () => void;
+  onMenu?: (at?: MenuAnchor) => void;
+  menuOpen?: boolean;
   drag?: HTMLAttributes<HTMLElement>;
   drop?: DropMark;
+  /** A Pane is held over the row: what dropping it does. */
+  dropLabel?: string;
 }) {
   const press = useLongPress(() => onMenu?.());
   const top = rollup(panes, unseen);
@@ -693,8 +746,11 @@ function SpaceRow({
   return (
     <li
       {...drag}
-      className={`group/space flex items-center ${dropShadow(drop)} ${onMenu ? 'pr-1.5' : 'pr-[var(--row-inset,1rem)]'} ${
-        selected ? `${compact ? 'bg-bg' : 'bg-surface'} shadow-[inset_2px_0_0_var(--accent)]` : compact ? 'hover:bg-bg' : 'hover:bg-surface'
+      onContextMenu={atPointer(onMenu)}
+      className={`group/space relative flex items-center ${onMenu ? 'pr-1.5' : 'pr-[var(--row-inset,1rem)]'} ${
+        dropLabel ? DROP_ON
+        : selected ? `${compact ? 'bg-bg' : 'bg-surface'} ${drop ? dropShadow(drop) : 'shadow-[inset_2px_0_0_var(--accent)]'}`
+        : `${dropShadow(drop)} ${compact ? 'hover:bg-bg' : 'hover:bg-surface'}`
       }`}
     >
       <button
@@ -703,6 +759,7 @@ function SpaceRow({
         aria-label={[label, host, state, offline ? 'offline' : `${agents} Agent${agents === 1 ? '' : 's'}`].filter(Boolean).join(', ')}
         title={path}
         onClick={onSelect}
+        onKeyDown={menuKey(onMenu)}
         {...(onMenu ? press : {})}
         className={`flex min-w-0 flex-1 items-center gap-2.5 self-stretch pl-[var(--row-inset,1rem)] text-left [-webkit-touch-callout:none] ${RING} ${
           compact ? 'min-h-11 py-1.5' : 'min-h-11 py-2'
@@ -722,22 +779,26 @@ function SpaceRow({
             </span>
           )}
         </span>
-        <span aria-hidden className={`shrink-0 text-[12px] tabular-nums ${offline ? 'text-danger' : agents ? 'text-muted' : 'text-muted/70'}`}>
+        <span aria-hidden className={`shrink-0 text-[12px] tabular-nums ${offline ? 'text-danger' : agents ? 'text-muted' : 'text-muted/70'} ${dropLabel ? 'invisible' : ''}`}>
           {count}
         </span>
       </button>
       {onMenu && (
         <button
           type="button"
+          data-nodrag
           aria-label={`${label} actions`}
-          onClick={onMenu}
-          className={`press ml-0.5 flex shrink-0 items-center justify-center rounded-chip text-muted transition-opacity hover:bg-fg/6 hover:text-fg [@media(hover:hover)]:opacity-60 group-hover/space:opacity-100 focus-visible:opacity-100 ${RING} ${
+          aria-haspopup="menu"
+          aria-expanded={!!menuOpen}
+          onClick={() => onMenu()}
+          className={`press ml-0.5 flex shrink-0 items-center justify-center rounded-chip text-muted transition-opacity hover:bg-fg/6 hover:text-fg [@media(hover:hover)]:opacity-60 group-hover/space:opacity-100 focus-visible:opacity-100 ${menuOpen ? 'bg-fg/6 text-fg opacity-100!' : ''} ${dropLabel ? 'invisible' : ''} ${RING} ${
             compact ? 'size-8' : 'size-10'
           }`}
         >
           <More size={18} />
         </button>
       )}
+      {dropLabel && <DropHint label={dropLabel} className={ROW_HINT} />}
     </li>
   );
 }
@@ -946,7 +1007,7 @@ function whereOf(p: StatePane, state: State | null): string | undefined {
  * Switch drawer when the herdr list is chosen, so both follow the same view options. The
  * Switch drawer passes no actions: a tap there only picks.
  */
-export function SpacesAgents({ state, ordered, host, q, space, onSpace, compact, current, actions, onMenu, drag, drop, pad = 'pb-4' }: {
+export function SpacesAgents({ state, ordered, host, q, space, onSpace, compact, current, actions, onMenu, menuOpen, drag, drop, dropLabel, paneDrag, pad = 'pb-4' }: {
   state: State;
   /** The Workspaces in the list's order. */
   ordered: StateWorkspace[];
@@ -959,9 +1020,16 @@ export function SpacesAgents({ state, ordered, host, q, space, onSpace, compact,
   /** The Pane on screen behind the Switch drawer. */
   current?: string;
   actions?: (p: StatePane) => RowActions | undefined;
-  onMenu?: (w: StateWorkspace) => void;
-  drag?: (w: StateWorkspace) => HTMLAttributes<HTMLElement> | undefined;
+  onMenu?: (w: StateWorkspace, at?: MenuAnchor) => void;
+  /** the Workspace whose menu is open */
+  menuOpen?: string;
+  /** A Space row's drag handlers: a Pane drop always, a reorder only when `reorder` (the Manual sort). */
+  drag?: (w: StateWorkspace, reorder: boolean) => HTMLAttributes<HTMLElement> | undefined;
   drop?: (w: StateWorkspace) => DropMark;
+  /** A Pane is held over this Space: what dropping it does. */
+  dropLabel?: (w: StateWorkspace) => string | undefined;
+  /** An Agent row's drag handlers, to drop its Pane on a Space, a Tab or a split cell. */
+  paneDrag?: (p: StatePane) => HTMLAttributes<HTMLElement> | undefined;
   /** The Agents list's end padding: the phone pads it past the floating tab bar. */
   pad?: string;
 }) {
@@ -1000,7 +1068,7 @@ export function SpacesAgents({ state, ordered, host, q, space, onSpace, compact,
   const agentItems = (rows: StatePane[], where: boolean) =>
     rows.map((p, i) =>
       p.status === 'blocked' ? (
-        <NeedsYouCard key={p.key} pane={p} where={whereOf(p, state)} compact={compact} />
+        <NeedsYouCard key={p.key} pane={p} where={whereOf(p, state)} compact={compact} paneDrag={paneDrag?.(p)} />
       ) : (
         <Row
           key={p.key}
@@ -1010,6 +1078,7 @@ export function SpacesAgents({ state, ordered, host, q, space, onSpace, compact,
           context={where ? placeOf(p, state) : undefined}
           compact={compact}
           current={p.key === current}
+          paneDrag={paneDrag?.(p)}
         />
       ),
     );
@@ -1041,10 +1110,13 @@ export function SpacesAgents({ state, ordered, host, q, space, onSpace, compact,
                 selected={picked?.key === w.key}
                 compact={compact}
                 onSelect={() => onSpace(picked?.key === w.key ? null : w.key)}
-                onMenu={onMenu && (() => onMenu(w))}
-                // A sorted list has no drag order to change: Manual brings the handles back.
-                drag={spaceSort === 'manual' ? drag?.(w) : undefined}
+                onMenu={onMenu && ((at) => onMenu(w, at))}
+                menuOpen={menuOpen === w.key}
+                // A sorted list has no drag order to change: Manual brings the reorder back. A
+                // Pane drops on a Space whatever the sort.
+                drag={drag?.(w, spaceSort === 'manual')}
                 drop={spaceSort === 'manual' ? drop?.(w) : undefined}
+                dropLabel={dropLabel?.(w)}
               />
             );
           })}
@@ -1122,6 +1194,17 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const [close, setClose] = useState<StateWorkspace | null>(null);
   const [removeWorktree, setRemoveWorktree] = useState<StateWorkspace | null>(null);
   const [paneMenu, setPaneMenu] = useState<StatePane | null>(null);
+  /** Where the open menu (Workspace or Pane) was asked for: a right-click's point, else none. */
+  const [menuAt, setMenuAt] = useState<MenuAnchor | null>(null);
+  /** A ⋯ pressed again while its own menu is open closes it. */
+  const openMenu = (w: StateWorkspace, at?: MenuAnchor) => {
+    setMenuAt(at ?? null);
+    setMenu(menu?.key === w.key && !at ? null : w);
+  };
+  const openPaneMenu = (p: StatePane, at?: MenuAnchor) => {
+    setMenuAt(at ?? null);
+    setPaneMenu(p);
+  };
   const [paneRename, setPaneRename] = useState<StatePane | null>(null);
   const [paneClose, setPaneClose] = useState<StatePane | null>(null);
   /** The Workspace whose plugin actions sheet is open (Wave 21), with the list as the menu had
@@ -1136,6 +1219,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const desktop = useDesktop();
   const [order, setOrder] = useState<WorkspaceOrder>(readOrder);
   const [drag, setDrag] = useState<{ key: string; over: string | null } | null>(null);
+  /** A Pane held over a Space row or Workspace header (desktop): its key and the drop's label. */
+  const [paneOver, setPaneOver] = useState<DropOver>(null);
   const [moveFailed, setMoveFailed] = useState('');
   const sections = useRef(new Map<string, HTMLElement>());
   const scrolled = useRef(false);
@@ -1165,6 +1250,11 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const ordered = orderWorkspaces(state?.workspaces ?? [], local);
   const slot = (w: StateWorkspace) => ordered.filter((x) => x.muxKey === w.muxKey);
   const place = (w: StateWorkspace) => slot(w).findIndex((x) => x.id === w.id);
+  /** A failed move — a reorder or a Pane drop — says why under the search for 4 s. */
+  const failed = (e: unknown) => {
+    setMoveFailed(why((e instanceof Error && e.message) || 'network'));
+    setTimeout(() => setMoveFailed(''), 4000);
+  };
   /** Move `w` to slot `at` of its Mux's list. herdr: the Hub writes and refreshes before it
    *  replies, so the list changes with the next `state` event, never here first. */
   const reorder = (w: StateWorkspace, at: number) => {
@@ -1176,21 +1266,19 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
       writeOrder(next);
       return;
     }
-    api<void>(`/api/workspaces/${encodeURIComponent(w.key)}/move`, { index: spliceIndex(from, at) }).catch((e: unknown) => {
-      setMoveFailed(why((e instanceof Error && e.message) || 'network'));
-      setTimeout(() => setMoveFailed(''), 4000);
-    });
+    api<void>(`/api/workspaces/${encodeURIComponent(w.key)}/move`, { index: spliceIndex(from, at) }).catch(failed);
   };
-  // ponytail: native drag and drop on the row, desktop only; a button inside a draggable row
-  // does not start a drag in every browser. Pointer-driven drag if that ever bites.
+  // ponytail: native drag and drop on the row, desktop only. Firefox fires no dragstart on a
+  // <button> (bug 568313), so there a row drags only from its edges; Chromium and WebKit drag
+  // from anywhere but ⋯. Pointer-driven drag if that ever bites.
   const dragging = ordered.find((w) => w.key === drag?.key);
   const dragProps = (w: StateWorkspace): HTMLAttributes<HTMLElement> | undefined =>
     desktop && !needle
       ? {
           draggable: true,
           onDragStart: (e: DragEvent) => {
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', w.key);
+            if (fromControl(e)) return;
+            carry(e, WORKSPACE_TYPE, w.key);
             setDrag({ key: w.key, over: null });
           },
           onDragOver: (e: DragEvent) => {
@@ -1208,6 +1296,31 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
       : undefined;
   const dropAt = (w: StateWorkspace): DropMark =>
     dragging && drag?.over === w.key ? (slot(w).indexOf(dragging) > slot(w).indexOf(w) ? 'above' : 'below') : undefined;
+
+  // A Pane row drags to a Space row or Workspace header (desktop): into that Workspace's first
+  // Tab, split right, on the same Mux. The Pane on screen moved follows to its new key, as the
+  // Pane's Move to… does; a failure says why under the search, like a reorder's.
+  const paneDrag = (p: StatePane) => (desktop ? paneSource(p) : undefined);
+  const firstTab = (w: StateWorkspace) => state?.tabs.find((t) => t.muxKey === w.muxKey && t.workspaceId === w.id);
+  const movePane = (src: StatePane, d: PaneDrop) => {
+    if (d.verb !== 'Move') return;
+    haptic();
+    api<{ paneKey: string }>(`/api/panes/${encodeURIComponent(src.key)}/move`, d.to satisfies MoveBody).then(({ paneKey }) => {
+      if (decodeURIComponent(location.hash) === `#/pane/${src.key}`) navigate(`#/pane/${encodeURIComponent(paneKey)}`, { replace: true, transition: false });
+    }, failed);
+  };
+  /** A Space row or Workspace header: it takes a Pane, and reorders unless a sort holds the list. */
+  const spaceDrag = (w: StateWorkspace, manual = true) =>
+    desktop
+      ? paneTarget({
+          id: w.key,
+          decide: (src) => paneDrop(src, { kind: 'space', space: w, tab: firstTab(w) }, state?.panes ?? []),
+          setOver: setPaneOver,
+          onDrop: movePane,
+          rest: manual ? dragProps(w) : undefined,
+        })
+      : undefined;
+  const spaceDropLabel = (w: StateWorkspace) => (paneOver?.id === w.key ? paneOver.label : undefined);
 
   const hostOf = (muxKey: string) => state?.muxes.find((m) => m.key === muxKey)?.hostId;
   const hostLabel = (muxKey: string) => state?.hosts.find((h) => h.id === hostOf(muxKey))?.label;
@@ -1281,7 +1394,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
   const actionsPane = actionsWs && state?.panes.find((p) => p.muxKey === actionsWs.muxKey && p.workspaceId === actionsWs.id);
   const wsActions = actionsFor(usePluginActions(writable(actionsWs?.muxKey) ? actionsPane?.key : undefined, menu !== null), 'workspace');
   const rowActions = (p: StatePane): RowActions | undefined =>
-    writable(p.muxKey) ? { onMenu: setPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
+    writable(p.muxKey) ? { onMenu: openPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
   const listed = state && (needsYou.length > 0 || running.length > 0 || groups.length > 0);
   // The top: title and search. In the sidebar it stays put while only the list under it
@@ -1407,7 +1520,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                 <ul>
                   {needsYou.map((p, i) =>
                     p.status === 'blocked' ? (
-                      <NeedsYouCard key={p.key} pane={p} where={whereOf(p, state)} compact={compact} />
+                      <NeedsYouCard key={p.key} pane={p} where={whereOf(p, state)} compact={compact} paneDrag={paneDrag(p)} />
                     ) : (
                       <Row
                         key={p.key}
@@ -1416,6 +1529,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                         actions={rowActions(p)}
                         context={placeOf(p, state)}
                         compact={compact}
+                        paneDrag={paneDrag(p)}
                       />
                     ),
                   )}
@@ -1430,7 +1544,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
               {openSection(RUNNING) && (
                 <ul>
                   {running.map((p, i) => (
-                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={placeOf(p, state)} compact={compact} />
+                    <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} context={placeOf(p, state)} compact={compact} paneDrag={paneDrag(p)} />
                   ))}
                 </ul>
               )}
@@ -1454,14 +1568,16 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
                       compact={compact}
                       open={!shut}
                       onToggle={() => toggle(w.key)}
-                      onMenu={() => setMenu(w)}
-                      drag={dragProps(w)}
+                      onMenu={(at) => openMenu(w, at)}
+                      menuOpen={menu?.key === w.key}
+                      drag={spaceDrag(w)}
                       drop={dropAt(w)}
+                      dropLabel={spaceDropLabel(w)}
                     />
                     {!shut && (
                       <ul>
                         {panes.map((p, i) => (
-                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} compact={compact} />
+                          <Row key={p.key} pane={p} first={i === 0} actions={rowActions(p)} compact={compact} paneDrag={paneDrag(p)} />
                         ))}
                         {h?.online === false && (
                           <li>
@@ -1504,9 +1620,12 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
       onSpace={setSpace}
       compact={compact}
       actions={rowActions}
-      onMenu={setMenu}
-      drag={dragProps}
+      onMenu={openMenu}
+      menuOpen={menu?.key}
+      drag={spaceDrag}
       drop={dropAt}
+      dropLabel={spaceDropLabel}
+      paneDrag={paneDrag}
       pad={compact ? 'pb-4' : 'pb-[calc(env(safe-area-inset-bottom)+76px)]'}
     />
   );
@@ -1557,6 +1676,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
       <MenuSheet
         open={menu !== null}
         title={menu?.label ?? ''}
+        at={menuAt}
         meta={menu && [hostLabel(menu.muxKey), `${panesOf(menu).length} Pane${panesOf(menu).length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}
         onClose={() => setMenu(null)}
         items={[
@@ -1614,7 +1734,8 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
       <MenuSheet
         open={paneMenu !== null}
         title={paneMenu?.title ?? ''}
-        meta={paneMenu && [paneMenu.agent ?? 'shell', paneMenu.status, wsLabel(paneMenu)].filter(Boolean).join(' · ')}
+        at={menuAt}
+        meta={paneMenu && [paneKind(paneMenu), paneStatusWord(paneMenu), wsLabel(paneMenu)].filter(Boolean).join(' · ')}
         onClose={() => setPaneMenu(null)}
         items={[
           { label: 'Rename', onClick: () => paneMenu && setPaneRename(paneMenu) },

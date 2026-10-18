@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import type { AnchorHTMLAttributes, ReactNode } from 'react';
+import type { AnchorHTMLAttributes, ReactNode, UIEvent } from 'react';
 import type { ScreenEvent, State, StatePane } from '../shared/types.ts';
 import { NeedsCard } from './alert.tsx';
 import { Diff } from './diff.tsx';
@@ -93,6 +93,27 @@ function applyTheme(theme: Theme) {
 
 applyTheme(getTheme());
 dark.addEventListener('change', () => applyTheme(getTheme()));
+
+// Scrollbars that take space (Linux, Windows) get the thin skin in theme.css. Overlay ones
+// (macOS, phones) stay native: the skin is not an overlay and would cost them 6 px.
+// ponytail: measured once at load; switching macOS to "always show" applies on reload.
+{
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;visibility:hidden;width:50px;height:50px;overflow:scroll';
+  document.body.append(probe);
+  if (probe.offsetWidth > probe.clientWidth) document.documentElement.dataset.scrollbars = 'classic';
+  probe.remove();
+}
+
+/** `scroll-autohide` (theme.css) shows the thumb while a list inside scrolls: flag the box
+ *  until a second after the last scroll event. */
+let scrollIdle = 0;
+function flagScrolling(e: UIEvent<HTMLElement>) {
+  const box = e.currentTarget;
+  box.dataset.scrolling = '';
+  clearTimeout(scrollIdle);
+  scrollIdle = window.setTimeout(() => delete box.dataset.scrolling, 1000);
+}
 
 /** The resolved kit theme, as state, so <ThemeProvider> follows the picker and the OS. */
 export function useKitTheme(): KitTheme {
@@ -731,7 +752,11 @@ export function App() {
             sidebar && (
               // Not sticky: the frame never scrolls, and a sticky box is a stacking context that
               // held Home's sheets and Close dialog (z 10000) under the Pane column beside it.
-              <aside aria-label="All panes" className="flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface">
+              <aside
+                aria-label="All panes"
+                onScrollCapture={flagScrolling}
+                className="scroll-autohide flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface"
+              >
                 {/* Home scrolls its own list, under a top that stays put. */}
                 <div className="min-h-0 flex-1">
                   <ScreenBoundary key="sidebar" where="Pane list"><Home state={state} compact /></ScreenBoundary>

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseTranscript, pendingTools, type TranscriptImage } from '../shared/chat.ts';
+import { editSpans, parseTranscript, pendingTools, type TranscriptImage } from '../shared/chat.ts';
 import { ChatLens, resolveSession, transcriptPath, type ChatHub, type SessionHub, type TranscriptIo } from '../server/chat.ts';
 import type { State } from '../shared/types.ts';
 
@@ -42,6 +42,50 @@ describe('parseTranscript', () => {
     expect(grep!.detail).toBe('TODO\nin web');
     expect(task!.detail).toHaveLength(4_000);
     expect(task!.detail.endsWith('…')).toBe(true);
+  });
+
+  test("carries the input's description, an edit's whole spans, a Write's file, and their +N −M", () => {
+    const long = Array.from({ length: 40 }, (_, n) => `const line${n} = ${n};`).join('\n'); // ~800 chars, past the old 600 cut
+    const changed = long.replace('line20 = 20', 'line20 = 2_000');
+    const jsonl = [
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'toolu_b', name: 'Bash', input: { command: 'grep -n drag web', description: '  Finding where drag\n applies  ' } },
+        { type: 'tool_use', id: 'toolu_t', name: 'Task', input: { description: 'Map the herdr events', prompt: 'Read server/herdr.ts' } },
+        { type: 'tool_use', name: 'Edit', input: { file_path: '/a.ts', old_string: long, new_string: changed } },
+        { type: 'tool_use', name: 'MultiEdit', input: { file_path: '/b.ts', edits: [{ old_string: 'a', new_string: 'a\nb' }, { old_string: 'x\ny', new_string: '' }] } },
+        { type: 'tool_use', name: 'Write', input: { file_path: '/c.ts', content: 'one\ntwo\n' } },
+        { type: 'tool_use', name: 'Read', input: { file_path: '/d.ts' } },
+      ] } },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    const details = new Map<string, string>();
+    const [bash, task, edit, multi, write, read] = parseTranscript(jsonl, { details })[0]!.tools;
+    expect(bash!.description).toBe('Finding where drag applies');
+    expect(bash!.detail).toBe('#   Finding where drag\n applies  \ngrep -n drag web'); // detail keeps its `# …` line, as written
+    expect(task!.description).toBe('Map the herdr events');
+    expect(edit!.detail).toBe(`/a.ts\n\n- ${long.replaceAll('\n', '\n- ')}\n+ ${changed.replaceAll('\n', '\n+ ')}`);
+    expect([edit!.additions, edit!.deletions]).toEqual([1, 1]);
+    expect(multi!.detail).toBe('/b.ts\n\n- a\n+ a\n+ b\n\n- x\n- y\n+ ');
+    expect([multi!.additions, multi!.deletions]).toEqual([1, 2]);
+    expect(write!.detail).toBe('/c.ts\n\n+ one\n+ two\n+ ');
+    expect([write!.additions, write!.deletions]).toEqual([2, 0]);
+    expect(read!.additions).toBeUndefined();
+    expect(read!.description).toBeUndefined();
+    // The Chat view reads the spans back out of the detail, exactly as they went in.
+    expect(editSpans(multi!.detail)).toEqual({ path: '/b.ts', cut: false, spans: [{ oldText: 'a', newText: 'a\nb' }, { oldText: 'x\ny', newText: '' }] });
+    expect(editSpans(write!.detail)).toEqual({ path: '/c.ts', cut: false, spans: [{ newText: 'one\ntwo\n' }] });
+    expect(editSpans(details.get('toolu_b') ?? bash!.detail)).toBeUndefined();
+    expect(editSpans('/c.ts')).toBeUndefined(); // an older Hub's Write: the path alone
+  });
+
+  test("an edit's detail cut at 4 000 characters reads back as cut, the cap's mark taken off", () => {
+    const big = 'x'.repeat(5_000);
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/a.ts', old_string: 'old', new_string: big } }] } });
+    const [edit] = parseTranscript(jsonl)[0]!.tools;
+    expect([edit!.additions, edit!.deletions]).toEqual([1, 1]);
+    const read = editSpans(edit!.detail)!;
+    expect(read.cut).toBe(true);
+    expect(read.spans[0]!.oldText).toBe('old');
+    expect(read.spans[0]!.newText).toBe('x'.repeat(4_000 - '/a.ts\n\n- old\n+ '.length - 1));
   });
 
   test('merges adjacent turns uncapped; each source block caps at 16 000', () => {
