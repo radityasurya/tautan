@@ -47,7 +47,10 @@ export const LAZY = /[\\/]node_modules[\\/](?:@codemirror|@lezer|@marijn|crelt|s
 
 export default defineConfig({
   root: 'web',
-  plugins: [react(), tailwindcss(), swPrecache()],
+  // The vendored kit (650 KB) skips plugin-react's Babel pass: Fast Refresh buys nothing on a
+  // file that exports plain values (an edit reloads the page either way), and Babel prints a
+  // "deoptimised the styling" note for every file over 500 KB. esbuild still compiles its JSX.
+  plugins: [react({ exclude: /halaska-kit\.jsx$/ }), tailwindcss(), swPrecache()],
   resolve: { alias: { '@': fileURLToPath(new URL('./web', import.meta.url)) } },
   // ES2022 matches tsconfig; main.tsx's top-level await (the mock chunk gate) needs it.
   build: {
