@@ -89,7 +89,8 @@ export interface Mux {
   zoom(paneId: string, zoomed: boolean): Promise<void>;
   closeWorkspace(workspaceId: string): Promise<void>;
   // ADR 0008 layout writes; herdr ≥ 0.9 and tmux. `ratio` is the share the new or moved Pane takes.
-  split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string }): Promise<string>;
+  // `agent` starts that Agent kind in the new Pane (herdr only; tmux throws Error('unsupported')).
+  split(paneId: string, o: { direction: 'right' | 'down'; ratio?: number; cwd?: string; agent?: string }): Promise<string>;
   swap(paneId: string, targetPaneId: string): Promise<void>;
   /** resolves to the moved Pane's id — a cross-Workspace move changes it (herdr) */
   move(paneId: string, destination: { tabId: string; split: 'right' | 'down'; ratio?: number } | { newTab: true } | { newWorkspace: true; label?: string }): Promise<string>;
@@ -177,8 +178,9 @@ export interface Affordance { row: number; colStart: number; colEnd: number; lab
 export interface SeenBody { revision: number }
 // Phase 7 write routes. Keys: muxKey = `${hostId}/${muxId}`; paneKey = `${muxKey}/${paneId}`;
 // workspaceKey = `${muxKey}/${workspaceId}`. Encode a key with encodeURIComponent in a path.
-/** POST /api/muxes/:key/tabs → 201 NewTabResult */
-export interface NewTabBody { workspaceId: string; cwd?: string; label?: string; agent?: string }
+/** POST /api/muxes/:key/tabs → 201 NewTabResult. `after` is a Tab id of the Workspace: the new
+ *  Tab goes right after it (Duplicate Tab), else last. */
+export interface NewTabBody { workspaceId: string; cwd?: string; label?: string; agent?: string; after?: string }
 export interface NewTabResult { paneKey: string }
 /** POST /api/muxes/:key/workspaces → 201 NewWorkspaceResult; branch set → git worktree */
 export interface NewWorkspaceBody { cwd?: string; label?: string; branch?: string }
@@ -190,8 +192,8 @@ export type RenameBody = { muxKey: string; label: string } & ({ workspaceId: str
 export interface ZoomBody { zoomed: boolean }
 // ADR 0008 layout edits. `ratio` is the share the new or moved Pane takes (0–1 exclusive);
 // `amount` is whole cells, 1–500, and names the direction the Pane grows.
-/** POST /api/panes/:key/split → 201 {paneKey} of the new Pane */
-export interface SplitBody { direction: 'right' | 'down'; ratio?: number; cwd?: string }
+/** POST /api/panes/:key/split → 201 {paneKey} of the new Pane; `agent` starts that Agent kind in it (Duplicate Pane) */
+export interface SplitBody { direction: 'right' | 'down'; ratio?: number; cwd?: string; agent?: string }
 /** POST /api/panes/:key/swap → 204; both keys on one Mux */
 export interface SwapBody { target: string }
 /** POST /api/panes/:key/move → 201 {paneKey} of the moved Pane's current key; exactly one of tab | newTab | newWorkspace */

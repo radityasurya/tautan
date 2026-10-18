@@ -14,9 +14,11 @@ import { Chat, readLens, writeLens, type LensMode } from './chat.tsx';
 import { Composer, FADE, subscribeTyping, typingSnapshot } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
-import { commonAgent, Dot, markSeen, unseen } from './home.tsx';
-import { ChevronDown, Down, Plus, ZoomIn, ZoomOut } from './icons.tsx';
-import { ConfirmCloseSheet, menuOpener, MenuSheet, NewTabSheet, PluginActionsSheet, RenameSheet, why } from './sheets.tsx';
+import { commonAgent, Dot, DROP_ON, DropHint, markSeen, unseen } from './home.tsx';
+import { ChevronDown, Down, More, Plus, ZoomIn, ZoomOut } from './icons.tsx';
+import { atPointer, boxAnchor, ConfirmCloseSheet, menuKey, menuOpener, MenuSheet, NewTabSheet, PluginActionsSheet, pointAnchor, RenameSheet, why, type MenuAnchor } from './sheets.tsx';
+import { duplicateLabel, paneMenuItems, tabMenuItems } from './menus.ts';
+import { copyText } from './markdown.tsx';
 import { MoveSheet, RESIZE_STEP, ResizeSheet, SwapSheet } from './layout.tsx';
 import { IconButton, Skeleton } from './halaska-kit';
 import { ThemePicker } from './settings.tsx';
@@ -26,6 +28,8 @@ import { store } from './store.tsx';
 import { spliceIndex } from './order.ts';
 import { filesHash } from './folders-logic.ts';
 import { HistorySheet } from './history.tsx';
+import { paneKind } from './pane-label.ts';
+import { carry, fromControl, paneDrop, paneSource, paneTarget, TAB_TYPE, type DropOver, type PaneDrop, type PaneTarget } from './pane-drag.ts';
 
 // ---- themed terminal colours ----
 // A 256-colour or truecolour span carries the palette the agent picked, which is nobody's
@@ -329,7 +333,8 @@ const rollUp = (panes: StatePane[]): Status => ROLL.find((s) => panes.some((p) =
 /** The Pane a Tab reopens to, so switching back lands where you left. */
 const lastPane = new Map<string, string>();
 
-/** The same 500 ms hold and 10 px movement threshold as Home's row menus. */
+/** The same 500 ms hold and 10 px movement threshold as Home's row menus. Only the main
+ *  button holds: a right-button press is the context menu's (`atPointer`). */
 function useLongPress(fn: () => void) {
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const from = useRef({ x: 0, y: 0 });
@@ -339,6 +344,7 @@ function useLongPress(fn: () => void) {
   return {
     press: {
       onPointerDown: (e: ReactPointerEvent) => {
+        if (e.button !== 0) return;
         fired.current = false;
         from.current = { x: e.clientX, y: e.clientY };
         timer.current = setTimeout(() => {
@@ -374,7 +380,8 @@ function TabStripButton({
   paneCount: number;
   selected: boolean;
   onOpen: () => void;
-  onMenu?: () => void;
+  /** At a point it is the popover (a mouse, a key), without one the sheet (a long press). */
+  onMenu?: (at?: MenuAnchor) => void;
 }) {
   const hold = useLongPress(() => onMenu?.());
   return (
@@ -386,7 +393,8 @@ function TabStripButton({
         if (hold.consume()) return e.preventDefault();
         onOpen();
       }}
-      onContextMenu={onMenu ? (e) => e.preventDefault() : undefined}
+      onContextMenu={atPointer(onMenu)}
+      onKeyDown={menuKey(onMenu)}
       title={label}
       className={`press flex h-10 max-w-[140px] shrink-0 items-center gap-1.5 px-2.5 text-[13px] whitespace-nowrap ${
         onMenu ? '[-webkit-touch-callout:none]' : ''
@@ -402,8 +410,9 @@ function TabStripButton({
 
 /**
  * The desktop browser Tab (variant A): the open Tab takes the Pane's background and a 2 px
- * accent top edge; close shows on hover and always on the open Tab. Right-click is the menu.
- * A dragged Tab drops where the accent bar shows, on the edge of the Tab it would pass.
+ * accent top edge; close shows on hover and always on the open Tab. Right-click, Shift+F10
+ * and the open Tab's ⋯ (on hover) open its menu. A dragged Tab drops where the accent bar
+ * shows, on the edge of the Tab it would pass.
  */
 function DesktopTab({
   label,
@@ -414,8 +423,10 @@ function DesktopTab({
   onOpen,
   onClose,
   onMenu,
+  menuOpen,
   drag,
   drop,
+  dropLabel,
 }: {
   label: string;
   status: Status;
@@ -425,18 +436,33 @@ function DesktopTab({
   selected: boolean;
   onOpen: () => void;
   onClose?: () => void;
-  onMenu?: () => void;
-  /** the drag handlers that reorder this Tab, and the edge a drop would land on */
+  onMenu?: (at?: MenuAnchor) => void;
+  /** this Tab's menu is open: its ⋯ stays shown and a second press closes it */
+  menuOpen?: boolean;
+  /** the drag handlers that reorder this Tab and take a Pane, and the edge a reorder would land on */
   drag?: HTMLAttributes<HTMLElement>;
   drop?: 'before' | 'after';
+  /** A Pane is held over this Tab: what dropping it does. */
+  dropLabel?: string;
 }) {
+  const root = useRef<HTMLDivElement>(null);
+  // ponytail: measured when the hover starts; a strip that scrolls under a held Pane leaves the
+  // hint where it was until the pointer moves to another Tab.
+  const [under, setUnder] = useState<{ x: number; y: number } | null>(null);
+  useLayoutEffect(() => {
+    const r = dropLabel ? root.current?.getBoundingClientRect() : undefined;
+    setUnder(r ? { x: r.left + r.width / 2, y: r.bottom + 6 } : null);
+  }, [dropLabel]);
   return (
     <div
+      ref={root}
       {...drag}
       role="presentation"
-      onContextMenu={onMenu ? (e) => { e.preventDefault(); onMenu(); } : undefined}
+      onContextMenu={atPointer(onMenu)}
+      onKeyDown={menuKey(onMenu)}
       className={`group relative flex h-[38px] max-w-[200px] shrink-0 items-center rounded-t-[10px] ${
-        selected ? 'bg-bg text-fg shadow-[0_1px_0_var(--bg),inset_0_2px_0_var(--accent)]' : 'text-muted hover:bg-bg/50'
+        dropLabel ? `${DROP_ON} ${selected ? 'text-fg' : 'text-muted'}`
+        : selected ? 'bg-bg text-fg shadow-[0_1px_0_var(--bg),inset_0_2px_0_var(--accent)]' : 'text-muted hover:bg-bg/50'
       }`}
     >
       <button
@@ -445,7 +471,7 @@ function DesktopTab({
         aria-selected={selected}
         onClick={onOpen}
         title={label}
-        className={`flex h-full min-w-0 items-center gap-2 text-[13px] whitespace-nowrap ${onClose ? 'pr-1.5 pl-3.5' : 'px-3.5'} ${
+        className={`flex h-full min-w-0 items-center gap-2 pl-3.5 text-[13px] whitespace-nowrap ${selected && onMenu ? 'pr-1' : onClose ? 'pr-1.5' : 'pr-3.5'} ${
           selected ? 'font-medium' : ''
         }`}
       >
@@ -459,9 +485,27 @@ function DesktopTab({
           </span>
         )}
       </button>
+      {/* Only the open Tab carries it, so the other Tabs keep their width. */}
+      {selected && onMenu && (
+        <button
+          type="button"
+          data-nodrag
+          aria-label="Tab actions"
+          aria-haspopup="menu"
+          aria-expanded={!!menuOpen}
+          title="Tab actions"
+          onClick={(e) => onMenu(boxAnchor(e.currentTarget))}
+          className={`flex size-5 shrink-0 items-center justify-center rounded-[5px] text-muted hover:bg-surface hover:text-fg focus-visible:opacity-100 ${
+            onClose ? 'mr-0.5' : 'mr-2.5'
+          } ${menuOpen ? 'bg-surface text-fg' : 'opacity-0 group-hover:opacity-100'}`}
+        >
+          <More size={14} />
+        </button>
+      )}
       {onClose && (
         <button
           type="button"
+          data-nodrag
           aria-label={`Close ${label}`}
           onClick={onClose}
           className={`mr-2.5 flex size-5 shrink-0 items-center justify-center rounded-[5px] text-muted hover:bg-surface hover:text-fg focus-visible:opacity-100 ${
@@ -472,6 +516,9 @@ function DesktopTab({
         </button>
       )}
       {drop && <span aria-hidden className={`pointer-events-none absolute inset-y-2 w-0.5 rounded-full bg-accent ${drop === 'before' ? 'left-0' : 'right-0'}`} />}
+      {/* Under the Tab, not on it, so its name still says where the Pane goes. Fixed, because
+          the strip scrolls sideways and so clips anything placed outside it. */}
+      {dropLabel && under && <DropHint label={dropLabel} className="fixed -translate-x-1/2" style={{ left: under.x, top: under.y }} />}
     </div>
   );
 }
@@ -502,7 +549,7 @@ function TabPicker({
   of: number;
   blocked: number;
   onOpen: () => void;
-  onMenu?: () => void;
+  onMenu?: (at?: MenuAnchor) => void;
 }) {
   const hold = useLongPress(() => onMenu?.());
   return (
@@ -514,7 +561,8 @@ function TabPicker({
         if (hold.consume()) return e.preventDefault();
         onOpen();
       }}
-      onContextMenu={onMenu ? (e) => e.preventDefault() : undefined}
+      onContextMenu={atPointer(onMenu)}
+      onKeyDown={menuKey(onMenu)}
       className="press flex h-10 min-w-0 flex-1 items-center gap-2 rounded-composer bg-surface px-3 text-left text-[14px] [-webkit-touch-callout:none]"
       {...(onMenu ? hold.press : {})}
     >
@@ -563,7 +611,7 @@ function PaneChips({ panes, paneKey, className, zoom }: {
           }`}
         >
           <Dot status={p.status} size={6} seen={p.key !== paneKey} />
-          <span className="min-w-0 truncate">{p.agent ?? 'shell'}</span>
+          <span className="min-w-0 truncate">{paneKind(p)}</span>
           {p.zoomed && (
             <span className="shrink-0 text-accent">
               <ZoomIn size={11} />
@@ -671,11 +719,14 @@ function PaneGrid({
   interactive = true,
   split = false,
   onMeasure,
+  onMenu,
 }: {
   paneKey: string;
   pane?: StatePane;
   screen: ScreenEvent | null;
   interactive?: boolean;
+  /** Right-click on the Screen opens the Pane's menu (desktop), unless the program reads the mouse. */
+  onMenu?: (at: MenuAnchor) => void;
   /** A split cell (ADR 0006): the same Wrap rules, but a grid wider than the cell scales
    *  down to it, never below splitFloor(devicePixelRatio); past that the cell scrolls sideways. */
   split?: boolean;
@@ -865,6 +916,15 @@ function PaneGrid({
         ref={box}
         {...mouse}
         onClick={typingHere && !forwarding ? () => typingHere.focus() : undefined}
+        // ADR 0003: a program that reads the mouse gets the right button, so a forwarding grid
+        // has no menu. Shift+right-click, a link and a text selection keep the browser's own
+        // menu, with its Copy and Open link.
+        onContextMenu={onMenu && !forwarding ? (e) => {
+          const sel = getSelection();
+          if (e.shiftKey || (e.target as Element).closest('a') || (sel && !sel.isCollapsed && e.currentTarget.contains(sel.anchorNode))) return;
+          e.preventDefault();
+          onMenu(pointAnchor(e.clientX, e.clientY));
+        } : undefined}
         onScroll={(e) => {
           const el = e.currentTarget;
           // A scroll that arrives with a new height is the frame shrinking, not the reader.
@@ -1028,7 +1088,7 @@ function CellChat({ pane, screen, onUnavailable, onReview, approval, onReady }: 
   );
 }
 
-function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMeasure }: {
+function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMeasure, onMenu, dnd }: {
   pane: StatePane;
   focused: boolean;
   screen: ScreenEvent | null;
@@ -1039,6 +1099,10 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMea
   /** Zoom this Pane to fill its Tab in the Mux; absent while a zoom is in flight. */
   onZoom?: () => void;
   onMeasure?: (measure: GridMeasure) => void;
+  /** This Pane's menu, from a right-click on the title row or the Screen, or Shift+F10 on the title. */
+  onMenu?: (at: MenuAnchor) => void;
+  /** Desktop: the title row drags this Pane, the cell takes a dropped one, and `label` is what a drop does. */
+  dnd?: CellDnd;
 }) {
   useCellSeen(focused ? '' : pane.key, focused ? undefined : screen?.revision);
   // Focus is quiet: the focused title row carries a 2 px accent underline, like the open
@@ -1053,9 +1117,12 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMea
       data-pane={pane.key}
       onClick={focused ? undefined : onFocus}
       style={box}
+      {...dnd?.target}
       className={`group/cell absolute flex flex-col overflow-hidden bg-bg ${pane.x ? 'border-l border-border' : ''} ${pane.y ? 'border-t border-border' : ''} ${focused ? '' : 'cursor-pointer'}`}
     >
       <div
+        {...dnd?.source}
+        onContextMenu={atPointer(onMenu)}
         className={`flex h-6 shrink-0 items-center border-b border-border text-[11px] transition-colors ${
           focused ? 'font-medium text-fg shadow-[inset_0_-2px_0_var(--accent)]' : 'text-muted group-hover/cell:text-fg'
         }`}
@@ -1063,17 +1130,19 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMea
         <button
           type="button"
           onClick={focused ? undefined : onFocus}
+          onKeyDown={menuKey(onMenu)}
           tabIndex={focused ? -1 : 0}
           aria-label={focused ? undefined : `Focus ${pane.title}`}
           className={`flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left focus-visible:-outline-offset-2! ${focused ? 'cursor-default' : ''}`}
         >
           <Dot status={pane.status} size={6} seen={!unseen(pane)} />
           <span className="min-w-0 truncate">{pane.title}</span>
-          <span className="shrink-0 font-normal text-muted">{pane.agent ?? 'shell'}</span>
+          <span className="shrink-0 font-normal text-muted">{paneKind(pane)}</span>
         </button>
         {/* Shown on the focused cell, and on hover or keyboard focus elsewhere, like a Tab's close. */}
         <button
           type="button"
+          data-nodrag
           aria-label={`Zoom ${pane.title}`}
           title="Zoom Pane"
           disabled={!onZoom}
@@ -1092,12 +1161,20 @@ function SplitCell({ pane, focused, screen, box, content, onFocus, onZoom, onMea
         content
       ) : (
         <div className={`flex min-h-0 flex-1 flex-col transition-opacity duration-150 motion-reduce:transition-none ${focused ? '' : 'opacity-90 group-hover/cell:opacity-100 group-focus-within/cell:opacity-100'}`}>
-          <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={focused} split onMeasure={focused ? onMeasure : undefined} />
+          <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={focused} split onMeasure={focused ? onMeasure : undefined} onMenu={onMenu} />
+        </div>
+      )}
+      {dnd?.label && (
+        <div aria-hidden className={`pointer-events-none absolute inset-0 z-20 ${DROP_ON}`}>
+          <DropHint big label={dnd.label} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
         </div>
       )}
     </div>
   );
 }
+
+/** A split cell's drag and drop, from PaneScreen (desktop). */
+interface CellDnd { source: HTMLAttributes<HTMLElement>; target?: HTMLAttributes<HTMLElement>; label?: string }
 
 /** A shared edge between two Panes' rects, in cells: `at` is the line, `from`..`to` its extent along it. */
 interface Edge { key: string; vertical: boolean; at: number; from: number; to: number; before: StatePane; after: StatePane }
@@ -1196,7 +1273,7 @@ function Divider({ edge, W, H, host, onResize }: {
  * `focusedContent` replaces the focused cell's grid (the Chat lens); every other agent cell
  * shows its own lens, so a focus move never flips a neighbour's Chat to Screen.
  */
-function SplitView({ panes, focusKey, screens, held, focusedContent, cellChat, onZoom, onResize, onMeasure }: {
+function SplitView({ panes, focusKey, screens, held, focusedContent, cellChat, onZoom, onResize, onMeasure, onMenu, dnd }: {
   panes: StatePane[];
   focusKey: string;
   screens: Record<string, ScreenEvent>;
@@ -1209,6 +1286,10 @@ function SplitView({ panes, focusKey, screens, held, focusedContent, cellChat, o
   /** a divider drag or key step: the Pane that grows, the way, and the cells */
   onResize?: (key: string, direction: ResizeBody['direction'], amount: number) => void;
   onMeasure: (measure: GridMeasure) => void;
+  /** a cell's Pane menu, at a point */
+  onMenu?: (key: string, at: MenuAnchor) => void;
+  /** desktop: each cell's drag and drop */
+  dnd?: (pane: StatePane) => CellDnd;
 }) {
   const { W, H } = extent(panes);
   const host = useRef<HTMLDivElement>(null);
@@ -1225,6 +1306,8 @@ function SplitView({ panes, focusKey, screens, held, focusedContent, cellChat, o
           content={p.key === focusKey ? focusedContent : p.agent && readLens(p.key) === 'chat' ? cellChat?.(p) : undefined}
           onMeasure={onMeasure}
           onZoom={onZoom && (() => onZoom(p.key))}
+          onMenu={onMenu && ((at) => onMenu(p.key, at))}
+          dnd={dnd?.(p)}
           onFocus={() => navigate(`#/pane/${encodeURIComponent(p.key)}`, { replace: true, transition: false })}
           box={{ left: `${(p.x! / W) * 100}%`, top: `${(p.y! / H) * 100}%`, width: `${(p.cols! / W) * 100}%`, height: `${(p.rows! / H) * 100}%` }}
         />
@@ -1282,19 +1365,28 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const [showNewTab, setShowNewTab] = useState(() => opensWith('newtab'));
   // Off means the agent's own 256-colour and truecolour values render as sent.
   const [themedOn, setThemedOn] = useState(themedColors);
-  const [rename, setRename] = useState(false);
+  /** The Pane key Rename, Rename Agent and Close act on: the open Pane from ⋯, any split
+   *  cell from its own menu. */
+  const [rename, setRename] = useState<string | null>(null);
   /** Wave 21: the Agent's own name, and the plugin actions sheet, both from ⋯. */
-  const [agentRename, setAgentRename] = useState(false);
+  const [agentRename, setAgentRename] = useState<string | null>(null);
   const [showActions, setShowActions] = useState(false);
   /** Wave 22: Find in terminal, and where focus goes back when it closes. */
   const [finding, setFinding] = useState(false);
   const findOpener = useRef<HTMLElement | null>(null);
-  const [confirmClose, setConfirmClose] = useState(false);
-  const [tabMenu, setTabMenu] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState<string | null>(null);
+  /** A menu's target, and the point it opened at: none is the phone's sheet (a long press). */
+  const [tabMenu, setTabMenu] = useState<{ id: string; at?: MenuAnchor } | null>(null);
+  const [paneMenu, setPaneMenu] = useState<{ key: string; at: MenuAnchor } | null>(null);
+  /** Copy path's receipt on the strip, for 1.5 s. */
+  const [copied, setCopied] = useState<boolean | null>(null);
   /** A desktop Tab drag: the Tab in hand and the one under the pointer. */
   const [tabDrag, setTabDrag] = useState<{ id: string; over: string | null } | null>(null);
+  /** A Pane held over a split cell, a Tab or the strip's + (desktop): which, and the drop's label. */
+  const [paneOver, setPaneOver] = useState<DropOver>(null);
   const [tabRename, setTabRename] = useState<string | null>(null);
-  const [tabClose, setTabClose] = useState<string | null>(null);
+  /** The Tab to close, or with `others` the one Tab to keep (Close other Tabs). */
+  const [tabClose, setTabClose] = useState<{ id: string; others?: true } | null>(null);
   /** A zoom write in flight, and the last one that failed (shown for 4 s). */
   const [zooming, setZooming] = useState(false);
   const [zoomFailed, setZoomFailed] = useState(false);
@@ -1333,10 +1425,10 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   useEffect(() => {
     setExplain(null);
     setStalePrompt(null);
-    setRename(false);
-    setAgentRename(false);
+    setRename(null);
+    setAgentRename(null);
     setShowActions(false);
-    setConfirmClose(false);
+    setConfirmClose(null);
     setFinding(false);
   }, [paneKey]);
 
@@ -1490,8 +1582,22 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
 
   /** Phase 14's rule: a Tab whose close would stop work asks first; anything else just goes. */
   const requestCloseTab = (tab: (typeof tabs)[number]) => {
-    if (closeTabCost(tab.panes, tabs.length === 1)) setTabClose(tab.id);
+    if (closeTabCost(tab.panes, tabs.length === 1)) setTabClose({ id: tab.id });
     else void closeTab(tab);
+  };
+
+  /** Close other Tabs: every Tab of the Workspace but `keep`. The open Tab goes last, so the
+   *  route moves to `keep` the moment it is gone, not while the others close. */
+  const closeOthers = async (keep: (typeof tabs)[number]) => {
+    const others = tabs.filter((t) => t.id !== keep.id).sort((a, b) => Number(a.id === pane?.tabId) - Number(b.id === pane?.tabId));
+    for (const t of others) for (const p of t.panes) await api<void>(`/api/panes/${encodeURIComponent(p.key)}/close`);
+    if (keep.id !== pane?.tabId) openTab(keep.id);
+  };
+  const othersOf = (keep: (typeof tabs)[number]) => tabs.filter((t) => t.id !== keep.id);
+  /** The same rule as one Tab: ask only when the close would stop an Agent at work. */
+  const requestCloseOthers = (keep: (typeof tabs)[number]) => {
+    if (closeTabCost(othersOf(keep).flatMap((t) => t.panes), false)) setTabClose({ id: keep.id, others: true });
+    else void edit('Close', () => closeOthers(keep));
   };
 
   // `⌘1–9` opens Tab n and `⌘T` New Tab, at `lg` only. Meta only: Ctrl+T and Ctrl+digits
@@ -1570,8 +1676,31 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const base = `/api/panes/${encodeURIComponent(paneKey)}`;
   const follow = ({ paneKey: next }: { paneKey: string }) =>
     navigate(`#/pane/${encodeURIComponent(next)}`, { replace: true, transition: false });
-  const split = (direction: SplitBody['direction']) =>
-    edit('Split', () => api<{ paneKey: string }>(`${base}/split`, { direction } satisfies SplitBody), follow);
+  const split = (direction: SplitBody['direction'], key = paneKey) =>
+    edit('Split', () => api<{ paneKey: string }>(`/api/panes/${encodeURIComponent(key)}/split`, { direction } satisfies SplitBody), follow);
+  // Duplicate: the same thing again, next to it. A fresh Agent of the same kind in the same
+  // folder, never its conversation; a shell is a shell in that folder.
+  /** A split beside the Pane: right on a desktop, down on a phone. */
+  const duplicatePane = (p: StatePane) =>
+    edit('Duplicate', () => api<{ paneKey: string }>(`/api/panes/${encodeURIComponent(p.key)}/split`, {
+      direction: desktop ? 'right' : 'down', ...(p.cwd ? { cwd: p.cwd } : {}), ...(p.agent ? { agent: p.agent } : {}),
+    } satisfies SplitBody), follow);
+  /** A new Tab right after this one, from the Pane the Tab opens to, opened as New Tab opens. */
+  const duplicateTab = (t: (typeof tabs)[number]) => {
+    const from = t.panes.find((p) => p.key === lastPane.get(`${pane?.muxKey}/${t.id}`)) ?? t.panes[0];
+    const label = duplicateLabel(t);
+    return edit('Duplicate', () => api<NewTabResult>(`/api/muxes/${encodeURIComponent(pane!.muxKey)}/tabs`, {
+      workspaceId: pane!.workspaceId, after: t.id,
+      ...(label ? { label } : {}), ...(from?.cwd ? { cwd: from.cwd } : {}), ...(from?.agent ? { agent: from.agent } : {}),
+    } satisfies NewTabBody), ({ paneKey: created }) => navigate(`#/pane/${encodeURIComponent(created)}`));
+  };
+  /** Copy path's receipt sits on the strip, where a failed edit says so. */
+  const copyPath = (path: string) =>
+    void copyText(path).then((ok) => {
+      setCopied(ok);
+      // ponytail: one timer per copy, as on the Screen; the strip line is the whole receipt.
+      setTimeout(() => setCopied(null), 1500);
+    });
   const move = (to: Pick<MoveBody, 'tab' | 'newTab' | 'newWorkspace'>) =>
     edit('Move', () => api<{ paneKey: string }>(`${base}/move`, { ...to, ...(to.tab ? { split: 'down' } : {}) } satisfies MoveBody), follow);
   const swap = (target: string) => edit('Swap', () => api<void>(`${base}/swap`, { target } satisfies SwapBody));
@@ -1584,9 +1713,14 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     void edit('Move', () => api<void>(`/api/tabs/${encodeURIComponent(key)}/move`, { index: spliceIndex(from, at) }));
   };
 
-  const menuTab = tabs.find((t) => t.id === tabMenu);
+  const menuTab = tabs.find((t) => t.id === tabMenu?.id);
   const renameTab = tabs.find((t) => t.id === tabRename);
-  const closingTab = tabs.find((t) => t.id === tabClose);
+  const closingTab = tabs.find((t) => t.id === tabClose?.id);
+  /** Close other Tabs keeps `closingTab` and closes these. */
+  const closingOthers = closingTab && tabClose?.others ? othersOf(closingTab) : null;
+  const renamePane = state?.panes.find((p) => p.key === rename);
+  const agentPane = state?.panes.find((p) => p.key === agentRename);
+  const closingPane = state?.panes.find((p) => p.key === confirmClose);
 
   /** The one answer path for a blocked prompt: the dock's card and the Chat view's approval
    *  row both send through it, so a 409 from either shows Re-read on both. */
@@ -1641,22 +1775,25 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   const activeIndex = active ? tabs.indexOf(active) : -1;
   // Past five Tabs the phone strip turns into a picker. Desktop tabs scroll instead.
   const manyTabs = !desktop && tabs.length > 5 && !!active;
-  // A tmux Tab has no Rename or Close, but it moves, so its menu opens once there are two.
-  const tabMenuFor = (id: string) => (writable || tabs.length > 1 ? () => {
+  // A tmux Tab has no Rename or Close, but it moves, so its menu opens once there are two. A
+  // second press on the open Tab's ⋯ closes the menu it opened.
+  const tabMenuFor = (id: string) => (writable || tabs.length > 1 ? (at?: MenuAnchor) => {
     haptic();
-    setTabMenu(id);
+    setTabMenu((open) => (open?.id === id && open.at && at ? null : { id, at }));
   } : undefined);
+  const openPaneMenu = (key: string, at: MenuAnchor) => setPaneMenu({ key, at });
   // ponytail: native drag and drop, desktop and mouse only — a touch drag scrolls the strip
-  // (ADR 0008), and a button inside a draggable Tab does not start a drag in every browser, as
-  // on Home's rows. Pointer-driven drag if that ever bites.
+  // (ADR 0008), and Firefox fires no dragstart on a <button> (bug 568313), as on Home's rows:
+  // there a Tab drags only from its edges. ⋯ and × never start one. Pointer-driven drag if
+  // that ever bites.
   const dragFrom = tabs.findIndex((t) => t.id === tabDrag?.id);
   const tabDragProps = (i: number): HTMLAttributes<HTMLElement> | undefined =>
     tabs.length > 1
       ? {
           draggable: true,
           onDragStart: (e: DragEvent) => {
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', tabs[i]!.label);
+            if (fromControl(e)) return;
+            carry(e, TAB_TYPE, tabs[i]!.id);
             setTabDrag({ id: tabs[i]!.id, over: null });
           },
           onDragOver: (e: DragEvent) => {
@@ -1673,6 +1810,34 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         }
       : undefined;
   const tabDropAt = (i: number) => (dragFrom >= 0 && tabDrag?.over === tabs[i]!.id ? (dragFrom > i ? 'before' : 'after') : undefined);
+
+  // A Pane drag (desktop): a split cell's title row and the sidebar's rows carry one. Two cells
+  // of this Tab swap; a Tab, a cell and the + take a Pane from anywhere on the Mux. The Pane on
+  // screen follows to its new key, as Move to… does; another Pane leaves the route alone.
+  const dropPane = (src: StatePane, d: PaneDrop) => {
+    const at = `/api/panes/${encodeURIComponent(src.key)}`;
+    void (d.verb === 'Swap'
+      ? edit('Swap', () => api<void>(`${at}/swap`, { target: d.target } satisfies SwapBody))
+      : edit('Move', () => api<{ paneKey: string }>(`${at}/move`, d.to satisfies MoveBody), (r) => {
+          if (src.key === paneKey) follow(r);
+        }));
+  };
+  const paneDropProps = (id: string, target: PaneTarget, rest?: HTMLAttributes<HTMLElement>) =>
+    desktop
+      // One layout write at a time, as the menu's rows are disabled while one is out.
+      ? paneTarget({ id, decide: (src) => (editing ? null : paneDrop(src, target, state?.panes ?? [])), setOver: setPaneOver, onDrop: dropPane, rest })
+      : rest;
+  const overLabel = (id: string) => (paneOver?.id === id ? paneOver.label : undefined);
+  /** A strip Tab reorders (once there are two) and takes a Pane. */
+  const tabProps = (i: number) => {
+    const at = tabsOfMux.find((x) => x.workspaceId === pane?.workspaceId && x.id === tabs[i]!.id);
+    return at ? paneDropProps(`tab:${at.id}`, { kind: 'tab', tab: at }, tabDragProps(i)) : tabDragProps(i);
+  };
+  const cellDnd = (p: StatePane): CellDnd => ({
+    source: paneSource(p),
+    target: paneDropProps(`cell:${p.key}`, { kind: 'cell', pane: p, tab: ownTab }),
+    label: overLabel(`cell:${p.key}`),
+  });
   const stale = !!explain && stalePrompt === (explain.promptId ?? '');
   // In the Chat view the prompt is answered in the transcript, so the dock drops its card,
   // through the card's 150 ms exit too, so the dock never flashes it after an answer.
@@ -1690,6 +1855,11 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
           {editFailed.verb} failed · {editFailed.reason}
         </span>
       )}
+      {copied !== null && (
+        <span role="status" className={`shrink-0 text-[12px] ${copied ? 'text-muted' : 'text-danger'}`}>
+          {copied ? 'Path copied' : 'Path not copied'}
+        </span>
+      )}
       {mouseOn && !gridMeasure.effectiveWrap && (
         // Taps on the grid are going to the program, not to tautan.
         <span className="shrink-0 rounded-chip border border-border px-1.5 py-0.5 font-mono text-[10px] text-accent">
@@ -1698,20 +1868,24 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
       )}
     </>
   );
+  const newTabHint = overLabel('new');
   const newTab = writable && (
     <button
       type="button"
       aria-label="New Tab"
       onClick={() => setShowNewTab(true)}
+      // A Pane dropped here leaves its Tab for a new one.
+      {...(pane && paneDropProps('new', { kind: 'newTab', muxKey: pane.muxKey, workspaceId: pane.workspaceId }))}
       className={
         desktop
-          ? 'press mb-0.5 flex size-[34px] shrink-0 items-center justify-center rounded-chip text-accent hover:bg-bg/50'
+          ? `press relative mb-0.5 flex size-[34px] shrink-0 items-center justify-center rounded-chip text-accent hover:bg-bg/50 ${newTabHint ? DROP_ON : ''}`
           : manyTabs
             ? 'press flex size-10 shrink-0 items-center justify-center rounded-composer bg-surface text-accent'
             : 'press flex h-10 w-9 shrink-0 items-center justify-center text-accent'
       }
     >
       <Plus size={desktop ? 16 : 18} />
+      {newTabHint && <DropHint label={newTabHint} className="absolute top-1/2 left-full ml-1.5 -translate-y-1/2" />}
     </button>
   );
   const grid = pane?.cols && pane.rows ? `${pane.cols}×${pane.rows}` : 'fit';
@@ -1729,6 +1903,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     ? [
         { label: 'Split right', disabled: editing, onClick: () => void split('right') },
         { label: 'Split down', disabled: editing, onClick: () => void split('down') },
+        ...(pane && (writable || !agent) ? [{ label: 'Duplicate Pane', disabled: editing, onClick: () => void duplicatePane(pane) }] : []),
         ...(active.panes.length > 1 ? [{ label: 'Swap with…', onClick: () => setLayoutSheet('swap') }] : []),
         { label: 'Move to…', onClick: () => setLayoutSheet('move') },
         ...(active.panes.length > 1 ? [{ label: 'Resize…', hint: `${RESIZE_STEP} cells a step`, onClick: () => setLayoutSheet('resize') }] : []),
@@ -1746,13 +1921,15 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         path={[host?.label, ws?.label, active?.label]}
         status={status}
         agent={agent}
+        command={pane?.command}
         lens={lens}
         onLens={agent ? setLens : undefined}
         onSwitch={() => {
           setSwitchTabs(false);
           setShowSwitch(true);
         }}
-        onMore={() => setShowMore(true)}
+        onMore={() => setShowMore((open) => !open)}
+        moreOpen={showMore}
       />
 
       {desktop ? (
@@ -1772,8 +1949,10 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                   onOpen={() => openTab(t.id)}
                   onClose={writable ? () => requestCloseTab(t) : undefined}
                   onMenu={tabMenuFor(t.id)}
-                  drag={tabDragProps(i)}
+                  menuOpen={tabMenu?.id === t.id && !!tabMenu.at}
+                  drag={tabProps(i)}
                   drop={tabDropAt(i)}
+                  dropLabel={overLabel(`tab:${t.id}`)}
                 />
               ))}
             </div>
@@ -1914,9 +2093,11 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                 onResize={(key, direction, amount) =>
                   editing ? undefined : void edit('Resize', () => api<void>(`/api/panes/${encodeURIComponent(key)}/resize`, { direction, amount } satisfies ResizeBody))}
                 onMeasure={onGridMeasure}
+                onMenu={openPaneMenu}
+                dnd={cellDnd}
               />
             ) : (
-              chat || <PaneGrid key={paneKey} paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} />
+              chat || <PaneGrid key={paneKey} paneKey={paneKey} pane={pane} screen={screen} onMeasure={onGridMeasure} onMenu={desktop ? (at) => openPaneMenu(paneKey, at) : undefined} />
             )}
           </div>
         );
@@ -1978,29 +2159,51 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
       <MenuSheet
         open={menuTab !== undefined}
         title={menuTab?.label ?? 'Tab'}
+        at={tabMenu?.at}
         onClose={() => setTabMenu(null)}
-        items={[
-          ...(menuTab && menuTab.panes.length > 1
-            ? menuTab.panes.map((p) => ({
-                label: p.title,
-                sub: `${p.agent ?? 'shell'} · ${p.status}`,
-                onClick: () => {
-                  haptic();
-                  navigate(`#/pane/${encodeURIComponent(p.key)}`);
-                },
-              }))
-            : []),
-          ...(writable ? [{ label: 'Rename tab', onClick: () => menuTab && setTabRename(menuTab.id) }] : []),
-          // Both Muxes move Tabs (ADR 0009). Every width has these; the desktop strip also drags.
-          ...(menuTab && tabs.length > 1
-            ? [
-                { label: 'Move left', disabled: editing || tabs[0] === menuTab, onClick: () => moveTab(menuTab.id, tabs.indexOf(menuTab) - 1) },
-                { label: 'Move right', disabled: editing || tabs.at(-1) === menuTab, onClick: () => moveTab(menuTab.id, tabs.indexOf(menuTab) + 1) },
-              ]
-            : []),
-          ...(writable ? [{ label: 'Close tab', danger: true, onClick: () => menuTab && requestCloseTab(menuTab) }] : []),
-        ]}
+        items={menuTab ? tabMenuItems(
+          { panes: menuTab.panes, index: tabs.indexOf(menuTab), count: tabs.length },
+          { write: writable, busy: editing, newTabHint: desktop && MAC ? '⌘T' : undefined },
+          {
+            openPane: (key) => {
+              haptic();
+              navigate(`#/pane/${encodeURIComponent(key)}`);
+            },
+            newTab: () => setShowNewTab(true),
+            duplicate: () => void duplicateTab(menuTab),
+            rename: () => setTabRename(menuTab.id),
+            move: (by) => moveTab(menuTab.id, tabs.indexOf(menuTab) + by),
+            close: () => requestCloseTab(menuTab),
+            closeOthers: () => requestCloseOthers(menuTab),
+          },
+        ) : []}
       />
+      {/* A Pane's own menu: a right-click on the Screen or on a split cell, desktop only. */}
+      {(() => {
+        const target = state?.panes.find((p) => p.key === paneMenu?.key);
+        const inTab = tabs.find((t) => t.id === target?.tabId)?.panes ?? [];
+        return (
+          <MenuSheet
+            open={!!target}
+            title={target?.title ?? 'Pane'}
+            at={paneMenu?.at}
+            onClose={() => setPaneMenu(null)}
+            items={target ? paneMenuItems(
+              target,
+              { write: writable, busy: editing || zooming, split: inTab.length > 1, zoomed: inTab.some((p) => p.zoomed) },
+              {
+                split: (direction) => void split(direction, target.key),
+                duplicate: () => void duplicatePane(target),
+                zoom: (on) => void zoomTo(target.key, on),
+                rename: () => setRename(target.key),
+                renameAgent: () => setAgentRename(target.key),
+                copyPath: () => target.cwd && copyPath(target.cwd),
+                close: () => setConfirmClose(target.key),
+              },
+            ) : []}
+          />
+        );
+      })()}
       <RenameSheet
         open={renameTab !== undefined}
         kind="Tab"
@@ -2012,11 +2215,11 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
       />
       <ConfirmCloseSheet
         open={closingTab !== undefined}
-        kind="Tab"
-        title={closingTab?.label ?? ''}
-        cost={closingTab ? closeTabCost(closingTab.panes, tabs.length === 1) : ''}
+        kind={closingOthers ? 'other Tabs' : 'Tab'}
+        title={closingOthers ? `${closingOthers.length} other Tab${closingOthers.length === 1 ? '' : 's'}` : closingTab?.label ?? ''}
+        cost={closingOthers ? closeTabCost(closingOthers.flatMap((t) => t.panes), false) : closingTab ? closeTabCost(closingTab.panes, tabs.length === 1) : ''}
         onClose={() => setTabClose(null)}
-        onConfirm={() => closingTab ? closeTab(closingTab) : undefined}
+        onConfirm={() => (closingTab ? (closingOthers ? closeOthers(closingTab) : closeTab(closingTab)) : undefined)}
       />
       <MenuSheet
         open={showMore}
@@ -2087,9 +2290,9 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
           },
           ...(writable
             ? [
-                { label: 'Rename', onClick: () => setRename(true) },
-                ...(agent ? [{ label: 'Rename Agent', sub: pane?.agentName, onClick: () => setAgentRename(true) }] : []),
-                { label: 'Close Pane', danger: true, onClick: () => setConfirmClose(true) },
+                { label: 'Rename', onClick: () => setRename(paneKey) },
+                ...(agent ? [{ label: 'Rename Agent', sub: pane?.agentName, onClick: () => setAgentRename(paneKey) }] : []),
+                { label: 'Close Pane', danger: true, onClick: () => setConfirmClose(paneKey) },
               ]
             : []),
           // A placeholder for a later version: the phone, where Phone width already does it, drops it.
@@ -2145,21 +2348,21 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         }}
       />
       <RenameSheet
-        open={rename}
+        open={rename !== null}
         kind="Pane"
-        current={pane?.title ?? ''}
-        onClose={() => setRename(false)}
+        current={renamePane?.title ?? ''}
+        onClose={() => setRename(null)}
         onSubmit={(label) =>
-          api<void>('/api/rename', { muxKey: pane!.muxKey, paneId: pane!.id, label } satisfies RenameBody)
+          api<void>('/api/rename', { muxKey: renamePane!.muxKey, paneId: renamePane!.id, label } satisfies RenameBody)
         }
       />
       <RenameSheet
-        open={agentRename}
+        open={agentRename !== null}
         kind="Agent"
-        current={pane?.agentName ?? ''}
-        onClose={() => setAgentRename(false)}
+        current={agentPane?.agentName ?? ''}
+        onClose={() => setAgentRename(null)}
         onSubmit={(label) =>
-          api<void>('/api/rename', { muxKey: pane!.muxKey, paneId: pane!.id, label, agent: true } satisfies RenameBody)
+          api<void>('/api/rename', { muxKey: agentPane!.muxKey, paneId: agentPane!.id, label, agent: true } satisfies RenameBody)
         }
       />
       <PluginActionsSheet
@@ -2171,12 +2374,14 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         state={state}
       />
       <ConfirmCloseSheet
-        open={confirmClose}
-        title={pane?.title ?? ''}
-        onClose={() => setConfirmClose(false)}
+        open={confirmClose !== null}
+        title={closingPane?.title ?? ''}
+        onClose={() => setConfirmClose(null)}
         onConfirm={async () => {
-          await api<void>(`/api/panes/${encodeURIComponent(paneKey)}/close`);
-          navigate('#/');
+          const key = confirmClose!;
+          await api<void>(`/api/panes/${encodeURIComponent(key)}/close`);
+          // The open Pane goes back to the list; another split cell leaves the route alone.
+          if (key === paneKey) navigate('#/');
         }}
       />
     </div>

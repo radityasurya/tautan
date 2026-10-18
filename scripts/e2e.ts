@@ -639,8 +639,9 @@ try {
       await wide.goto(`${BASE}/#/pane/${encodeURIComponent(keyA)}`, { waitUntil: 'networkidle' });
       await wide.getByTestId('split-cell').nth(1).waitFor({ timeout: 8_000 });
       const reloads = await wide.evaluate(() => performance.getEntriesByType('navigation').length + ':' + performance.timeOrigin);
+      // Desktop ⋯ is a menu at its button, not a sheet: its rows are menu items.
       await wide.getByRole('button', { name: 'More' }).click();
-      await wide.getByRole('button', { name: /^Zoom Pane/ }).click();
+      await wide.getByRole('menuitem', { name: /^Zoom Pane/ }).click();
       // Zoomed: no split, the chips row with its Zoomed pill, and a marker on the strip Tab.
       const chips = wide.getByRole('group', { name: 'Panes in this Tab' });
       await chips.getByRole('button', { name: 'Unzoom' }).waitFor({ timeout: 8_000 });
@@ -650,7 +651,7 @@ try {
       await wide.screenshot({ path: '/tmp/tautan-zoom/e2e-zoomed.png' });
       // Unzoom from ⋯: the split comes back on the next state event, no reload.
       await wide.getByRole('button', { name: 'More' }).click();
-      await wide.getByRole('button', { name: /^Unzoom\s*show every Pane/ }).click();
+      await wide.getByRole('menuitem', { name: /^Unzoom\s*show every Pane/ }).click();
       await wide.getByTestId('split-cell').nth(1).waitFor({ timeout: 8_000 });
       assert(await chips.count() === 0, 'chips gone after unzoom');
       // And the cell's own zoom button does the same, from the title row.
@@ -727,11 +728,38 @@ try {
     assert(dragged[0] === t3, `drag: ${before.join()} → ${dragged.join()}`);
     // The strip follows the `state` event, not a local reorder.
     await strip.getByRole('tab').first().filter({ hasText: 'e2e-t3' }).waitFor({ timeout: 8_000 });
+    // Right-click opens the Tab menu at the pointer (a menu, not a sheet, on desktop).
     await strip.getByRole('tab', { name: /e2e-t3/ }).click({ button: 'right' });
-    assert(await desktop.getByRole('button', { name: 'Move left' }).isDisabled(), 'Move left is off on the first Tab');
-    await desktop.getByRole('button', { name: 'Move right' }).click();
+    assert(await desktop.getByRole('menuitem', { name: 'Move left' }).isDisabled(), 'Move left is off on the first Tab');
+    await desktop.getByRole('menuitem', { name: 'Move right' }).click();
     const right = await settle(dragged);
     return assert(right[1] === t3 && right.length === 3, `Move right: ${dragged.join()} → ${right.join()}`);
+  });
+  await flow('drag (ADR 0008): desktop drags a split cell by its title onto another Tab; herdr moves the Pane there and the open Tab follows it', async () => {
+    const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-drag' });
+    const first = (await mux.tree()).panes.find(p => p.workspaceId === workspace.id)!.id;
+    await herdrRpc(fixture.sock, 'workspace.focus', { workspace_id: workspace.id });
+    await herdrRpc(fixture.sock, 'pane.split', { pane_id: first, direction: 'right' });
+    await mux.newTab(workspace.id, { cwd: fixture.dir, label: 'e2e-dest' });
+    const tree = await mux.tree();
+    const dest = tree.tabs.find(t => t.workspaceId === workspace.id && t.label === 'e2e-dest')!.id;
+    const both = tree.panes.filter(p => p.workspaceId === workspace.id && p.tabId !== dest);
+    assert(both.length === 2, `panes=${both.length}`);
+    const moved = both.find(p => p.id === first) ?? both[0]!;
+    const key = `HireOpz/default/${moved.id}`;
+    await fetch(`${BASE}/api/hosts/HireOpz/retry`, { method: 'POST', headers: { origin: BASE } }).catch(() => {});
+    await desktop.goto(`${BASE}/#/pane/${encodeURIComponent(key)}`, { waitUntil: 'networkidle' });
+    await desktop.getByTestId('split-cell').nth(1).waitFor({ timeout: 8_000 });
+    const strip = desktop.getByRole('tablist', { name: 'Tabs' });
+    // The title row is the handle; the whole Tab is the target.
+    await desktop.locator(`[data-pane="${key}"] > div`).first().dragTo(strip.getByRole('tab', { name: /e2e-dest/ }));
+    let tabId = moved.tabId;
+    for (let i = 0; i < 20 && tabId !== dest; i++) { await Bun.sleep(250); tabId = (await mux.tree()).panes.find(p => p.id === moved.id)?.tabId ?? tabId; }
+    assert(tabId === dest, `the Pane is in ${tabId}, not ${dest}`);
+    // The route still names the Pane, and its new Tab is the open one: two cells, the moved one focused.
+    await strip.getByRole('tab', { name: /e2e-dest/, selected: true }).waitFor({ timeout: 8_000 });
+    await desktop.locator(`[data-pane="${key}"][aria-current="true"]`).waitFor({ timeout: 8_000 });
+    return assert(decodeURIComponent(desktop.url()).endsWith(key), `moved into e2e-dest and followed it (${decodeURIComponent(desktop.url())})`);
   });
   await flow('plugins (Wave 21, 21.4): Pane ⋯ Plugin actions… asks herdr when it opens, groups the plugins, hides Global only, gives focus back, shows a failed run\'s exit code and stderr, and Open a scratch Tab opens the new Pane; the Workspace menu has none', async () => {
     const workspace = await mux.newWorkspace({ cwd: fixture.dir, label: 'e2e-plugins' });

@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { FocusEvent, ReactNode, RefObject, TouchEvent } from 'react';
+import type { FocusEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode, RefObject, TouchEvent } from 'react';
 
 import type { BranchList, PluginAction, PluginRun, State, StateWorkspace, Worktree, WorktreeRemoveBody, WorktreeRemoveResult, WorktreeStatus } from '../shared/types.ts';
 import { api, navigate, reducedMotion, useDesktop } from './app.tsx';
@@ -457,11 +457,28 @@ const setting = (label: string) => {
   return m ? ([m[1]!, m[2] === 'on'] as const) : undefined;
 };
 
-function MenuRow({ it, onClose }: { it: MenuItem; onClose: () => void }) {
-  const toggle = setting(it.label);
-  // A hint with words is a sentence and goes under the label; a bare value (`80×24`) sits right.
+/** What a row draws, in the sheet and the popover alike. A hint with words is a sentence and
+ *  goes under the label; a bare value (`80×24`, `⌘T`) sits right. */
+function rowParts(it: MenuItem) {
   const aside = it.hint && !/\s/.test(it.hint) ? it.hint : undefined;
-  const sub = it.sub ?? (aside ? undefined : it.hint);
+  return { toggle: setting(it.label), aside, sub: it.sub ?? (aside ? undefined : it.hint) };
+}
+
+/** A setting row's switch: the sheet's 32 px one, or the popover's 24 px one. */
+function RowSwitch({ on, small }: { on: boolean; small?: boolean }) {
+  return (
+    <span aria-hidden className={`relative shrink-0 rounded-full transition-colors duration-150 ${small ? 'h-3.5 w-6' : 'h-[18px] w-8'} ${on ? 'bg-accent' : 'bg-border'}`}>
+      <span
+        className={`absolute top-0.5 rounded-full bg-white shadow-sm transition-[left] duration-150 motion-reduce:transition-none ${small ? 'size-2.5' : 'size-3.5'} ${
+          on ? (small ? 'left-3' : 'left-[16px]') : 'left-0.5'
+        }`}
+      />
+    </span>
+  );
+}
+
+function MenuRow({ it, onClose }: { it: MenuItem; onClose: () => void }) {
+  const { toggle, aside, sub } = rowParts(it);
   return (
     <li>
       <button
@@ -486,28 +503,63 @@ function MenuRow({ it, onClose }: { it: MenuItem; onClose: () => void }) {
           {sub && <span className="mt-0.5 block text-caption text-muted">{sub}</span>}
         </span>
         {aside && <span className="shrink-0 font-mono text-caption tabular-nums text-muted">{aside}</span>}
-        {toggle && (
-          <span
-            aria-hidden
-            className={`relative h-[18px] w-8 shrink-0 rounded-full transition-colors duration-150 ${toggle[1] ? 'bg-accent' : 'bg-border'}`}
-          >
-            <span
-              className={`absolute top-0.5 size-3.5 rounded-full bg-white shadow-sm transition-[left] duration-150 motion-reduce:transition-none ${
-                toggle[1] ? 'left-[16px]' : 'left-0.5'
-              }`}
-            />
-          </span>
-        )}
+        {toggle && <RowSwitch on={toggle[1]} />}
       </button>
     </li>
   );
 }
 
+/** Rows by their `group` heading in the order given, then the destructive ones, last and
+ *  apart, whatever order the caller listed them in. The sheet and the popover both draw these. */
+function sectionsOf(items: MenuItem[]) {
+  const sections: { group?: string; rows: MenuItem[] }[] = [];
+  for (const it of items.filter((i) => !i.danger)) {
+    const last = sections.at(-1);
+    if (last && last.group === it.group) last.rows.push(it);
+    else sections.push({ group: it.group, rows: [it] });
+  }
+  const danger = items.filter((i) => i.danger);
+  if (danger.length) sections.push({ rows: danger });
+  return sections;
+}
+
+// ---- where a menu opens ----
+/** In viewport px: the trigger's box, or a box of no size at the pointer. */
+export interface MenuAnchor { left: number; top: number; right: number; bottom: number }
+export const pointAnchor = (x: number, y: number): MenuAnchor => ({ left: x, top: y, right: x, bottom: y });
+export const boxAnchor = (el: Element): MenuAnchor => {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+};
+/** The last press was a finger or a pen. Its `contextmenu` is a long press, and the long press
+ *  opens the sheet itself, so that event only stops the browser's own menu. */
+let touchPress = false;
+if (typeof document !== 'undefined') document.addEventListener('pointerdown', (e) => { touchPress = e.pointerType !== 'mouse'; }, true);
+/** Right-click opens a menu at the pointer; Shift+right-click keeps the browser's own. */
+export const atPointer = (open?: (at: MenuAnchor) => void) =>
+  open &&
+  ((e: ReactMouseEvent) => {
+    if (e.shiftKey) return;
+    e.preventDefault();
+    if (!touchPress) open(pointAnchor(e.clientX, e.clientY));
+  });
+/** Shift+F10 and the ContextMenu key open it under the focused element. */
+export const menuKey = (open?: (at: MenuAnchor) => void) =>
+  open &&
+  ((e: ReactKeyboardEvent) => {
+    if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return;
+    e.preventDefault();
+    open(boxAnchor(e.currentTarget));
+  });
+
 /**
- * A list of actions, from the ⋯ button and from a long-press. The same frame as the Switch
- * drawer: the title, the context line and `head` stay put; one full-width list scrolls under
- * them. Rows group under their `group` heading in the order given, and the destructive ones
- * always come last, apart, whatever order the caller listed them in.
+ * A list of actions, from a ⋯ button, a long-press or a right-click. On the phone it is a
+ * sheet: the same frame as the Switch drawer, where the title, the context line and `head`
+ * stay put and one full-width list scrolls under them. On the desktop, and wherever it was
+ * opened at a point (`at`: a right-click, Shift+F10), it is a menu (MenuPopover) anchored to
+ * that point or else to the element that opened it. `sheet` keeps it a sheet at every width:
+ * the Layout pickers, which are a step after a menu, not a menu. Rows group under their
+ * `group` heading (`sectionsOf`).
  */
 export function MenuSheet({
   open,
@@ -516,23 +568,34 @@ export function MenuSheet({
   onClose,
   items,
   head,
+  at,
+  sheet,
 }: {
   open: boolean;
   title: string;
-  /** One line of context under the title, such as the Host or the Agent and its Status. */
+  /** One line of context under the title, such as the Host or the Agent and its Status. The
+   *  menu leaves it out: it sits beside what it is about. */
   meta?: ReactNode;
   onClose: () => void;
   items: MenuItem[];
   /** Anything the menu shows before its rows, such as the Pane sheet's theme picker. */
   head?: ReactNode;
+  at?: MenuAnchor | null;
+  sheet?: boolean;
 }) {
-  const sections: { group?: string; rows: MenuItem[] }[] = [];
-  for (const it of items.filter((i) => !i.danger)) {
-    const last = sections.at(-1);
-    if (last && last.group === it.group) last.rows.push(it);
-    else sections.push({ group: it.group, rows: [it] });
+  const desktop = useDesktop();
+  // The opener's box, read once as the menu opens: the press that opened it is the last one.
+  const anchor = useRef<MenuAnchor | null>(null);
+  const was = useRef(false);
+  if (open && !was.current) {
+    const el = openerNow();
+    anchor.current = el ? boxAnchor(el) : null;
   }
-  const danger = items.filter((i) => i.danger);
+  was.current = open;
+  const spot = at ?? anchor.current;
+  if (!sheet && (desktop || at) && spot) {
+    return <MenuPopover open={open} at={spot} title={title} items={items} head={head} onClose={onClose} />;
+  }
   return (
     <Sheet open={open} title={title} onClose={onClose} flush>
       <div className="flex flex-col" style={FLUSH_BODY}>
@@ -546,26 +609,167 @@ export function MenuSheet({
           {head && <div className={meta ? 'mt-3' : ''}>{head}</div>}
         </div>
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pt-1.5 pb-6" style={{ scrollbarGutter: 'stable' }}>
-          {sections.map((sec, i) => (
-            <section key={sec.group ?? i} className={i > 0 && !sec.group ? 'mt-1.5 border-t border-border/60 pt-1.5' : ''}>
+          {sectionsOf(items).map((sec, i) => (
+            <section key={i} className={i > 0 && !sec.group ? 'mt-1.5 border-t border-border/60 pt-1.5' : ''}>
               {sec.group && <h3 className={MENU_HEADING}>{sec.group}</h3>}
+              {/* Keyed by place: two Panes of one Tab can share a title (a duplicate does). */}
               <ul>
-                {sec.rows.map((it) => (
-                  <MenuRow key={it.label} it={it} onClose={onClose} />
+                {sec.rows.map((it, j) => (
+                  <MenuRow key={j} it={it} onClose={onClose} />
                 ))}
               </ul>
             </section>
           ))}
-          {danger.length > 0 && (
-            <ul className={sections.length ? 'mt-1.5 border-t border-border/60 pt-1.5' : ''}>
-              {danger.map((it) => (
-                <MenuRow key={it.label} it={it} onClose={onClose} />
-              ))}
-            </ul>
-          )}
         </div>
       </div>
     </Sheet>
+  );
+}
+
+/** Home's RING on a filled row, so the arrow keys show where they are. */
+const POP_ROW =
+  'flex min-h-8 w-full items-center gap-3 rounded-lg px-2.5 py-1 text-left outline-none hover:bg-fg/6 focus-visible:bg-fg/6 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:opacity-40 disabled:hover:bg-transparent';
+const POP_ITEM = '[role^=menuitem]:not(:disabled)';
+const POP_PAD = 8;
+
+/**
+ * MenuSheet on the desktop: the same rows in a menu at `at`. It opens below its anchor, or
+ * above when only that fits, and shifts to stay in the viewport; when neither side holds it,
+ * it takes the roomier one and scrolls. The arrow keys, Home and End move between enabled
+ * rows, Enter and Space run one, and Escape, Tab, a press outside, a resize or the window
+ * losing focus close it. Focus goes back to the opener as from a sheet, and a row that opens
+ * a sheet (Rename…) hands that sheet the same opener. A press on its own trigger (`aria-
+ * expanded`) is left to the trigger, so a ⋯ toggles.
+ */
+function MenuPopover({ open, at, title, items, head, onClose }: {
+  open: boolean;
+  at: MenuAnchor;
+  title: string;
+  items: MenuItem[];
+  head?: ReactNode;
+  onClose: () => void;
+}) {
+  const root = useRef<HTMLDivElement | null>(null);
+  const opener = useFocusBack(open, root);
+  const close = useRef(onClose);
+  close.current = onClose;
+  const [place, setPlace] = useState<{ x: number; y: number; max?: number; origin: string } | null>(null);
+  const placed = useRef(false);
+  // Before paint: measured at its natural size, then placed. Again when rows arrive late (the
+  // Workspace menu's Plugin actions…), without moving focus.
+  useLayoutEffect(() => {
+    const el = root.current;
+    if (!open || !el) {
+      placed.current = false;
+      return setPlace(null);
+    }
+    el.style.maxHeight = '';
+    // Layout size: the scale-in transform would read 5 % short on its first frame.
+    const [w, h] = [el.offsetWidth, el.offsetHeight];
+    const gap = at.bottom > at.top ? 4 : 0;
+    const flip = at.left + w > innerWidth - POP_PAD; // right edges meet; at a point, it opens leftward
+    const x = Math.max(POP_PAD, Math.min(flip ? at.right - w : at.left, innerWidth - POP_PAD - w));
+    const below = innerHeight - POP_PAD - (at.bottom + gap);
+    const above = at.top - gap - POP_PAD;
+    const down = h <= below || (h > above && below >= above);
+    setPlace({
+      x,
+      y: down ? at.bottom + gap : Math.max(POP_PAD, at.top - gap - h),
+      max: h > (down ? below : above) ? (down ? below : above) : undefined,
+      origin: `${flip ? 'right' : 'left'} ${down ? 'top' : 'bottom'}`,
+    });
+    if (!placed.current) (el.querySelector<HTMLElement>(POP_ITEM) ?? el).focus({ preventScroll: true });
+    placed.current = true;
+  }, [open, at, items.length]);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => {
+      const target = e.target instanceof Element ? e.target : null;
+      if (root.current?.contains(target) || target?.closest('[aria-haspopup="menu"][aria-expanded="true"]')) return;
+      close.current();
+    };
+    const shut = () => close.current();
+    document.addEventListener('pointerdown', away, true);
+    addEventListener('resize', shut);
+    addEventListener('blur', shut);
+    return () => {
+      document.removeEventListener('pointerdown', away, true);
+      removeEventListener('resize', shut);
+      removeEventListener('blur', shut);
+    };
+  }, [open]);
+  if (!open) return null;
+  return (
+    <div
+      data-sheet
+      ref={(el) => {
+        root.current = el;
+        if (el) openers.set(el, opener);
+      }}
+      role="menu"
+      aria-label={title}
+      tabIndex={-1}
+      onContextMenu={(e) => e.preventDefault()}
+      onKeyDown={(e) => {
+        // `head` holds its own controls (the theme Select): the keys there are theirs.
+        const onRow = (e.target as Element).matches(`${POP_ITEM}, [role=menu]`);
+        if (e.key === 'Escape' && !e.defaultPrevented) onClose();
+        else if (e.key === 'Tab' && onRow) onClose();
+        else {
+          const rows = [...e.currentTarget.querySelectorAll<HTMLElement>(POP_ITEM)];
+          const i = rows.indexOf(document.activeElement as HTMLElement);
+          const n = rows.length;
+          const to = ({ ArrowDown: (i + 1) % n, ArrowUp: i <= 0 ? n - 1 : i - 1, Home: 0, End: n - 1 } as Record<string, number>)[e.key];
+          if (!onRow || to === undefined || !n) return;
+          rows[to]!.focus();
+        }
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      style={{ left: place?.x ?? at.left, top: place?.y ?? at.bottom, maxHeight: place?.max, transformOrigin: place?.origin }}
+      className="fixed z-[10000] flex w-max max-w-[320px] min-w-[208px] flex-col rounded-xl border border-border bg-elevated p-1 text-[13px] shadow-elevated outline-none backdrop-blur-md animate-[halaska-scale-in_120ms_cubic-bezier(0.2,0,0,1)] motion-reduce:animate-none"
+    >
+      {head && <div className="shrink-0 border-b border-border px-1.5 pt-1 pb-2">{head}</div>}
+      {/* Only the rows scroll, so a control in `head` can drop its own list over them. */}
+      <div className={`min-h-0 overflow-y-auto overscroll-contain ${head ? 'pt-1' : ''}`}>
+        {sectionsOf(items).map((sec, i) => (
+          <div key={i} role="group" aria-label={sec.group} className={i > 0 ? 'mt-1 border-t border-border pt-1' : ''}>
+            {sec.group && (
+              <div aria-hidden className="px-2.5 pt-1.5 pb-0.5 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase">
+                {sec.group}
+              </div>
+            )}
+            {sec.rows.map((it, j) => {
+              const { toggle, aside, sub } = rowParts(it);
+              return (
+                <button
+                  key={j}
+                  type="button"
+                  role={toggle ? 'menuitemcheckbox' : 'menuitem'}
+                  aria-checked={toggle?.[1]}
+                  disabled={it.disabled}
+                  onClick={() => {
+                    it.onClick?.();
+                    onClose();
+                  }}
+                  className={`${POP_ROW} ${it.danger ? 'text-danger' : 'text-fg'}`}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">
+                      {toggle ? toggle[0] : it.label}
+                      {toggle && <span className="sr-only">: {toggle[1] ? 'on' : 'off'}</span>}
+                    </span>
+                    {sub && <span className="block text-[11.5px] leading-4 text-muted">{sub}</span>}
+                  </span>
+                  {aside && <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">{aside}</span>}
+                  {toggle && <RowSwitch on={toggle[1]} small />}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1426,7 +1630,8 @@ export function ConfirmCloseSheet({
   onClose: () => void;
   onConfirm: Submit<void>;
   title: string;
-  kind?: 'Pane' | 'Tab' | 'Workspace';
+  /** `other Tabs`: every Tab but one (Close other Tabs); `title` then counts them, unquoted. */
+  kind?: 'Pane' | 'Tab' | 'Workspace' | 'other Tabs';
   cost?: string;
 }) {
   const [busy, setBusy] = useState(false);
@@ -1453,7 +1658,9 @@ export function ConfirmCloseSheet({
       ? 'The Workspace and everything running in it stops.'
       : kind === 'Tab'
         ? 'Every Pane in the Tab stops.'
-        : 'The Pane and anything running in it stops.';
+        : kind === 'other Tabs'
+          ? 'Every Pane in them stops.'
+          : 'The Pane and anything running in it stops.';
   const submit = (anyway: boolean) => {
     const at = gen.current;
     pending.current = true;
@@ -1486,7 +1693,7 @@ export function ConfirmCloseSheet({
       }}
       variant="danger"
       title={`Close ${kind}`}
-      description={error || `Close “${title}”? ${cost || consequence}`}
+      description={error || `Close ${kind === 'other Tabs' ? title : `“${title}”`}? ${cost || consequence}`}
       confirmLabel={error ? (recoverable && !overruled ? 'Close anyway' : 'Retry') : 'Close'}
       cancelLabel="Cancel"
       onConfirm={() => submit(recoverable && !overruled)}

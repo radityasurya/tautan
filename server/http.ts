@@ -461,7 +461,8 @@ export function startHttp(hub: Hub, opts: {
           if (!plainObject(body)) return json({ error: 'body' }, 400);
           if (typeof body.label === 'string') body.label = body.label.trim();
           if (muxWrite[2] === 'tabs') {
-            if (!nonEmpty(body.workspaceId) || !validCwd(body.cwd) || !validLabel(body.label) || body.agent !== undefined && !nonEmpty(body.agent)) return json({ error: 'body' }, 400);
+            if (!nonEmpty(body.workspaceId) || !validCwd(body.cwd) || !validLabel(body.label) || body.agent !== undefined && !nonEmpty(body.agent)
+              || body.after !== undefined && !nonEmpty(body.after)) return json({ error: 'body' }, 400);
             return json(await hub.newTab(key, body as unknown as NewTabBody), 201);
           }
           if (!validCwd(body.cwd) || !validLabel(body.label) || body.branch !== undefined && !nonEmpty(body.branch)) return json({ error: 'body' }, 400);
@@ -898,7 +899,8 @@ export function startHttp(hub: Hub, opts: {
             const sourceTab = state.panes.find(pane => pane.key === key)?.tabId;
             const sourceMux = state.panes.find(pane => pane.key === key)?.muxKey;
             if (action === 'split') {
-              if (body.direction !== 'right' && body.direction !== 'down' || !validRatio(body.ratio) || !validCwd(body.cwd)) return json({ error: 'body' }, 400);
+              if (body.direction !== 'right' && body.direction !== 'down' || !validRatio(body.ratio) || !validCwd(body.cwd)
+                || body.agent !== undefined && !nonEmpty(body.agent)) return json({ error: 'body' }, 400);
               await releaseLeases(sourceTab);
               return json(await hub.splitPane(key, body as unknown as SplitBody), 201);
             }

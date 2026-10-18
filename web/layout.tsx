@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { StatePane, StateTab, StateWorkspace } from '../shared/types.ts';
 import { Button } from './halaska-kit';
 import { MenuSheet, Sheet, ErrorLine } from './sheets.tsx';
+import { paneKind, statusWord } from './pane-label.ts';
 
 /** One Resize step on the phone (ADR 0008): whole cells, the direction the Pane grows. */
 export const RESIZE_STEP = 5;
@@ -36,6 +37,8 @@ export function MoveSheet({
   const label = (id: string) => workspaces.find((w) => w.id === id)?.label ?? '';
   return (
     <MenuSheet
+      // A step after the ⋯ menu, not a menu: a sheet at every width, with its context line.
+      sheet
       open={open}
       title="Move to…"
       meta="This Pane leaves its Tab"
@@ -67,11 +70,13 @@ export function SwapSheet({
 }) {
   return (
     <MenuSheet
+      // A step after the ⋯ menu, not a menu: a sheet at every width, with its context line.
+      sheet
       open={open}
       title="Swap with…"
       meta="The two Panes trade places"
       onClose={onClose}
-      items={panes.map((p) => ({ label: p.title, sub: `${p.agent ?? 'shell'} · ${p.status}`, onClick: () => onSwap(p.key) }))}
+      items={panes.map((p) => ({ label: p.title, sub: [paneKind(p), statusWord(p)].filter(Boolean).join(' · '), onClick: () => onSwap(p.key) }))}
     />
   );
 }

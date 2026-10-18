@@ -366,7 +366,13 @@ export class Hub {
     const entry = this.entries.get(muxKey);
     if (!entry) throw new Error('mux not found');
     if (!entry.tree?.workspaces.some(w => w.id === body.workspaceId)) throw new Error('workspace not found');
+    const tabIds = entry.tree.tabs.filter(t => t.workspaceId === body.workspaceId).map(t => t.id);
     const pane = await entry.mux.newTab(body.workspaceId, body);
+    // Duplicate Tab: the copy goes right after its source, as a browser's does. The new Tab is
+    // last, so its final index is the source's + 1. ponytail: best effort — a herdr without
+    // tab.move (before 0.9) leaves it last, and the Tab is made either way.
+    const at = body.after ? tabIds.indexOf(body.after) + 1 : 0;
+    if (at > 0 && at < tabIds.length) await entry.mux.moveTab(pane.tabId, at).catch(() => {});
     await this.refreshAfterWrite(muxKey);
     return { paneKey: `${muxKey}/${pane.id}` };
   }
