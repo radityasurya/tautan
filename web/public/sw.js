@@ -32,7 +32,9 @@ self.addEventListener('push', (event) => {
         body: data.body,
         tag: data.tag,
         data: { url: data.url || '/' },
-        renotify: Boolean(data.tag), // renotify without a tag throws
+        // renotify without a tag throws; a quiet push (the same Pane asked again within 30 s)
+        // replaces the shown notification without a second buzz.
+        renotify: Boolean(data.tag) && !data.quiet,
       });
       // ponytail: no count — the app writes the exact number from SSE state while it is open.
       if (self.navigator.setAppBadge) await self.navigator.setAppBadge().catch(() => {});

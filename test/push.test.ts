@@ -147,7 +147,8 @@ describe.skipIf(!canListen)('web push', () => {
       pane.agentName = 'Reviewer'; pane.status = 'blocked'; pane.revision = 4; await hub.refreshHost('local');
       await eventually(() => received.filter(item => item.path === '/fresh').length === 2);
       const named = received.filter(item => item.path === '/fresh')[1]!.body;
-      expect(JSON.parse(await decrypt(named, pair, auth, subscriberPublic)).title).toBe('Reviewer needs you');
+      // A new question moments after the last push replaces that notification without a buzz.
+      expect(JSON.parse(await decrypt(named, pair, auth, subscriberPublic))).toMatchObject({ title: 'Reviewer needs you', quiet: true });
       // Out of blocked for one poll and back with the same question: the same ask, no push,
       // and the Pane keeps the blocked time it had.
       const since = (await hub.state()).panes[0]!.statusChangedAt;

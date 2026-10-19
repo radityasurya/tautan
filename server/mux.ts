@@ -108,7 +108,7 @@ export class Hub {
   private pushes: { key: string; agent?: string; agentName?: string; label: string; title: string; brief: boolean }[] = [];
   /** The question each Pane's last blocked push was for (readBox head and option labels),
    *  and when that ask began. */
-  private asked = new Map<string, { question: string; since: number }>();
+  private asked = new Map<string, { question: string; since: number; pushedAt: number }>();
   private lastLineReads = 0;
   private lastLineWaiters: (() => void)[] = [];
   private seen: Record<string, number> = {};
@@ -263,12 +263,17 @@ export class Hub {
         }
         continue;
       }
-      this.asked.set(item.key, { question, since: status?.status === 'blocked' ? status.at : Date.now() });
-      console.log(`tautan: ${item.key} → blocked`);
+      const now = Date.now();
+      this.asked.set(item.key, { question, since: status?.status === 'blocked' ? status.at : now, pushedAt: now });
+      console.log(`tautan: ${new Date(now).toLocaleTimeString()} ${item.key} → blocked: ${box.head.slice(0, 100)}`);
+      // A burst of asks (an Agent publishing ten files, each approved) replaces one notification
+      // and buzzes once. ponytail: the window slides, so an Agent asking every 20 s for an hour
+      // buzzes only at the start; cap it from the last buzz if that ever shows up.
+      const quiet = last !== undefined && now - last.pushedAt < 30_000;
       const payload = JSON.stringify({
         title: `${item.agentName?.trim() || item.agent?.trim() || 'Agent'} needs you`,
         body: `${item.label} · ${this.lastLines.get(item.key)?.line || item.title}`,
-        url: `#/pane/${item.key}`, tag: item.key,
+        url: `#/pane/${item.key}`, tag: item.key, ...(quiet ? { quiet: true } : {}),
       });
       // ponytail: independent sends are enough until subscription counts become large.
       for (const subscription of [...this.subscriptions]) void sendPush(subscription, payload, this.vapid).then(response => {
