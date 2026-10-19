@@ -35,9 +35,10 @@ describe('readBox on Claude Code 2.1.296', () => {
 
   test('2.1.296: a long command scrolls the title off, and a wrapped option label stays one label', () => {
     const box = readBox(read('approval-long-command'));
-    // The title is gone from the screen; the card heads with the first line still visible.
-    expect(box.head).toBe('line 31 of the ping-pong tournament draw');
-    expect(box.rest).toContain('Do you want to proceed?');
+    // The title is gone from the screen; the card heads with the question under the dashed
+    // rule, and the command lines still visible follow it.
+    expect(box.head).toBe('Do you want to proceed?');
+    expect(box.rest[0]).toBe('line 31 of the ping-pong tournament draw');
     expect(box.menu[1]!.label).toBe(
       'Yes, and always allow access to /tmp/claude-1000/-home-user-projects-taut/ef720fc0-f056-44b2-8f69-5de99aef8a0d/scratchpad/24.2/work from this project',
     );

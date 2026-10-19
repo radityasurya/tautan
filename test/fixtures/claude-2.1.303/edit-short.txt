@@ -1,0 +1,48 @@
+      30 +- memo line 30: the Actions column fits at 390 px
+      31 +- memo line 31: the Actions column fits at 390 px
+      32 +- memo line 32: the Actions column fits at 390 px
+      33 +- memo line 33: the Actions column fits at 390 px
+      34 +- memo line 34: the Actions column fits at 390 px
+      35 +- memo line 35: the Actions column fits at 390 px
+      36 +- memo line 36: the Actions column fits at 390 px
+      37 +- memo line 37: the Actions column fits at 390 px
+      38 +- memo line 38: the Actions column fits at 390 px
+      39 +- memo line 39: the Actions column fits at 390 px
+      40 +- memo line 40: the Actions column fits at 390 px
+      41 +- memo line 41: the Actions column fits at 390 px
+      42 +- memo line 42: the Actions column fits at 390 px
+      43 +- memo line 43: the Actions column fits at 390 px
+      44 +- memo line 44: the Actions column fits at 390 px
+      45 +- memo line 45: the Actions column fits at 390 px
+      46  - memo line 46: a fix for the Actions column
+      47  - memo line 47: a fix for the Actions column
+      48  - memo line 48: a fix for the Actions column
+
+✻ Churned for 10s · done 7:28 PM
+
+❯ Use the Edit tool once on /tmp/boxes/outside/memo.md: change only line
+  30 to '- memo line 30: done'. No other tools.
+
+● Update(/tmp/boxes/outside/memo.md)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Edit file
+ ../outside/memo.md
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 27  - memo line 27: a fix for the Actions column
+ 28  - memo line 28: a fix for the Actions column
+ 29  - memo line 29: a fix for the Actions column
+ 30 -- memo line 30: a fix for the Actions column
+ 30 +- memo line 30: done
+ 31  - memo line 31: a fix for the Actions column
+ 32  - memo line 32: a fix for the Actions column
+ 33  - memo line 33: a fix for the Actions column
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to memo.md?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session; Yes, and always allow access to
+      /tmp/boxes/outside for this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend
+

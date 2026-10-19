@@ -1,0 +1,48 @@
+ 10 +- memo line 10: the Actions column fits at 390 px
+ 11 +- memo line 11: the Actions column fits at 390 px
+ 12 +- memo line 12: the Actions column fits at 390 px
+ 13 +- memo line 13: the Actions column fits at 390 px
+ 14 +- memo line 14: the Actions column fits at 390 px
+ 15 +- memo line 15: the Actions column fits at 390 px
+ 16 +- memo line 16: the Actions column fits at 390 px
+ 17 +- memo line 17: the Actions column fits at 390 px
+ 18 +- memo line 18: the Actions column fits at 390 px
+ 19 +- memo line 19: the Actions column fits at 390 px
+ 20 +- memo line 20: the Actions column fits at 390 px
+ 21 +- memo line 21: the Actions column fits at 390 px
+ 22 +- memo line 22: the Actions column fits at 390 px
+ 23 +- memo line 23: the Actions column fits at 390 px
+ 24 +- memo line 24: the Actions column fits at 390 px
+ 25 +- memo line 25: the Actions column fits at 390 px
+ 26 +- memo line 26: the Actions column fits at 390 px
+ 27 +- memo line 27: the Actions column fits at 390 px
+ 28 +- memo line 28: the Actions column fits at 390 px
+ 29 +- memo line 29: the Actions column fits at 390 px
+ 30 +- memo line 30: the Actions column fits at 390 px
+ 31 +- memo line 31: the Actions column fits at 390 px
+ 32 +- memo line 32: the Actions column fits at 390 px
+ 33 +- memo line 33: the Actions column fits at 390 px
+ 34 +- memo line 34: the Actions column fits at 390 px
+ 35 +- memo line 35: the Actions column fits at 390 px
+ 36 +- memo line 36: the Actions column fits at 390 px
+ 37 +- memo line 37: the Actions column fits at 390 px
+ 38 +- memo line 38: the Actions column fits at 390 px
+ 39 +- memo line 39: the Actions column fits at 390 px
+ 40 +- memo line 40: the Actions column fits at 390 px
+ 41 +- memo line 41: the Actions column fits at 390 px
+ 42 +- memo line 42: the Actions column fits at 390 px
+ 43 +- memo line 43: the Actions column fits at 390 px
+ 44 +- memo line 44: the Actions column fits at 390 px
+ 45 +- memo line 45: the Actions column fits at 390 px
+ 46  - memo line 46: a fix for the Actions column
+ 47  - memo line 47: a fix for the Actions column
+ 48  - memo line 48: a fix for the Actions column
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to memo.md?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session; Yes, and always allow access to
+      /tmp/boxes/outside for this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend
+

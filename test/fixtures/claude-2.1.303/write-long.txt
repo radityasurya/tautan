@@ -1,0 +1,48 @@
+  12 - memo line 12: a fix for the Actions column
+  13 - memo line 13: a fix for the Actions column
+  14 - memo line 14: a fix for the Actions column
+  15 - memo line 15: a fix for the Actions column
+  16 - memo line 16: a fix for the Actions column
+  17 - memo line 17: a fix for the Actions column
+  18 - memo line 18: a fix for the Actions column
+  19 - memo line 19: a fix for the Actions column
+  20 - memo line 20: a fix for the Actions column
+  21 - memo line 21: a fix for the Actions column
+  22 - memo line 22: a fix for the Actions column
+  23 - memo line 23: a fix for the Actions column
+  24 - memo line 24: a fix for the Actions column
+  25 - memo line 25: a fix for the Actions column
+  26 - memo line 26: a fix for the Actions column
+  27 - memo line 27: a fix for the Actions column
+  28 - memo line 28: a fix for the Actions column
+  29 - memo line 29: a fix for the Actions column
+  30 - memo line 30: a fix for the Actions column
+  31 - memo line 31: a fix for the Actions column
+  32 - memo line 32: a fix for the Actions column
+  33 - memo line 33: a fix for the Actions column
+  34 - memo line 34: a fix for the Actions column
+  35 - memo line 35: a fix for the Actions column
+  36 - memo line 36: a fix for the Actions column
+  37 - memo line 37: a fix for the Actions column
+  38 - memo line 38: a fix for the Actions column
+  39 - memo line 39: a fix for the Actions column
+  40 - memo line 40: a fix for the Actions column
+  41 - memo line 41: a fix for the Actions column
+  42 - memo line 42: a fix for the Actions column
+  43 - memo line 43: a fix for the Actions column
+  44 - memo line 44: a fix for the Actions column
+  45 - memo line 45: a fix for the Actions column
+  46 - memo line 46: a fix for the Actions column
+  47 - memo line 47: a fix for the Actions column
+  48 - memo line 48: a fix for the Actions column
+  49 - memo line 49: a fix for the Actions column
+  50 - memo line 50: a fix for the Actions column
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to create memo.md?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session; Yes, and always allow access to
+      /tmp/boxes/outside for this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend
+

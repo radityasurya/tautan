@@ -79,6 +79,8 @@ export async function promptId(explain: Explain, screen: Screen): Promise<string
 
 const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, '');
 const RULE = /^\s*─{20,}\s*$/;
+/** The dashed rule Claude draws around a file preview, between `Edit file` and its question. */
+const DASHED = /^\s*╌{20,}\s*$/;
 /** A numbered menu row: `❯ 1. Yes` on the cursor, `  2. No` off it. */
 const OPTION = /^(\s*)(❯\s*)?(\d+)\.\s+(.*\S)\s*$/;
 /** The question tabs over a form of several questions: `←  ☐ One  ☐ Two  ✔ Submit  →`. */
@@ -169,6 +171,12 @@ export function readBox(detection: string): { head: string; rest: string[]; menu
     .filter((line) => plain(line).trim() && !/^Tip:/.test(plain(line)));
   // The question heads the card; the tabs over a form of several questions follow it.
   if (shown.length > 1 && TABS.test(plain(shown[0]!).trim())) shown.splice(1, 0, shown.shift()!);
+  // A file preview taller than the Screen pushes the box's top rule and `Edit file` off it; the
+  // question under the preview's closing dashed rule heads the card, and the preview stays below.
+  const closing = start === 0 ? lines.map((line) => DASHED.test(plain(line))).lastIndexOf(true) : -1;
+  const ask = closing >= 0 ? lines.slice(closing + 1).find((line) => plain(line).trim())?.replace(frame, '').trim() : undefined;
+  const at = ask && /\?$/.test(plain(ask)) ? shown.lastIndexOf(ask) : -1;
+  if (at > 0) shown.unshift(...shown.splice(at, 1));
   const [head = 'Blocked', ...rest] = shown;
   return { head, rest, menu: options };
 }

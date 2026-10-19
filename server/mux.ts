@@ -252,7 +252,9 @@ export class Hub {
       // ponytail: two different prompts with the same head and labels inside 60 s of each
       // other share one push; key on the whole box if that ever shows up.
       const box = readBox(this.lastLines.get(item.key)?.excerpt ?? '');
-      const question = [box.head, ...box.menu.map(option => option.label)].join('\n');
+      // The line under the head (the command, the file, the first preview line) keeps two
+      // `Do you want to proceed?` boxes apart.
+      const question = [box.head, ...box.rest.slice(0, 1), ...box.menu.map(option => option.label)].join('\n');
       const last = this.asked.get(item.key);
       const status = this.statuses.get(item.key);
       if (item.brief && last?.question === question) {
