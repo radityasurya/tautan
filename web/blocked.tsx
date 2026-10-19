@@ -136,14 +136,15 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
               aria-label={menu.length ? `${option.glyph}. ${option.label}` : `${option.label}, key ${option.id}`}
               disabled={sending}
               onClick={() => void send(option.id)}
-              className={`press flex h-9 shrink-0 items-center gap-2 rounded-composer px-3.5 text-[13px] disabled:opacity-50 ${
+              className={`press flex min-h-9 max-w-full shrink-0 items-center gap-2 rounded-composer px-3.5 py-1.5 text-left text-[13px] disabled:opacity-50 ${
                 yes ? 'bg-warn font-semibold' : no ? 'border border-border text-danger' : 'bg-surface text-fg'
               }`}
               style={yes ? { color: ON_WARN } : undefined}
             >
-              {option.label}
+              {/* A label can carry a path with no spaces ("always allow access to /tmp/…"). */}
+              <span className="min-w-0 [overflow-wrap:anywhere]">{option.label}</span>
               <kbd
-                className={`rounded-[4px] border px-[5px] font-mono text-[10.5px] font-normal ${
+                className={`shrink-0 rounded-[4px] border px-[5px] font-mono text-[10.5px] font-normal ${
                   yes ? 'border-current/25' : 'border-border text-muted'
                 }`}
               >
