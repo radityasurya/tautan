@@ -271,6 +271,7 @@ export function Composer({
   cardRef,
   hideCard,
   onScreenCommand,
+  dropZone,
 }: {
   paneKey: string;
   pane?: StatePane;
@@ -291,6 +292,8 @@ export function Composer({
   hideCard?: boolean;
   /** A command whose whole UI is on the Screen (`/login`) went out from the Chat view. */
   onScreenCommand?: () => void;
+  /** The Chat view above the box: a file dropped anywhere on it attaches here. */
+  dropZone?: RefObject<HTMLElement | null>;
 }) {
   const agent = pane?.agent;
   const status = pane?.status ?? 'unknown';
@@ -454,7 +457,7 @@ export function Composer({
   const [uploads, setUploads] = useState<Upload[]>([]);
   /** A file is dragged over the box. The Keys tray's own cap drag carries no files. */
   const [fileOver, setFileOver] = useState(false);
-  const carriesFiles = (e: DragEvent) => !directOn && e.dataTransfer.types.includes('Files');
+  const carriesFiles = (e: { dataTransfer: DataTransfer | null }) => !directOn && !!e.dataTransfer?.types.includes('Files');
   const picker = useRef<HTMLInputElement>(null);
   const running = useRef(new Map<number, XMLHttpRequest>());
 
@@ -592,6 +595,35 @@ export function Composer({
       upload(u);
     }
   };
+
+  // The Chat view takes a dropped file as the box does, and the box's ring shows where it goes.
+  useEffect(() => {
+    const zone = dropZone?.current;
+    if (!zone) return;
+    const over = (e: globalThis.DragEvent) => {
+      if (!carriesFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = 'copy';
+      setFileOver(true);
+    };
+    const leave = (e: globalThis.DragEvent) => {
+      if (!zone.contains(e.relatedTarget as Node | null)) setFileOver(false);
+    };
+    const drop = (e: globalThis.DragEvent) => {
+      setFileOver(false);
+      if (!carriesFiles(e)) return;
+      e.preventDefault();
+      attach(e.dataTransfer!.files);
+    };
+    zone.addEventListener('dragover', over);
+    zone.addEventListener('dragleave', leave);
+    zone.addEventListener('drop', drop);
+    return () => {
+      zone.removeEventListener('dragover', over);
+      zone.removeEventListener('dragleave', leave);
+      zone.removeEventListener('drop', drop);
+    };
+  }, [dropZone, directOn]);
 
   const retry = (u: Upload) => {
     patch(u.id, { progress: 0, status: 'uploading', reason: undefined });

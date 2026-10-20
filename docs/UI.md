@@ -568,7 +568,8 @@ profile's default order back, **Done** returns to the caps.
 
 Attach opens the photo library, never the camera: the hidden input has
 `accept="image/*,video/*"`, `multiple`, and no `capture`. A file of any type dropped on
-the composer box (an accent ring shows while one is dragged over it) and a pasted screenshot
+the composer box or anywhere on the Chat view above it (an accent ring on the box shows while
+one is dragged over either; a split is left out, its cells being other Panes) and a pasted screenshot
 or copied file go up the same way. A paste that also carries text, such as spreadsheet cells
 with their picture, stays text unless the text only names the files (`pastedFiles()` in
 `web/keys.ts`). Typing directly takes neither. Each file goes out on

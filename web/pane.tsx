@@ -2120,6 +2120,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         // it loads (or falls back), the dock's card stays.
         hideCard={chatLens && chatShown === paneKey}
         onScreenCommand={() => setLens('screen')}
+        // A split holds other Panes' cells: a file dropped on one must not land in this Pane.
+        dropZone={chatLens && !showSplit ? slot : undefined}
       />
 
       <SwitchDrawer
