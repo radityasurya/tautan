@@ -241,3 +241,37 @@ detail; a windowed reset serves the newest Turns with `total`; a diff honours `a
 later Turn changes nothing about a cut row; a reset whose Turns lack ids is never
 windowed; `limit` without an ask, `since` with `before`, and `before` without `limit`
 follow the route rules above.
+
+## Amendment (2026-10-21): the Claude transcript parse is a resumable fold
+
+The parse was holistic only in how it reads, not in what it needs: it is a left fold over
+lines, and nothing looks ahead. `TranscriptParser` (`shared/chat.ts`) now carries that
+state, so a growing Claude transcript costs its new bytes, not the whole file.
+
+- **Resume.** The lens keeps the parser per conversation. On a signature miss it reads
+  from the last offset through `TranscriptIo.range`, holds the partial last line as bytes,
+  and feeds only complete lines. A torn line or a torn UTF-8 character waits for its
+  newline.
+- **Fresh parse.** The lens parses from byte 0 when there is no cached parser, when the io
+  has no `range` (this is also the kill switch), when the inode changes, or when the file
+  is smaller than the offset. It also parses fresh when the 4 KB rewrite mark fails: the
+  range read starts 4 KB early, and those bytes must equal the last 4 KB read before. This
+  catches an editor save or `cp` over the file that keeps the inode.
+- **Unchanged.** The cursor still names bytes, so generations, ETags and the delta rules
+  above hold. A feed that throws drops the parser, and the next tick parses fresh.
+- **Why in-place change is safe.** A result that lands on an old row now mutates that Turn
+  in place. Its print changes, so the delta upserts it: case 2 of this decision. Older
+  generations stay faithful fingerprints, because prints are hashes, not Turns.
+- **Still whole-file.** pi and Codex keep the whole-file parse (ponytail). The upgrade
+  path: Codex takes the `TranscriptParser` shape, and pi takes a parsed-entry memo, when a
+  file past about 20 MB shows.
+
+Measured on a 38 MB Claude transcript (1 642 Turns), with an 8 MB tail appended in 256 KB
+chunks (33 ticks, two runs, host load average about 47): the median tick takes 37.7 ms
+(p95 62–69 ms) with range reads, against 763–839 ms (p95 1.1–1.4 s) on the whole-file
+path. In a median tick the range read takes 0.3 ms, the feed about 4 ms, and the rest of
+the query about 30 ms (prints, remember, delta, pending re-cut, queue, states). The cold
+parse is unchanged at 0.6–0.8 s.
+
+An opt-in test checks a real transcript against the whole-file parse, line by line and at
+50 random byte cuts: `TAUTAN_TRANSCRIPT=<file> bun test test/chat-incremental.test.ts`.
