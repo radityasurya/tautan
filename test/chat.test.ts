@@ -365,6 +365,15 @@ describe('parseTranscript', () => {
       expect(turn!.tools[0]!.result).toBe('✓ pass\n 100%\n\tdone');
     });
 
+    test('a long line with no carriage return costs one pass, not one per column', () => {
+      // `/[^\n]*\r/g` retried from every column of such a line: 4 s of one real transcript.
+      const long = 'x'.repeat(200_000);
+      const start = performance.now();
+      const [turn] = parse({ type: 'assistant', message: { content: [use('t1', 'cat blob')] } }, result('t1', `${long}\nprog 10%\rprog 100%`));
+      expect(performance.now() - start).toBeLessThan(500);
+      expect(turn!.tools[0]!.result).toBe(`${long}\nprog 100%`);
+    });
+
     test('a long result keeps its last 40 lines after a … marker, whole, with the full text out of band', () => {
       const lines = Array.from({ length: 1_240 }, (_, n) => `line ${n + 1}`);
       const jsonl = [

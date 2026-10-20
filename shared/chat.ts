@@ -501,6 +501,11 @@ function cutDetail(tool: Tool, opts?: ParseOpts): void {
 }
 const ESCAPES = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
 const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f]/g;
+/** Each line from its last carriage return on, as a terminal shows a progress bar. Linear: the
+ *  regex form, `/[^\n]*\r/g`, retried from every column of a long line with no `\r` in it, and
+ *  took 4 s of a 4.2 MB transcript's parse. */
+const afterReturns = (text: string) =>
+  text.includes('\r') ? text.split('\n').map((line) => line.slice(line.lastIndexOf('\r') + 1)).join('\n') : text;
 
 /** Pin a tool's result text and its failure flag on the row. A carriage return keeps only what
  *  followed it on its line, as a terminal would show a progress bar. Over RESULT_LINES lines
@@ -508,7 +513,7 @@ const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f]/g;
 function attachResult(tool: Tool | undefined, content: unknown, isError: unknown, outputs?: Map<string, string>) {
   if (!tool) return;
   if (isError === true) tool.isError = true;
-  const text = resultText(content).replace(ESCAPES, '').replace(/\r\n/g, '\n').replace(/[^\n]*\r/g, '').replace(CONTROLS, '').replace(/\s+$/, '');
+  const text = afterReturns(resultText(content).replace(ESCAPES, '').replace(/\r\n/g, '\n')).replace(CONTROLS, '').replace(/\s+$/, '');
   if (!text.trim()) return;
   const lines = text.split('\n');
   tool.resultLines = lines.length;

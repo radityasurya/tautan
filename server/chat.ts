@@ -8,13 +8,14 @@ import type { State, StateHost } from '../shared/types.ts';
 export interface TranscriptSignature { inode: string; size: number; mtime: string }
 /** One `subagents` directory listing: its mtime signature and every agent's meta text.
  *  `at` is the conversation file's first timestamp when its head parses, else its mtime. */
-export interface SubagentDir { mtime: string; agents: { id: string; meta: string; at?: number }[] }
+export interface SubagentDir { mtime: string; agents: { id: string; meta: string; at?: number }[]; unchanged?: true }
 export interface TranscriptIo {
   stat(path: string, target?: string): Promise<TranscriptSignature | undefined>;
   read(path: string, target?: string): Promise<string>;
   /** One round trip: a `subagents` directory's signature and its `agent-<id>.meta.json` files;
-   *  `undefined` when the directory does not exist. */
-  subagents?(dir: string, target?: string): Promise<SubagentDir | undefined>;
+   *  `undefined` when the directory does not exist. When its signature is still `known`, it may
+   *  answer `unchanged` with no agents, and read nothing else. */
+  subagents?(dir: string, target?: string, known?: string): Promise<SubagentDir | undefined>;
   /** Every `agent-<id>.jsonl` mtime in ms, in one cheap round trip for the running check. */
   mtimes?(dir: string, target?: string): Promise<Map<string, number> | undefined>;
   /** The last `bytes` of a file, for a conversation's ending. */
@@ -93,6 +94,12 @@ const firstAt = (head: string, mtimeMs: number | undefined): number | undefined 
 
 /** A file's head, grown until its first line is complete: one long first entry can hold the
  *  timestamp (or Codex's `session_meta` id) deep inside it. */
+/** `work` over every item, 32 at a time: parallel reads with the open files bounded.
+ *  ponytail: a fixed batch; a pool that refills as each read lands if a slow file ever stalls one. */
+async function inBatches<T>(items: T[], work: (item: T) => Promise<void>): Promise<void> {
+  for (let i = 0; i < items.length; i += 32) await Promise.all(items.slice(i, i + 32).map(work));
+}
+
 async function readHead(handle: FileHandle): Promise<string> {
   let window = HEAD;
   for (;;) {
@@ -127,12 +134,11 @@ export const localIo: TranscriptIo = {
   async mtimes(dir) {
     try {
       const out = new Map<string, number>();
-      for (const name of await readdir(dir)) {
-        const id = name.match(/^agent-(.+)\.jsonl$/)?.[1];
-        if (!id) continue;
-        const info = await stat(join(dir, name)).catch(() => undefined);
+      const ids = (await readdir(dir)).flatMap((name) => name.match(/^agent-(.+)\.jsonl$/)?.[1] ?? []);
+      await inBatches(ids, async (id) => {
+        const info = await stat(join(dir, `agent-${id}.jsonl`)).catch(() => undefined);
         if (info?.isFile()) out.set(id, Math.round(info.mtimeMs));
-      }
+      });
       return out;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
@@ -179,19 +185,23 @@ export const localIo: TranscriptIo = {
       return buffer.subarray(0, bytesRead).toString('utf8');
     } finally { await handle.close(); }
   },
-  async subagents(dir) {
+  async subagents(dir, _target, known) {
     try {
       const info = await stat(dir);
       if (!info.isDirectory()) return undefined;
-      const agents: SubagentDir['agents'] = [];
-      for (const name of (await readdir(dir)).sort()) {
-        const id = name.match(/^agent-(.+)\.meta\.json$/)?.[1];
-        if (!id) continue;
-        const meta = await readFile(join(dir, name), 'utf8').catch(() => undefined);
-        if (meta === undefined) continue; // deleted mid-listing: the agent is gone
-        agents.push({ id, meta, at: await agentAt(join(dir, `agent-${id}.jsonl`)) });
-      }
-      return { mtime: String(info.mtimeMs), agents };
+      // An agent's meta and its first line are written once, and adding a file moves the
+      // directory: one that has not moved lists as before. 227 agents read one by one took 3 s
+      // of every Chat request.
+      const mtime = String(info.mtimeMs);
+      if (mtime === known) return { mtime, agents: [], unchanged: true };
+      const ids = (await readdir(dir)).sort().flatMap((name) => name.match(/^agent-(.+)\.meta\.json$/)?.[1] ?? []);
+      const found = new Map<string, SubagentDir['agents'][number]>();
+      await inBatches(ids, async (id) => {
+        const meta = await readFile(join(dir, `agent-${id}.meta.json`), 'utf8').catch(() => undefined);
+        if (meta === undefined) return; // deleted mid-listing: the agent is gone
+        found.set(id, { id, meta, at: await agentAt(join(dir, `agent-${id}.jsonl`)) });
+      });
+      return { mtime, agents: ids.flatMap((id) => found.get(id) ?? []) };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       throw error;
@@ -216,7 +226,7 @@ const remoteIo: TranscriptIo = {
     if (result.code) throw new Error('remote transcript read failed');
     return result.stdout;
   },
-  subagents: (dir, target) => target ? remoteSubagents(dir, target) : localIo.subagents!(dir),
+  subagents: (dir, target, known) => target ? remoteSubagents(dir, target) : localIo.subagents!(dir, undefined, known),
   mtimes: (dir, target) => target ? remoteMtimes(dir, target) : localIo.mtimes!(dir),
   tail: async (path, bytes, target) => {
     if (!target) return localIo.tail!(path, bytes);
@@ -1072,10 +1082,12 @@ export class ChatLens {
   private async list(paneKey: string, dir: string, target: string | undefined, sessionId: string): Promise<Subagents | undefined> {
     const read = this.io.subagents;
     if (!read) return undefined;
-    let found: SubagentDir | undefined;
-    try { found = await read(dir, target); } catch { return undefined; } // a failing listing must not take the chat down
-    const signature = found?.mtime ?? '';
     const cached = this.subagents.get(paneKey);
+    const known = cached?.sessionId === sessionId ? cached.signature : undefined;
+    let found: SubagentDir | undefined;
+    try { found = await read(dir, target, known); } catch { return undefined; } // a failing listing must not take the chat down
+    if (found?.unchanged && cached && known !== undefined) return cached;
+    const signature = found?.mtime ?? '';
     if (cached?.sessionId === sessionId && cached.signature === signature) return cached;
     const value: Subagents = { sessionId, signature, list: found ? subagentsOf(found.agents) : [] };
     this.subagents.set(paneKey, value);

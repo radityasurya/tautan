@@ -138,6 +138,13 @@ describe('chat subagents and previews', () => {
       expect(found?.agents.find(agent => agent.id === 'stamped')!.at).toBe(Date.parse('2026-10-06T00:00:03.000Z'));
       expect(typeof found?.agents.find(agent => agent.id === 'plain')!.at).toBe('number');
       expect(await localIo.subagents!(join(home2, 'missing'))).toBeUndefined();
+      // A directory that has not moved reads nothing more; a new agent moves it, and it lists again.
+      expect(await localIo.subagents!(dir, undefined, found!.mtime)).toEqual({ mtime: found!.mtime, agents: [], unchanged: true });
+      writeFileSync(join(dir, 'agent-later.meta.json'), JSON.stringify({ agentType: 'qa' }));
+      utimesSync(dir, new Date(), new Date(Date.now() + 5_000)); // a coarse clock may not move it
+      const again = await localIo.subagents!(dir, undefined, found!.mtime);
+      expect(again?.unchanged).toBeUndefined();
+      expect(again?.agents.map(agent => agent.id)).toEqual(['later', 'plain', 'stamped']);
     } finally { rmSync(home2, { recursive: true, force: true }); }
   });
 
