@@ -229,6 +229,15 @@ export function enterAction(e: { key: string; ctrlKey: boolean; metaKey: boolean
   return o.returnBreaks ? null : 'send';
 }
 
+/**
+ * The files a paste attaches: a screenshot or a copied image. A spreadsheet's or a document's
+ * cells come with a picture of them too, so text wins, unless it only names the files (a file
+ * copied in a file manager pastes its name as text).
+ */
+export function pastedFiles(files: File[], text: string): File[] {
+  return !text.trim() || files.some((file) => text.includes(file.name)) ? files : [];
+}
+
 /** A typed letter or symbol while a modifier is armed: `ctrl+r`, `alt+.`. */
 export const modified = (mod: Modifier, ch: string): string => `${mod}+${ch.toLowerCase()}`;
 

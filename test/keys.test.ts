@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { capInput, directKey, editableCaps, modified, moveRow, moveRowTo, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap } from '../web/keys.ts';
+import { capInput, directKey, editableCaps, modified, moveRow, moveRowTo, parseKeyPrefs, pastedFiles, toKeyPrefs, trayGroups, type Cap } from '../web/keys.ts';
 
 const cap = (label: string) => trayGroups({ shell: true, claude: false, profileKeys: [] })
   .flatMap((group) => group.caps).find((c) => c.label === label) as Cap;
@@ -109,4 +109,13 @@ test('Edit keys: a drag drops a cap at the target slot, and the order survives a
   const rows = moveRowTo(editableCaps(groups, null), 5, 0);
   const saved = parseKeyPrefs(JSON.stringify(toKeyPrefs(rows)));
   expect(editableCaps(groups, saved).map((r) => r.cap.label)).toEqual(rows.map((r) => r.cap.label));
+});
+
+test('a paste attaches a screenshot or a copied file, and pasted cells stay text', () => {
+  const shot = new File(['png'], 'image.png', { type: 'image/png' });
+  const copied = new File(['png'], 'diagram.png', { type: 'image/png' });
+  expect(pastedFiles([shot], '')).toEqual([shot]); // a screenshot carries no text
+  expect(pastedFiles([copied], 'diagram.png')).toEqual([copied]); // a file manager adds its name
+  expect(pastedFiles([shot], 'Q3\t1200\nQ4\t1450')).toEqual([]); // a spreadsheet adds a picture
+  expect(pastedFiles([], 'plain text')).toEqual([]);
 });

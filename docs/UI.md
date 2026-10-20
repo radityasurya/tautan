@@ -567,7 +567,11 @@ a touch drag would fight the strip's scroll. Every change saves at once; **Reset
 profile's default order back, **Done** returns to the caps.
 
 Attach opens the photo library, never the camera: the hidden input has
-`accept="image/*,video/*"`, `multiple`, and no `capture`. Each file goes out on
+`accept="image/*,video/*"`, `multiple`, and no `capture`. A file of any type dropped on
+the composer box (an accent ring shows while one is dragged over it) and a pasted screenshot
+or copied file go up the same way. A paste that also carries text, such as spreadsheet cells
+with their picture, stays text unless the text only names the files (`pastedFiles()` in
+`web/keys.ts`). Typing directly takes neither. Each file goes out on
 its own XMLHttpRequest as a raw body with the name in `X-Name`; `post()` is JSON
 only, and an upload needs progress and an abort. While any upload runs, a 2 px
 accent line under the composer shows the average progress. Each file gets a

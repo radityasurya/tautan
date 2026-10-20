@@ -4,7 +4,7 @@ import { hintPills } from './affordances.tsx';
 import { haptic, post, reducedMotion } from './app.tsx';
 import { Blocked, type ExplainResponse } from './blocked.tsx';
 import { Attach, Keyboard, Mic, ScreenLens, Send } from './icons.tsx';
-import { applyKeyPrefs, capInput, directKey, editableCaps, enterAction, modified, MODIFIERS, moveRow, moveRowTo, parseKeyPrefs, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
+import { applyKeyPrefs, capInput, directKey, editableCaps, enterAction, modified, MODIFIERS, moveRow, moveRowTo, parseKeyPrefs, pastedFiles, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
 import { applyPick, Picker, tokenAt, useComplete, type Item } from './complete.tsx';
 import { toolbarFromScreen, type Profile } from './profiles.ts';
 import { quickReplies, type Pill } from './replies.ts';
@@ -452,6 +452,9 @@ export function Composer({
   // `post()` is JSON only. An upload wants progress and an abort, so it goes out on XHR:
   // the browser sets Origin either way, which is what the Hub checks.
   const [uploads, setUploads] = useState<Upload[]>([]);
+  /** A file is dragged over the box. The Keys tray's own cap drag carries no files. */
+  const [fileOver, setFileOver] = useState(false);
+  const carriesFiles = (e: DragEvent) => !directOn && e.dataTransfer.types.includes('Files');
   const picker = useRef<HTMLInputElement>(null);
   const running = useRef(new Map<number, XMLHttpRequest>());
 
@@ -582,7 +585,7 @@ export function Composer({
     xhr.send(u.file);
   };
 
-  const attach = (files: FileList | null) => {
+  const attach = (files: FileList | File[] | null) => {
     for (const file of Array.from(files ?? [])) {
       const u: Upload = { id: (uploadId += 1), file, progress: 0, status: 'uploading' };
       setUploads((list) => [...list, u]);
@@ -1237,6 +1240,13 @@ export function Composer({
         setText(el.value);
       }}
       onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+      // A pasted screenshot goes up as Attach would send it. Typing directly has no Attach.
+      onPaste={(e) => {
+        const files = directOn ? [] : pastedFiles(Array.from(e.clipboardData.files), e.clipboardData.getData('text/plain'));
+        if (!files.length) return;
+        e.preventDefault();
+        attach(files);
+      }}
       // Desktop: Enter sends and Shift+Enter breaks the line. A touch screen's Return breaks the
       // line for an Agent and Send sends; a shell's Return still runs the line. Every other
       // key, Ctrl included, is the field's own. Safari ends an IME composition with an Enter
@@ -1390,7 +1400,25 @@ export function Composer({
   // it, then the attachments, the field, and one quiet bar: toggles left; the Screen's model
   // and context, attach, mic and Send right.
   const box = (
-    <div className={`relative flex flex-col ${desktop ? '' : 'rounded-card border border-border bg-bg focus-within:border-accent/60'}`}>
+    <div
+      className={`relative flex flex-col ${desktop ? '' : 'rounded-card border border-border bg-bg focus-within:border-accent/60'} ${fileOver ? 'ring-2 ring-accent/60 ring-inset' : ''}`}
+      // A file dropped on the box goes up as Attach would send it.
+      onDragOver={(e) => {
+        if (!carriesFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setFileOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFileOver(false);
+      }}
+      onDrop={(e) => {
+        setFileOver(false);
+        if (!carriesFiles(e)) return;
+        e.preventDefault();
+        attach(e.dataTransfer.files);
+      }}
+    >
       {desktop && (showSuggest ? suggestTray : showKeys ? keysTray : null)}
       {desktop && attachments}
       {/* Typing directly, the field only catches keys: out of sight, still focusable, so the
