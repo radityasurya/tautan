@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { diffLines, diffStat, foldContext, textLines } from '../shared/line-diff.ts';
+import { diffLines, diffStat, foldContext, textLines, unifiedKinds } from '../shared/line-diff.ts';
 
 const marks = (a: string, b: string) => diffLines(textLines(a), textLines(b)).map((l) => `${l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' '}${l.text}`);
 
@@ -51,5 +51,30 @@ describe('foldContext', () => {
     const a = Array.from({ length: 12 }, (_, n) => `l${n}`);
     const b = a.map((line, n) => (n === 2 || n === 8 ? `${line}!` : line));
     expect(foldContext(diffLines(a, b)).filter((r) => r.type === 'skip')).toEqual([]);
+  });
+});
+
+describe('unifiedKinds', () => {
+  test('marks a git diff as a terminal colours it, and only inside a hunk', () => {
+    const out = [
+      'diff --git a/x.ts b/x.ts',
+      'index d292c51..ecec7f5 100644',
+      '--- a/x.ts',
+      '+++ b/x.ts',
+      '@@ -1,3 +1,3 @@ export class Hub {',
+      ' keep',
+      '-old',
+      '+new',
+      '',
+      '\\ No newline at end of file',
+      '----',
+      '- a list item',
+      'tsc exit 0',
+    ].join('\n');
+    expect(unifiedKinds(out)).toEqual(['file', 'file', 'file', 'file', 'hunk', '', 'del', 'add', '', '', '', '', '']);
+  });
+
+  test('text with no hunk header is no diff', () => {
+    expect(unifiedKinds('- a list\n+ not a diff\n--- a rule')).toBeUndefined();
   });
 });

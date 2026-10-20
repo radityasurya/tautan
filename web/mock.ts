@@ -959,6 +959,11 @@ const mockChat = (agent?: string): ChatResponse => agent ? {
     {
       role: 'assistant', at: ago(6), tools: [
         { name: 'Edit', brief: 'shared/ansi.ts', detail: '/home/dev/projects/tautan/shared/ansi.ts\n\n- case 22: style.bold = false; break;\n+ case 22: // normal intensity\n+   style.bold = false;\n+   style.dim = false;\n+   break;' },
+        // A unified diff in a result: the Chat view colours it as a terminal colours `git diff`.
+        {
+          name: 'Bash', brief: 'git diff shared/ansi.ts', detail: 'git diff shared/ansi.ts', resultLines: 13,
+          result: 'diff --git a/shared/ansi.ts b/shared/ansi.ts\nindex 3f1c2a0..9b7e4d1 100644\n--- a/shared/ansi.ts\n+++ b/shared/ansi.ts\n@@ -88,3 +88,6 @@ function applySgr(style: Style, code: number) {\n     case 1: style.bold = true; break;\n-    case 22: style.bold = false; break;\n+    case 22: // normal intensity\n+      style.bold = false;\n+      style.dim = false;\n+      break;\n     case 2: style.dim = true; break;',
+        },
         {
           name: 'Bash', brief: 'bun test test/ansi.test.ts', detail: '# Run the ANSI parser tests\nbun test test/ansi.test.ts', resultLines: 7,
           result: 'bun test v1.3.2 (b131639c)\n\ntest/ansi.test.ts:\n✓ parseAnsi > SGR 22 clears dim [0.21ms]\n✓ parseAnsi > 256 colours [0.08ms]\n\n 41 pass, 0 fail, 112 expect() calls',

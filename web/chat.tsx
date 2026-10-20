@@ -16,6 +16,7 @@ import { queueShown, screenQueue, type QueuedItem } from './queued.ts';
 import { toolbarFromScreen, type Profile, type ToolbarData } from './profiles.ts';
 import { Counts } from './diff.tsx';
 import { EditDiff } from './edit-diff.tsx';
+import { unifiedKinds, type UnifiedKind } from '../shared/line-diff.ts';
 import { runSummary, toolRuns } from './tool-groups.ts';
 import { store } from './store.tsx';
 import { finishedIn, readSubagent, setShowing, subagentChips, subagentName, subagentRows, subagentRunning, writeSubagent } from './subagents.ts';
@@ -247,9 +248,16 @@ const count = (n: number, word: string) => `${n.toLocaleString()} ${word}${n ===
 // A shell's last lines are what matter, so its open output starts scrolled to the end.
 const SHELL = /^bash$/i;
 
+/** A unified diff's lines in a result, as a terminal colours `git diff`, in the Diff view's tints.
+ *  The tint runs to the box's edges. */
+const KIND: Record<UnifiedKind, string> = {
+  file: 'font-semibold', hunk: 'text-accent', add: 'diff-add', del: 'diff-del', '': '',
+};
+
 /** What the tool returned: a header with its size, Copy, and the text in its own scroll box. */
 function ToolResult({ tool, full }: { tool: Tool; full?: string }) {
   const result = full ?? tool.result!;
+  const kinds = useMemo(() => unifiedKinds(result), [result]);
   const total = tool.resultLines ?? result.split('\n').length;
   const capped = full === undefined && (tool.resultTruncated || result.startsWith('…\n'));
   const size = capped ? `last ${result.split('\n').length - (result.startsWith('…\n') ? 1 : 0)} of ${count(total, 'line')}` : count(total, 'line');
@@ -268,7 +276,11 @@ function ToolResult({ tool, full }: { tool: Tool; full?: string }) {
           tool.isError ? 'border-danger/40' : 'border-border'
         }`}
       >
-        {result}
+        {kinds
+          ? result.split('\n').map((line, n) => (
+              <span key={n} className={`-mx-2 block px-2 ${KIND[kinds[n]!]}`}>{line || ' '}</span>
+            ))
+          : result}
       </pre>
     </section>
   );

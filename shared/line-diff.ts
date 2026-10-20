@@ -70,3 +70,40 @@ export function foldContext(lines: DiffLine[], context = 3): (DiffLine | Skip)[]
   });
   return out;
 }
+
+/** A unified diff's line, as a terminal colours `git diff`: a file header, a hunk header, an
+ *  added or a removed line, or anything else (''). */
+export type UnifiedKind = 'file' | 'hunk' | 'add' | 'del' | '';
+
+const HUNK = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
+const FILE = /^(?:diff |index |--- |\+\+\+ |new file mode|deleted file mode|old mode|new mode|similarity index|rename from|rename to|Binary files )/;
+
+/**
+ * Each line's kind when `text` holds a unified diff (a hunk header marks one), else undefined.
+ * A hunk runs for the line counts its header gives, as git reads it, so a `----` or a
+ * `- item` printed after the diff stays plain. A line that fits no hunk ends it early: the
+ * output was cut (`| head`).
+ */
+export function unifiedKinds(text: string): UnifiedKind[] | undefined {
+  const lines = text.split('\n');
+  if (!lines.some((line) => HUNK.test(line))) return undefined;
+  let older = 0;
+  let newer = 0;
+  return lines.map((line): UnifiedKind => {
+    const head = HUNK.exec(line);
+    if (head) {
+      older = Number(head[1] ?? 1);
+      newer = Number(head[2] ?? 1);
+      return 'hunk';
+    }
+    if (older > 0 || newer > 0) {
+      if (line[0] === '\\') return '';
+      if (line[0] === '+' && newer > 0) return newer--, 'add';
+      if (line[0] === '-' && older > 0) return older--, 'del';
+      // A blank context line: some tools strip its leading space.
+      if ((line[0] === ' ' || line === '') && older > 0 && newer > 0) return older--, newer--, '';
+      older = newer = 0;
+    }
+    return FILE.test(line) ? 'file' : '';
+  });
+}

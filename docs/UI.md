@@ -676,6 +676,12 @@ by the file's extension. A Write reads as all added; an HTML Write keeps its pre
 of its source. Long lines scroll sideways inside the box. A pending edit's approval row
 draws the same diff.
 
+A result that holds a unified diff (`git diff`, `diff -u`; a hunk header marks one) reads as
+a terminal colours it: added and removed lines in the `diff-add` and `diff-del` tints to the
+box's edges, hunk headers in the accent, file headers bold. A hunk runs for the line counts
+its header gives (`unifiedKinds()` in `shared/line-diff.ts`), so a `----` or a `- item`
+printed after the diff stays plain. Copy still copies the raw text.
+
 **Runs.** Two or more finished calls in a row fold into one line, the way Claude Code
 prints it: `Ran 3 shell commands, read 2 files, edited 1 file`, kinds in the order they
 first ran, `Used 4 tools` when none is known. A failure adds a red `1 failed`; the line
