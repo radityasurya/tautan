@@ -55,6 +55,31 @@ export const CollapseAll = (p: Props) => (
   </Icon>
 );
 
+/** Edit: a pencil on its slant. */
+export const Pencil = (p: Props) => (
+  <Icon {...p}>
+    <path d="M4 20h4L19 9a2.83 2.83 0 0 0-4-4L4 16v4z" />
+    <path d="M13.5 6.5l4 4" />
+  </Icon>
+);
+
+/** Fold every folder in the Explorer: VS Code's box with a minus, a second box behind it. */
+export const FoldAll = (p: Props) => (
+  <Icon {...p}>
+    <path d="M8 4h10a2 2 0 0 1 2 2v10" />
+    <rect x="4" y="8" width="12" height="12" rx="2" />
+    <path d="M7.5 14h5" />
+  </Icon>
+);
+
+/** A frame with its left column ruled off: hides or shows the Explorer. */
+export const PanelLeft = (p: Props) => (
+  <Icon {...p}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+    <path d="M9.5 4.5v15" />
+  </Icon>
+);
+
 /** Expand every group: the same two chevrons, pointing outward. */
 export const ExpandAll = (p: Props) => (
   <Icon {...p}>

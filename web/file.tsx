@@ -3,17 +3,19 @@
 // Desktop keeps the Explorer tree beside either; the phone shows one at a time. The Hub reads a
 // file through the Pane. `worktree` is another checkout of the Workspace's repository: the
 // tree's root, the branch chip's and the Diff link's checkout.
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import type { State, StateHost, StatePane } from '../shared/types.ts';
 import { Link, navigate, useDesktop } from './app.tsx';
 import { BranchChip } from './diff.tsx';
-import { Back, Download, External, Folder, Lock } from './icons.tsx';
+import { Back, Download, External, Folder, Lock, PanelLeft, Pencil } from './icons.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
 import { Crumbs, Explorer, FolderPanel, GoToFile } from './explorer.tsx';
 import { absolute, basename, dirname, filesHash, filesUrl, size, splitBom, viewerFor } from './folders-logic.ts';
-import { Markdown } from './markdown.tsx';
+import type { Run } from './highlight.ts';
+import { codeLang, Markdown, useRuns } from './markdown.tsx';
 import { FRAME, FullPreview } from './preview.tsx';
 import { tildePath } from './spaces.ts';
+import { store } from './store.tsx';
 
 type FileData =
   | { kind: 'image'; src: string; bytes: number }
@@ -33,6 +35,21 @@ const SANDBOX_NOTE = 'Sandboxed · scripts and outside requests off';
 const params = new URLSearchParams(location.search);
 let autoEdit = (params.has('mock') || import.meta.env.VITE_MOCK === '1') && params.get('open') === 'edit';
 
+/** The Explorer beside Files on desktop: shown unless hidden from its root row. */
+const EXPLORER = 'tautan.explorer';
+
+/** Coloured runs cut at line breaks: one list per line, for the numbered rows. */
+function byLine(runs: Run[]): Run[][] {
+  const lines: Run[][] = [[]];
+  for (const [text, cls] of runs) {
+    text.split('\n').forEach((part, i) => {
+      if (i) lines.push([]);
+      if (part) lines.at(-1)!.push([part, cls]);
+    });
+  }
+  return lines;
+}
+
 const ACTION = 'flex min-h-11 shrink-0 items-center text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]';
 
 /** Back one screen. With `leave` (desktop Files) it leaves Files in one press, past every file
@@ -44,6 +61,14 @@ function BackLink({ leave }: { leave?: string }) {
       href="#/"
       aria-label="Back"
       onClick={(event) => {
+        const state = history.state as { filesFrom?: number; mark?: string } | null;
+        // The editor's own entry: its guard asks about unsaved changes before anything leaves.
+        if (leave && !state?.mark) {
+          event.preventDefault();
+          if (state?.filesFrom) history.go(-state.filesFrom);
+          else navigate(`#/pane/${encodeURIComponent(leave)}`, { replace: true });
+          return;
+        }
         if (history.length > 1) {
           event.preventDefault();
           history.back();
@@ -61,14 +86,6 @@ export function FileScreen({
   path,
   dir,
   worktree,
-        const state = history.state as { filesFrom?: number; mark?: string } | null;
-        // The editor's own entry: its guard asks about unsaved changes before anything leaves.
-        if (leave && !state?.mark) {
-          event.preventDefault();
-          if (state?.filesFrom) history.go(-state.filesFrom);
-          else navigate(`#/pane/${encodeURIComponent(leave)}`, { replace: true });
-          return;
-        }
   state,
 }: {
   paneKey: string;
@@ -79,6 +96,11 @@ export function FileScreen({
 }) {
   const desktop = useDesktop();
   const [hidden, setHidden] = useState(false);
+  const [explorer, setExplorer] = useState(() => store.get(EXPLORER) !== 'hidden');
+  const showExplorer = (on: boolean) => {
+    store.set(EXPLORER, on ? 'shown' : 'hidden');
+    setExplorer(on);
+  };
   // A branch switch changes the files under the list, so it starts over.
   const [round, setRound] = useState(0);
   const pane = state?.panes.find((item) => item.key === paneKey);
@@ -113,18 +135,33 @@ export function FileScreen({
         )}
       </header>
       <div className="flex min-h-0 flex-1">
-        {desktop && host && root && (
-          <aside className="flex w-64 shrink-0 flex-col gap-2 border-r border-border bg-surface pt-3 xl:w-72">
-            {goTo && <div className="px-3">{goTo}</div>}
-            <Explorer key={round} host={host.id} paneKey={paneKey} root={root} at={abs || folder} file={Boolean(path)} hidden={hidden} worktree={worktree} />
+        {desktop && host && root && (explorer ? (
+          <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-surface xl:w-72">
+            <Explorer key={round} host={host.id} paneKey={paneKey} root={root} at={abs || folder} file={Boolean(path)} hidden={hidden} worktree={worktree} onHide={() => showExplorer(false)} search={goTo} />
           </aside>
-        )}
+        ) : (
+          // The rail keeps the toggle where the Explorer's header had it.
+          <aside aria-label="Explorer" className="flex w-12 shrink-0 flex-col border-r border-border bg-surface">
+            <div className="flex h-11 shrink-0 items-center border-b border-border px-2">
+              <button
+                type="button"
+                aria-label="Show Explorer"
+                title="Show Explorer"
+                onClick={() => showExplorer(true)}
+                className="flex size-8 items-center justify-center rounded-chip text-muted outline-none hover:bg-fg/5 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/60"
+              >
+                <PanelLeft size={16} />
+              </button>
+            </div>
+          </aside>
+        ))}
         <main className={`min-w-0 flex-1 ${path ? 'flex flex-col' : 'overflow-y-auto overscroll-contain'}`}>
           {path ? (
             // Keyed by file: an open editor or a Source choice belongs to the file it was made on.
             <FileView key={path} paneKey={paneKey} path={path} worktree={worktree} pane={pane} host={host} desktop />
           ) : host ? (
-            <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-4 pt-1 pb-[max(env(safe-area-inset-bottom),16px)] lg:px-8 lg:pt-5">
+            // Desktop is full bleed under its breadcrumb bar, as a file is; the phone keeps a column.
+            <div className={desktop ? 'flex flex-col pb-6' : 'mx-auto flex w-full max-w-5xl flex-col gap-3 px-4 pt-1 pb-[max(env(safe-area-inset-bottom),16px)]'}>
               {!desktop && goTo}
               <FolderPanel key={round} host={host.id} paneKey={paneKey} path={folder} hidden={hidden} onHidden={setHidden} worktree={worktree} desktop={desktop} />
             </div>
@@ -233,6 +270,11 @@ function FileView({
   }, [version]);
 
   const name = basename(path);
+  const lines = useMemo(() => (text ? text.text.split(/\r\n?|\n/) : []), [text]);
+  const source = useMemo(() => lines.join('\n'), [lines]);
+  // Source in the editor's colours, as fenced code in Chat: by extension, plain until loaded.
+  const runs = useRuns(text && !(RENDERED.test(path) && view === 'Preview') ? codeLang(name.match(/\.([^.]+)$/)?.[1] ?? '', source) : undefined, source);
+  const lineRuns = useMemo(() => (runs ? byLine(runs) : undefined), [runs]);
 
   if (editing && text && version) {
     return (
@@ -271,34 +313,48 @@ function FileView({
   const tooLarge = error === 'too large';
   const showHtml = html && ((rendered && view === 'Preview') || tooLarge);
   const showPreview = rendered && view === 'Preview';
-  const lines = text ? text.text.split(/\r\n?|\n/) : [];
   const facts = text ? `${lines.length} ${lines.length === 1 ? 'line' : 'lines'} · ${size(text.bytes)}` : data ? size(data.bytes) : '';
-  const icon = `${ACTION} w-10 justify-center text-muted hover:text-fg`;
+  // Desktop draws the bar compact, as a code host does; the phone keeps 44 px targets.
+  const RING = 'outline-none focus-visible:ring-2 focus-visible:ring-accent/60';
+  const icon = desktop
+    ? `flex size-8 shrink-0 items-center justify-center rounded-chip text-muted hover:bg-fg/5 hover:text-fg ${RING}`
+    : `${ACTION} w-10 justify-center text-muted hover:text-fg`;
+  const glyph = desktop ? 16 : 18;
 
-  // The file's own bar, as a code host draws it over a file: the view switch, what the file
-  // is, and what you can do with it.
+  // The file's own bar, in GitHub's order: the view switch and what the file is on the left;
+  // Open and Download, then Edit, the one labelled action, on the right.
   const bar = (
-    <div className="flex min-h-11 shrink-0 items-center gap-1 border-b border-border bg-surface pr-1 pl-2">
+    <div className={`flex min-h-11 shrink-0 items-center gap-1 border-b border-border bg-surface ${desktop ? 'px-3' : 'pr-1 pl-2'}`}>
       {rendered && (
-        // The kit control is 30 px tall; taller buttons keep each half a 44 px target on the phone.
-        <div className="w-44 shrink-0 [&_button]:min-h-[34px]">
+        // The kit sets the halves' padding inline, so the compact one overrides it.
+        <div className={`shrink-0 ${desktop ? 'w-[136px] [&_button]:py-[2px]!' : 'w-44 [&_button]:min-h-[34px]'}`}>
           <SegmentedControl options={['Preview', 'Source']} value={view} onChange={setView} />
         </div>
       )}
       <span className="min-w-0 flex-1 truncate px-1.5 font-mono text-caption text-muted">{facts}</span>
-      {version && (
-        <button type="button" onClick={() => setEditing(true)} className={`${ACTION} px-2.5 text-body font-semibold`}>
-          Edit
-        </button>
-      )}
       {host && (
         <>
           <a href={raw()} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab" className={icon}>
-            <External size={18} />
+            <External size={glyph} />
           </a>
           <a href={raw({ download: true })} download={name} aria-label="Download" title="Download" className={icon}>
-            <Download size={18} />
+            <Download size={glyph} />
           </a>
+        </>
+      )}
+      {version && (
+        <>
+          {host && <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />}
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className={desktop
+              ? `flex h-7 shrink-0 items-center gap-1.5 rounded-chip border border-border bg-bg px-2.5 text-[13px] font-medium text-fg hover:bg-fg/5 ${RING}`
+              : `${ACTION} px-2.5 text-body font-semibold`}
+          >
+            {desktop && <Pencil size={14} />}
+            Edit
+          </button>
         </>
       )}
     </div>
@@ -390,7 +446,9 @@ function FileView({
             >
               {index + 1}
             </span>
-            <span className="pr-4 whitespace-pre">{line}</span>
+            <span className="pr-4 whitespace-pre">
+              {lineRuns?.length === lines.length ? lineRuns[index]!.map(([part, cls], n) => (cls ? <span key={n} className={cls}>{part}</span> : part)) : line}
+            </span>
           </div>
         ))}
       </div>
@@ -406,13 +464,16 @@ function FileView({
     </section>
   );
 
+  // Desktop is full bleed, as a code host draws a file: the breadcrumb bar, the file's bar,
+  // then the content edge to edge.
   if (desktop) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col gap-3 px-8 pt-4 pb-6">
-        <div className="flex min-h-9 items-center">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-11 shrink-0 items-center border-b border-border px-4">
           <Crumbs paneKey={paneKey} path={dirname(abs)} worktree={worktree} file={name} />
         </div>
-        {card}
+        {bar}
+        <div className={`min-h-0 flex-1 ${filled ? 'flex flex-col' : 'overflow-auto overscroll-contain'}`}>{body}</div>
       </div>
     );
   }

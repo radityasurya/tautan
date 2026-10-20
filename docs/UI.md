@@ -768,15 +768,21 @@ laid out like a code host:
 
 - **Header:** Back, the Workspace label over `Files · <Host>`, the **branch chip**, and a
   **Diff** link (accent text) to `#/diff/<workspaceKey>`.
-- **Explorer** (desktop only): a column beside the content, as in VS Code. **Go to file** on
-  top, then the tree from the Workspace cwd (or the worktree), titled with its folder name. A
+- **Explorer** (desktop only): a column beside the content, as in VS Code, laid out as GitHub's
+  file tree. A header level with the content's breadcrumb bar holds **Hide Explorer**, the root
+  folder's name (a link to it) and **Fold all folders**; **Go to file** sits under it, then the
+  tree from the Workspace cwd (or the worktree). A
   folder unfolds on demand and is listed once; the open file's or folder's ancestors unfold by
   themselves, and the open one is highlighted. A folder row opens that folder on the right and
-  unfolds it; its chevron only folds.
+  unfolds it; its chevron only folds. **Fold all folders** folds every folder but the open
+  file's, and **Hide Explorer** leaves a rail whose **Show Explorer** sits where the toggle was;
+  the choice is remembered (`tautan.explorer`). Files is keyed by its Pane, so a tree click swaps
+  the file and keeps the tree.
 - **A folder** (`FolderPanel`), as GitHub shows one: the path as crumbs with **Hidden** beside
-  it, then a table of `..`, folders, then files — an accent folder or a muted file glyph, the
-  name, the size, and on desktop the age (`5 hours ago`, a date past a month) under a
-  Name · Size · Modified head. A `README.md` in the folder renders under the table.
+  it (on desktop a bar that stays on top, full bleed like a file; on the phone cards), then a
+  table of `..`, folders, then files — an accent folder or a muted file glyph, the name, the
+  size, and on desktop the age (`5 hours ago`, a date past a month) under a Name · Size ·
+  Modified head. A `README.md` in the folder renders under the table.
 - **Go to file:** the Pane's repository files (the list `@` completes from), narrowed as you
   type; ↑/↓, Enter, Esc. It sits above the table on the phone. A worktree has none, because
   the list is the Pane's own checkout.
@@ -842,13 +848,16 @@ Creating, removing or pruning a worktree, and opening one as a new Workspace, ar
 ### File (`#/file/<paneKey>?path=`)
 
 A clickable path in the Screen or a Chat tool row, or a file in Files, opens the viewer. On
-desktop it takes the right of Files, under the path as crumbs, with the Explorer beside it. On
+desktop it takes the right of Files full bleed, as a code host draws a file: the path as crumbs
+in a bar, the file's bar, then the content edge to edge, with the Explorer beside it. On
 the phone it is full screen: Back (which follows `history.back()`), the file name over its
 folder (mono, tilde-shortened, truncated from the left), and **Folder**, which opens Files at
 the file's folder.
 
-The file is a card with a bar over it: **Preview | Source** for a rendered kind, the line count
-and size in mono, then **Edit**, **Open in a new tab** and **Download**. **Open in a new tab**
+On the phone the file is a card with a bar over it; desktop draws the same bar compact. It is in
+GitHub's order: **Preview | Source** for a rendered kind and the line count and size in mono on
+the left; **Open in a new tab** and **Download**, a rule, then **Edit** (a pencil and its
+label, the one labelled action) on the right. **Open in a new tab**
 opens `/api/files/raw` in its own browser tab, full screen; HTML stays under the strict
 preview CSP there too. **Download** streams the same route as an attachment. **Edit** shows only
 for a text file the Hub sent with an etag; a remote Host without `cksum` sends none, and then
@@ -864,7 +873,7 @@ The viewer follows the file's extension (`viewerFor` in `web/folders-logic.ts`):
 | Image | the whole file as a blob, centred |
 | Markdown (`.md`, `.markdown`) | **Preview \| Source**, Preview first: the Chat `Markdown` renderer in a card, headings at document scale |
 | HTML (`.html`, `.htm`) | **Preview \| Source**, Preview first: the page in a sandboxed frame (`FRAME` from `web/preview.tsx`: no allow tokens, no referrer) on `/api/files/raw`, under a strip `Sandboxed · scripts and outside requests off` with **Full screen** |
-| Text | mono lines with line numbers, 5 MB at most, no wrap — the view scrolls sideways |
+| Text | mono lines with line numbers, 5 MB at most, no wrap — the view scrolls sideways. Source of a `.js` `.ts` `.tsx` `.json` `.css` `.html` `.md` `.py` `.yaml` (and their aliases) takes the Chat fences' syntax colours, plain until the lazy parser loads and past 100,000 characters |
 | Anything else | `Binary file` |
 
 Text is decoded as strict UTF-8 with the byte order mark kept aside. The HTML frame is keyed

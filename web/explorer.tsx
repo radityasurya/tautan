@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, navigate } from './app.tsx';
 import { Chip, Skeleton } from './halaska-kit';
-import { ChevronRight, FileDoc, Folder, Search } from './icons.tsx';
+import { ChevronRight, FileDoc, Folder, FoldAll, PanelLeft, Search } from './icons.tsx';
 import { Markdown } from './markdown.tsx';
 import { WHY, type Entry } from './folders.tsx';
 import { absolute, crumbs, dirname, filesHash, filesUrl, homeOf, modified, README, size } from './folders-logic.ts';
@@ -18,6 +18,7 @@ export async function fetchListing(o: { host: string; path: string; pane?: strin
 }
 
 const FOCUS = 'outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)]';
+const TOOL = 'flex size-8 shrink-0 items-center justify-center rounded-chip text-muted outline-none hover:bg-fg/5 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/60';
 
 /** A folder's or a file's glyph: folders in the accent, files muted. */
 export const EntryIcon = ({ dir }: { dir: boolean }) =>
@@ -36,6 +37,8 @@ export function Explorer({
   file,
   hidden,
   worktree,
+  onHide,
+  search,
 }: {
   host: string;
   paneKey: string;
@@ -46,6 +49,10 @@ export function Explorer({
   file: boolean;
   hidden: boolean;
   worktree?: string;
+  /** Hides the Explorer; the screen keeps a rail to bring it back. */
+  onHide?: () => void;
+  /** Go to file, between the header and the tree. */
+  search?: ReactNode;
 }) {
   const [nodes, setNodes] = useState<Record<string, Listing | 'error'>>({});
   const [open, setOpen] = useState<Set<string>>(() => new Set([root]));
@@ -62,11 +69,16 @@ export function Explorer({
   // A `~/…` root lists as an absolute path, and every entry under it is absolute.
   const top = nodes[root];
   const real = top && top !== 'error' ? top.path : root;
+  /** The folders between the root and the open file or folder. */
+  const trail = () => {
+    const dirs: string[] = [];
+    if (at !== real && !at.startsWith(`${real}/`)) return dirs;
+    for (let d = file ? dirname(at) : at; d.length > real.length; d = dirname(d)) dirs.push(d);
+    return dirs;
+  };
   useEffect(() => {
-    if (at !== real && !at.startsWith(`${real}/`)) return;
     setOpen((was) => {
-      const next = new Set(was);
-      for (let d = file ? dirname(at) : at; d.length > real.length; d = dirname(d)) next.add(d);
+      const next = new Set([...was, ...trail()]);
       return next.size === was.size ? was : next;
     });
   }, [real, at, file]);
@@ -141,14 +153,28 @@ export function Explorer({
 
   return (
     <nav aria-label="Explorer" className="flex min-h-0 flex-1 flex-col">
-      <Link
-        to={filesHash(paneKey, { dir: root, worktree })}
-        aria-current={at === root || at === real ? 'page' : undefined}
-        className={`flex h-8 shrink-0 items-center px-3 text-[11px] font-semibold uppercase tracking-[0.06em] ${at === root || at === real ? 'text-fg' : 'text-muted'} ${FOCUS}`}
-      >
-        <span className="truncate">{root.split('/').at(-1) || root}</span>
-      </Link>
-      <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3">{rows(root, 0)}</ul>
+      {/* GitHub's tree header, level with the content's breadcrumb bar: the toggle where the
+          hidden rail keeps it, the root, and Fold all. */}
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border px-2">
+        {onHide && (
+          <button type="button" aria-label="Hide Explorer" title="Hide Explorer" onClick={onHide} className={TOOL}>
+            <PanelLeft size={16} />
+          </button>
+        )}
+        <Link
+          to={filesHash(paneKey, { dir: root, worktree })}
+          aria-current={at === root || at === real ? 'page' : undefined}
+          className={`flex min-w-0 flex-1 items-center self-stretch px-1 text-[13px] font-semibold text-fg ${FOCUS}`}
+        >
+          <span className="truncate">{root.split('/').at(-1) || root}</span>
+        </Link>
+        {/* VS Code's Collapse Folders, except the open file's folders stay unfolded. */}
+        <button type="button" aria-label="Fold all folders" title="Fold all folders" onClick={() => setOpen(new Set([root, ...trail()]))} className={TOOL}>
+          <FoldAll size={15} />
+        </button>
+      </div>
+      {search && <div className="shrink-0 px-3 pt-3 pb-2">{search}</div>}
+      <ul className={`min-h-0 flex-1 overflow-y-auto overscroll-contain pb-3 ${search ? '' : 'pt-2'}`}>{rows(root, 0)}</ul>
     </nav>
   );
 }
@@ -318,11 +344,15 @@ export function FolderPanel({
 
   const readme = list?.entries.find((e) => e.kind === 'file' && README.test(e.name));
   const cell = 'shrink-0 text-right text-caption tabular-nums text-muted';
-  const row = `flex min-h-11 items-center gap-3 px-3 lg:min-h-10 ${FOCUS} hover:bg-fg/5`;
+  // Desktop is full bleed, as the file view is: the breadcrumb bar, then the table and the
+  // README edge to edge. The phone keeps them in cards.
+  const pad = desktop ? 'px-4' : 'px-3';
+  const row = `flex min-h-11 items-center gap-3 ${pad} lg:min-h-10 ${FOCUS} hover:bg-fg/5`;
+  const framed = desktop ? '' : 'rounded-card border border-border';
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex min-h-9 items-center gap-2">
+    <div className={`flex flex-col ${desktop ? '' : 'gap-3'}`}>
+      <div className={desktop ? 'sticky top-0 z-10 flex min-h-11 items-center gap-2 border-b border-border bg-bg px-4' : 'flex min-h-9 items-center gap-2'}>
         <div className="min-w-0 flex-1">
           <Crumbs paneKey={paneKey} path={list?.path ?? path} worktree={worktree} />
         </div>
@@ -332,23 +362,23 @@ export function FolderPanel({
       </div>
 
       {error ? (
-        <div role="alert" className="flex flex-col items-start gap-2 rounded-card border border-border px-4 py-4">
+        <div role="alert" className={`flex flex-col items-start gap-2 px-4 py-4 ${framed}`}>
           <p className="text-body">{WHY[error] ?? `Could not list the folder · ${error}`}</p>
           <button type="button" onClick={() => setNonce((n) => n + 1)} className="min-h-9 text-body font-medium text-accent">
             Try again
           </button>
         </div>
       ) : (
-        <section aria-label="Folder contents" className="overflow-hidden rounded-card border border-border">
+        <section aria-label="Folder contents" className={`overflow-hidden ${framed}`}>
           {desktop && (
-            <div className="flex h-9 items-center gap-3 border-b border-border bg-surface px-3 text-caption font-medium text-muted">
+            <div className="flex h-9 items-center gap-3 border-b border-border bg-surface px-4 text-caption font-medium text-muted">
               <span className="flex-1 pl-7">Name</span>
               <span className="w-20 text-right">Size</span>
               <span className="w-32 text-right">Modified</span>
             </div>
           )}
           {!list ? (
-            <div aria-busy className="flex flex-col gap-3 px-3 py-3">
+            <div aria-busy className={`flex flex-col gap-3 py-3 ${pad}`}>
               <Skeleton className="h-4 w-1/3" />
               <Skeleton className="h-4 w-1/2" />
               <Skeleton className="h-4 w-2/5" />
@@ -373,20 +403,20 @@ export function FolderPanel({
                   </Link>
                 </li>
               ))}
-              {list.entries.length === 0 && <li className="px-3 py-3 text-caption text-muted">Empty folder</li>}
-              {list.truncated && <li className="px-3 py-3 text-caption text-muted">The list is cut short. Use Go to file.</li>}
+              {list.entries.length === 0 && <li className={`py-3 text-caption text-muted ${pad}`}>Empty folder</li>}
+              {list.truncated && <li className={`py-3 text-caption text-muted ${pad}`}>The list is cut short. Use Go to file.</li>}
             </ul>
           )}
         </section>
       )}
 
-      {readme && <Readme paneKey={paneKey} file={readme} />}
+      {readme && <Readme paneKey={paneKey} file={readme} desktop={desktop} />}
     </div>
   );
 }
 
 /** A README under its folder: read through the Pane, rendered, skipped if it will not read. */
-function Readme({ paneKey, file }: { paneKey: string; file: Entry }) {
+function Readme({ paneKey, file, desktop }: { paneKey: string; file: Entry; desktop: boolean }) {
   const [text, setText] = useState<string | null>(null);
   useEffect(() => {
     const ctl = new AbortController();
@@ -398,8 +428,8 @@ function Readme({ paneKey, file }: { paneKey: string; file: Entry }) {
   }, [paneKey, file.path, file.mtime]);
   if (text === '') return null;
   return (
-    <section aria-label={file.name} className="overflow-hidden rounded-card border border-border">
-      <div className="flex h-10 items-center gap-2 border-b border-border bg-surface px-3 text-caption font-semibold">
+    <section aria-label={file.name} className={`overflow-hidden ${desktop ? 'border-t border-border' : 'rounded-card border border-border'}`}>
+      <div className={`flex h-10 items-center gap-2 border-b border-border bg-surface text-caption font-semibold ${desktop ? 'px-4' : 'px-3'}`}>
         <FileDoc size={15} className="text-muted" />
         {file.name}
       </div>
