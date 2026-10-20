@@ -58,16 +58,25 @@ export function rotatePromptSalt(): void { salt = null; }
  */
 const WORKING = /^[^\S\n]*[✢✳✶✻✽]\s+(.+?)\s+\(\d+[smh](?: \d+[smh])*\s+·\s+[↓↑→]\s+[\d.]+[km]?\s+tokens\s+·\s+esc to interrupt\)[^\S\n]*$/;
 
+/**
+ * Claude blinks the ● before a tool call that still waits, such as the one a permission box
+ * asks about: the same line reads `● Placeholder`, then `  Placeholder`, about once a second.
+ * A line's leading bullet, inside its colour codes, does not count toward the id.
+ */
+const BULLET = /^((?:\x1b\[[0-9;]*m)*)●/;
+
 /** The id of the prompt on screen: 12 hex chars of salted SHA-256 over the detection and
- *  the whole visible Screen, the working line normalised. Same box, same id; anything the
- *  Screen prints moves it. */
+ *  the whole visible Screen, the working line and the blinking bullet normalised. Same box,
+ *  same id; anything the Screen prints moves it. */
 export async function promptId(explain: Explain, screen: Screen): Promise<string> {
-  const lines = screen.text.split(/\r?\n/);
+  const lines = screen.text.split(/\r?\n/).map((line) => line.replace(BULLET, '$1 '));
   const hits = lines.map((line) => WORKING.exec(line));
-  const text = hits.filter(Boolean).length === 1
-    ? lines.map((line, i) => (hits[i] ? `* ${hits[i]![1]!} (<time> · <tokens>)` : line)).join('\n')
-    : screen.text;
-  const payload = new TextEncoder().encode(`${explain.ruleId}\0${explain.detection}\0${text}`);
+  const text = (hits.filter(Boolean).length === 1
+    ? lines.map((line, i) => (hits[i] ? `* ${hits[i]![1]!} (<time> · <tokens>)` : line))
+    : lines).join('\n');
+  // herdr's detection is a region of the same Screen, so it can carry the blinking line too.
+  const detection = explain.detection.split(/\r?\n/).map((line) => line.replace(BULLET, '$1 ')).join('\n');
+  const payload = new TextEncoder().encode(`${explain.ruleId}\0${detection}\0${text}`);
   const s = (salt ??= crypto.getRandomValues(new Uint8Array(16)));
   const bytes = new Uint8Array(s.length + payload.length);
   bytes.set(s, 0); bytes.set(payload, s.length);
