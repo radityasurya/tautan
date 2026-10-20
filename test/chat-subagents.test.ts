@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync as write } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatLens, localIo, transcriptDir, type ChatHub } from '../server/chat.ts';
@@ -18,6 +18,9 @@ const subPage = '<html><head><title>Sub deck</title></head><body><p>sub page</p>
 const artifactUrl = 'https://claude.ai/code/artifact/ee67305a-ece1-4d62-b0b7';
 
 const line = (entry: Record<string, unknown>) => JSON.stringify(entry);
+// Claude ends every transcript line with a newline, and the lens holds a line back until its
+// newline lands: a .jsonl fixture is written the same way.
+const writeFileSync = (path: string, text: string) => write(path, path.endsWith('.jsonl') && !text.endsWith('\n') ? `${text}\n` : text);
 const mainJsonl = [
   { type: 'user', timestamp: '2026-10-06T00:00:00.000Z', message: { content: 'Publish the deck.' } },
   { type: 'assistant', timestamp: '2026-10-06T00:00:01.000Z', message: { content: [

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { ParentScan, parentFinished } from '../server/chat.ts';
-import { parseTranscript, TranscriptParser, type ParseOpts, type Queued, type TranscriptImage } from '../shared/chat.ts';
+import { ChatLens, ParentScan, parentFinished, type ChatHub, type TranscriptIo } from '../server/chat.ts';
+import { parseTranscript, TranscriptParser, type ChatEvent, type ParseOpts, type Queued, type TranscriptImage } from '../shared/chat.ts';
+import type { State } from '../shared/types.ts';
 
 // A resumable parse must equal the one-shot parse of the same bytes: Turns and every side map.
 
@@ -163,5 +164,199 @@ describe('a resumable parse equals the one-shot parse', () => {
     const fused = scan.done(), whole = parentFinished(text);
     expect([...fused.finished].sort()).toEqual(['bg', 'fg']);
     expect(fused).toEqual(whole);
+  });
+});
+
+// The lens resumes a growing Claude transcript: `range` reads only the new bytes, and the state
+// it keeps must equal today's whole-file lens over the complete lines.
+
+const sid = '77777777-7777-7777-7777-777777777777';
+const paneKey = 'local/fake/p1';
+const encode = (text: string) => new TextEncoder().encode(text);
+const lensHub = (): ChatHub => ({
+  resolvePane: () => ({ paneId: 'p1', entry: { mux: { kind: 'herdr' }, tree: { panes: [{ id: 'p1', agentSession: sid }] } } }),
+  state: async () => ({ panes: [{ key: paneKey, cwd: '/repo' }] }) as State,
+  paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
+});
+
+/** The main transcript as bytes, re-stat per call, with counters on both reads; `whole` drops
+ *  `range`, which is today's lens. */
+function growing(text = '', agents: { id: string; meta: string }[] = [], whole = false) {
+  const state = { bytes: encode(text), inode: '1', agents };
+  const calls = { read: 0, ranges: [] as [number, number][] };
+  const io: TranscriptIo = {
+    stat: async path => path.endsWith(`${sid}.jsonl`) ? { inode: state.inode, size: state.bytes.length, mtime: Bun.hash(state.bytes).toString(36) } : undefined,
+    read: async () => { calls.read++; return new TextDecoder().decode(state.bytes); },
+    ...(whole ? {} : { range: async (_path: string, start: number, end: number) => { calls.ranges.push([start, end]); return state.bytes.slice(start, end); } }),
+    subagents: async () => ({ mtime: Bun.hash(JSON.stringify(state.agents)).toString(36), agents: state.agents.map(agent => ({ ...agent })) }),
+  };
+  const events: ChatEvent[] = [];
+  const lens = new ChatLens(lensHub(), io, '/home/tama');
+  lens.onChat = event => events.push(event);
+  const append = (more: string | Uint8Array) => {
+    const add = typeof more === 'string' ? encode(more) : more;
+    const next = new Uint8Array(state.bytes.length + add.length);
+    next.set(state.bytes);
+    next.set(add, state.bytes.length);
+    state.bytes = next;
+  };
+  return { state, calls, events, lens, append };
+}
+
+/** The lens's whole cached state: Turns, queue and every side map it serves by id. */
+async function seen(lens: ChatLens) {
+  await lens.query(paneKey);
+  const value = (lens as unknown as { cache: Map<string, Record<string, unknown>> }).cache.get(paneKey)!;
+  const pairs = (map: unknown) => [...(map as Map<unknown, unknown>)];
+  return structuredClone({ turns: value.turns, queued: value.queued, images: value.images, previews: value.previews, previewFiles: pairs(value.previewFiles), outputs: pairs(value.outputs), details: pairs(value.details) });
+}
+
+/** Today's lens (a whole read, `parseTranscript`) over the bytes `[0, lastNewline + 1)`. */
+async function reference(bytes: Uint8Array, agents: { id: string; meta: string }[] = []) {
+  const ref = growing(new TextDecoder().decode(bytes.subarray(0, bytes.lastIndexOf(0x0a) + 1)), [...agents], true);
+  const out = await seen(ref.lens);
+  ref.lens.close();
+  return out;
+}
+
+const text = (uuid: string, words: string, n: number) => assistant(uuid, [{ type: 'text', text: words }], n);
+const ids = async (lens: ChatLens) => (await lens.query(paneKey))!.turns.map(turn => turn.id);
+
+describe('the lens resumes a growing Claude transcript', () => {
+  test('an append reads only the 4 KB mark and the new bytes, and never the whole file', async () => {
+    const g = growing(`${user('u1', 'x'.repeat(6000), 1)}\n`);
+    await g.lens.query(paneKey);
+    const before = g.state.bytes.length;
+    g.append(`${text('a1', 'ok', 2)}\n`);
+    expect(await ids(g.lens)).toEqual(['u1', 'a1']);
+    expect(g.calls.ranges).toEqual([[0, before], [before - 4096, g.state.bytes.length]]);
+    expect(g.calls.read).toBe(0);
+    g.lens.close();
+  });
+
+  test('a result landing on an old row upserts that Turn', async () => {
+    const g = growing(`${[assistant('a1', [use('t1', 'Bash', { command: 'ls' })], 1), text('a2', 'Waiting.', 2), user('u1', 'status?', 3)].join('\n')}\n`);
+    const { cursor } = (await g.lens.delta(paneKey, 'unknown'))!;
+    g.append(`${user('u2', [result('t1', 'ok')], 4)}\n`);
+    const delta = (await g.lens.delta(paneKey, cursor))!;
+    expect(delta.reset).toBe(false);
+    expect(delta.upserts.map(turn => turn.id)).toEqual(['a1']);
+    expect(delta.upserts[0]!.tools[0]).toMatchObject({ id: 't1', result: 'ok' });
+    g.lens.close();
+  });
+
+  test('a partial last line is held, and shows once its newline lands', async () => {
+    const g = growing(`${user('u1', 'hi', 1)}\n`);
+    await g.lens.query(paneKey);
+    const next = text('a1', 'Hello there.', 2);
+    g.append(next.slice(0, 20));
+    expect(await ids(g.lens)).toEqual(['u1']);
+    g.append(next.slice(20)); // whole JSON, but no newline yet
+    expect(await ids(g.lens)).toEqual(['u1']);
+    g.append('\n');
+    expect(await ids(g.lens)).toEqual(['u1', 'a1']);
+    expect(g.calls.read).toBe(0);
+    g.lens.close();
+  });
+
+  test('multibyte characters torn across appends decode whole', async () => {
+    const g = growing(`${user('u1', 'hi', 1)}\n`);
+    await g.lens.query(paneKey);
+    const bytes = encode(`${text('a1', 'Café 😀 done', 2)}\n`);
+    const e = bytes.indexOf(0xc3), emoji = bytes.indexOf(0xf0);
+    g.append(bytes.subarray(0, e + 1)); // inside "é"
+    await g.lens.query(paneKey);
+    g.append(bytes.subarray(e + 1, emoji + 2)); // inside the emoji
+    await g.lens.query(paneKey);
+    g.append(bytes.subarray(emoji + 2));
+    expect((await g.lens.query(paneKey))!.turns.at(-1)!.text).toBe('Café 😀 done');
+    g.lens.close();
+  });
+
+  for (const change of ['a truncation', 'a new inode', 'a rewritten prefix on the same inode'] as const) {
+    test(`${change} parses fresh`, async () => {
+      const g = growing(`${[user('u1', 'x'.repeat(5000), 1), text('a1', 'two', 2), user('u2', 'three', 3)].join('\n')}\n`);
+      await g.lens.query(paneKey);
+      if (change === 'a truncation') g.state.bytes = encode(`${user('u1', 'x'.repeat(5000), 1)}\n`);
+      if (change === 'a new inode') { g.state.inode = '2'; g.append(`${text('a2', 'four', 4)}\n`); }
+      if (change === 'a rewritten prefix on the same inode') g.state.bytes = encode(`${[user('u9', 'y'.repeat(5000), 1), text('a9', 'other', 2), user('u8', 'longer than before', 3), text('a8', 'yes', 4)].join('\n')}\n`);
+      expect(await seen(g.lens)).toEqual(await reference(g.state.bytes));
+      expect(g.calls.ranges.at(-1)).toEqual([0, g.state.bytes.length]); // the fresh read starts at byte 0
+      expect(g.calls.read).toBe(0);
+      g.lens.close();
+    });
+  }
+
+  test("a pending tool's whole detail is cut again once its result lands", async () => {
+    const command = long('step');
+    const g = growing(`${assistant('a1', [use('t1', 'Bash', { command })], 1)}\n`);
+    const pending = (await g.lens.query(paneKey))!.turns[0]!.tools[0]!;
+    expect(pending.detail).toBe(command);
+    expect(pending.detailTruncated).toBeUndefined();
+    g.append(`${user('u1', [result('t1', 'ok')], 2)}\n`);
+    expect((await g.lens.query(paneKey))!.turns[0]!.tools[0]).toMatchObject({ detailTruncated: true, detailLines: 120, result: 'ok' });
+    expect(await g.lens.output(paneKey, 't1', undefined, 'detail')).toEqual({ text: command });
+    expect(await seen(g.lens)).toEqual(await reference(g.state.bytes));
+    g.lens.close();
+  });
+
+  test('queued follows a dequeue after an append', async () => {
+    const g = growing(`${[user('u1', 'go', 1), op('enqueue', 2, 'next please')].join('\n')}\n`);
+    expect((await g.lens.query(paneKey))!.queued?.map(item => item.text)).toEqual(['next please']);
+    g.append(`${op('dequeue', 3)}\n`);
+    expect((await g.lens.query(paneKey))!.queued).toBeUndefined();
+    g.lens.close();
+  });
+
+  test('one onChat per generation', async () => {
+    const g = growing(`${user('u1', 'a', 1)}\n`);
+    await g.lens.query(paneKey);
+    g.append(`${text('a1', 'b', 2)}\n`);
+    await g.lens.query(paneKey);
+    await g.lens.query(paneKey); // the bytes stood still: no generation
+    g.append('{"partial'); // the bytes moved, no Turn did: still a generation
+    await g.lens.query(paneKey);
+    expect(new Set(g.events.map(event => event.cursor)).size).toBe(3);
+    expect(g.events).toHaveLength(3);
+    g.lens.close();
+  });
+
+  test('a Task row fed before its subagent was listed gains the link', async () => {
+    const g = growing(`${[user('u1', 'go', 1), assistant('a1', [use('toolu_t1', 'Task', { prompt: 'x' })], 2)].join('\n')}\n`);
+    expect((await g.lens.query(paneKey))!.turns[1]!.tools[0]!.subagentId).toBeUndefined();
+    g.state.agents.push({ id: 'sub1', meta: JSON.stringify({ agentType: 'recon', toolUseId: 'toolu_t1' }) });
+    g.append(`${text('a2', 'Waiting.', 3)}\n`);
+    expect((await g.lens.query(paneKey))!.turns[1]!.tools[0]!.subagentId).toBe('sub1');
+    expect(await seen(g.lens)).toEqual(await reference(g.state.bytes, g.state.agents));
+    g.lens.close();
+  });
+
+  test('after every append in a random sequence, the state equals the whole-file parse of the complete lines', async () => {
+    const lines = [
+      ...Object.values(corpus).flat(),
+      text('m1', 'Café 😀 — naïve', 20),
+      assistant('p1', [use('pd', 'Bash', { command: long('pending') })], 21),
+      user('p2', [result('pd', 'ok')], 22),
+      assistant('p3', [use('pz', 'Bash', { command: long('abandoned') })], 23),
+      user('p4', 'never mind', 24), // pz stops pending without a result
+      op('enqueue', 25, 'later'),
+      op('dequeue', 26),
+    ];
+    const bytes = encode(`${lines.join('\n')}\n`);
+    expect(bytes.length).toBeGreaterThan(4096 * 2); // the mark sits mid-file
+    const rand = prng(7);
+    for (let round = 0; round < 8; round++) {
+      const g = growing();
+      const cuts = [...new Set(Array.from({ length: 12 }, () => 1 + Math.floor(rand() * bytes.length)))].sort((a, b) => a - b);
+      for (const cut of [...cuts, bytes.length]) {
+        g.state.bytes = bytes.slice(0, cut);
+        expect(await seen(g.lens)).toEqual(await reference(g.state.bytes));
+      }
+      expect(g.calls.read).toBe(0);
+      // One read per append, each resuming 4 KB before where the last one ended: no fresh parse.
+      expect(g.calls.ranges).toHaveLength(cuts.length + 1);
+      g.calls.ranges.forEach(([start], i) => expect(start).toBe(i ? Math.max(0, g.calls.ranges[i - 1]![1] - 4096) : 0));
+      g.lens.close();
+    }
   });
 });

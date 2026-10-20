@@ -1,7 +1,7 @@
 import { open, readFile, readdir, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { CHAT_PAGE_TURNS, HTML_FILE, PREVIEW_MAX, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Queued, type Subagent, type TranscriptImage, type Turn } from '../shared/chat.ts';
+import { CHAT_PAGE_TURNS, HTML_FILE, PREVIEW_MAX, TranscriptParser, cutDetail, parseCodexRollout, parsePiTranscript, parseTranscript, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type ParseOpts, type Queued, type Subagent, type Tool, type TranscriptImage, type Turn } from '../shared/chat.ts';
 import { codexHome, resolveCodexPath } from './codex-chat.ts';
 import type { State, StateHost } from '../shared/types.ts';
 
@@ -12,6 +12,9 @@ export interface SubagentDir { mtime: string; agents: { id: string; meta: string
 export interface TranscriptIo {
   stat(path: string, target?: string): Promise<TranscriptSignature | undefined>;
   read(path: string, target?: string): Promise<string>;
+  /** Bytes `[start, end)` of a file in one round trip (fewer when it is shorter): a growing
+   *  Claude transcript's new tail. Without it the lens reads the whole file on every change. */
+  range?(path: string, start: number, end: number, target?: string): Promise<Uint8Array>;
   /** One round trip: a `subagents` directory's signature and its `agent-<id>.meta.json` files;
    *  `undefined` when the directory does not exist. When its signature is still `known`, it may
    *  answer `unchanged` with no agents, and read nothing else. */
@@ -72,14 +75,19 @@ function remotePath(path: string): string {
   return `"$HOME/"${quoteShell(path.slice('$HOME/'.length))}`;
 }
 
-async function ssh(target: string, command: string, timeoutMs?: number): Promise<{ stdout: string; code: number }> {
+async function sshBytes(target: string, command: string, timeoutMs?: number): Promise<{ stdout: Uint8Array; code: number }> {
   const child = Bun.spawn(['ssh', '-o', 'BatchMode=yes', target, '--', command], { stdout: 'pipe', stderr: 'ignore' });
   // A remote command that never ends (a read on a swapped-in FIFO) must not hang the caller.
   const timer = timeoutMs === undefined ? undefined : setTimeout(() => child.kill(), timeoutMs);
   try {
-    const [stdout, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    const [stdout, code] = await Promise.all([new Response(child.stdout).bytes(), child.exited]);
     return { stdout, code };
   } finally { if (timer) clearTimeout(timer); }
+}
+
+async function ssh(target: string, command: string, timeoutMs?: number): Promise<{ stdout: string; code: number }> {
+  const { stdout, code } = await sshBytes(target, command, timeoutMs);
+  return { stdout: new TextDecoder().decode(stdout), code };
 }
 
 // ponytail: the head window doubles until the first line is complete, capped at 8 MB — a first
@@ -131,6 +139,7 @@ export const localIo: TranscriptIo = {
     }
   },
   read: path => readFile(path, 'utf8'),
+  range: async (path, start, end) => new Uint8Array(await Bun.file(path).slice(start, end).arrayBuffer()),
   async mtimes(dir) {
     try {
       const out = new Map<string, number>();
@@ -224,6 +233,15 @@ const remoteIo: TranscriptIo = {
     if (!target) return localIo.read(path);
     const result = await ssh(target, `cat -- ${remotePath(path)}`);
     if (result.code) throw new Error('remote transcript read failed');
+    return result.stdout;
+  },
+  async range(path, start, end, target) {
+    if (!target) return localIo.range!(path, start, end);
+    if (end <= start) return new Uint8Array(0); // BSD head refuses `-c 0`
+    // start and end are integers the lens computed from stat sizes; only the path is quoted.
+    const file = remotePath(path);
+    const result = await sshBytes(target, `[ -f ${file} ] || exit 3; tail -c +${start + 1} -- ${file} | head -c ${end - start}`);
+    if (result.code) throw new Error('remote transcript range failed');
     return result.stdout;
   },
   subagents: (dir, target, known) => target ? remoteSubagents(dir, target) : localIo.subagents!(dir, undefined, known),
@@ -434,7 +452,34 @@ export async function resolveSession(hub: SessionHub, paneKey: string, io?: Tran
 }
 
 type AgentKind = NonNullable<ChatResponse['agentKind']>;
-type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; previewFiles: Map<number, string>; outputs: Map<string, string>; details: Map<string, string>; queued: Queued[]; subagents: Subagent[]; at: number };
+/** A parse's options with the side maps the lens serves by id always present. */
+type Opts = ParseOpts & Required<Pick<ParseOpts, 'images' | 'previews' | 'previewFiles' | 'outputs' | 'details' | 'subagentIds'>>;
+/** A Claude transcript's parse kept open across generations: the parser and the options it
+ *  fills, the bytes consumed (`offset`, the held partial line included), that partial line, the
+ *  last up-to-4 KB read (`mark`: bytes `[offset - mark.length, offset)`), and the tools whose
+ *  whole detail the lens restored while they were pending.
+ *  ponytail: the mark checks only the 4 KB before the new bytes; a rewrite that keeps those and
+ *  the inode, and changes bytes further back, is not seen — hash the consumed prefix if one shows. */
+type Fold = { parser: TranscriptParser; opts: Opts; scan?: ParentScan; offset: number; remainder: Uint8Array; mark: Uint8Array; restored: Set<Tool> };
+/** One parse of a conversation. With a `fold`, the next generation's parser mutates these Turns
+ *  in place: a handler must read `turns` before its next await (http.ts stringifies right after
+ *  its `await`), and an older generation is known only by its prints. */
+type Cached = { sessionId: string; agentKind: AgentKind; signature: TranscriptSignature; cursor: string; turns: Turn[]; images: TranscriptImage[]; previews: string[]; previewFiles: Map<number, string>; outputs: Map<string, string>; details: Map<string, string>; queued: Queued[]; subagents: Subagent[]; at: number; fold?: Fold };
+const MARK = 4096;
+const utf8 = new TextDecoder();
+
+/** Feed a fold the bytes read from `start` (its mark, then the new bytes). Only complete lines
+ *  decode; the partial last line waits as bytes, so a torn UTF-8 character never decodes. */
+function consume(fold: Fold, bytes: Uint8Array, start: number): void {
+  const fresh = bytes.subarray(fold.offset - start);
+  const joined = fold.remainder.length ? Buffer.concat([fold.remainder, fresh]) : fresh;
+  const cut = joined.lastIndexOf(0x0a) + 1;
+  if (cut) fold.parser.feed(utf8.decode(joined.subarray(0, cut)));
+  // Copies: a view would keep the whole read alive.
+  fold.remainder = new Uint8Array(joined.subarray(cut));
+  fold.offset = start + bytes.length;
+  fold.mark = new Uint8Array(bytes.subarray(Math.max(0, bytes.length - MARK)));
+}
 /** One remembered generation (ADR 0007): the cursor that names it, every Turn's fingerprint
  *  (none for an id-less transcript, which keeps its digest only), and the subagents digest
  *  at parse time. The lens keeps the newest eight per conversation. */
@@ -1017,11 +1062,26 @@ export class ChatLens {
       list = (await this.list(paneKey, subagentDir, target, session))?.list ?? [];
       if (agent && !list.some(item => item.id === agent)) return; // the route pre-checks; a race only misses the cache
     }
-    const jsonl = await this.io.read(path, target);
+    // A Claude transcript only grows: with `range`, the parse resumes from the bytes it last
+    // consumed. A new inode, a shorter file or a changed mark parses fresh, from byte 0 through
+    // the same fold. Without `range` (a test fake, the kill switch) the whole file is read.
+    const range = resolved.agent === 'claude' ? this.io.range : undefined;
+    let fold: Fold | undefined, bytes: Uint8Array | undefined, start = 0, jsonl = '';
+    if (range) {
+      fold = cached?.sessionId === session && cached.signature.inode === signature.inode && cached.fold && signature.size >= cached.fold.offset ? cached.fold : undefined;
+      if (fold) {
+        start = fold.offset - fold.mark.length;
+        bytes = await range(path, start, signature.size, target);
+        // An editor save or a `cp` over the file keeps the inode and may grow it: the bytes
+        // before the new ones must still be the ones last read.
+        if (Buffer.compare(bytes.subarray(0, fold.mark.length), fold.mark)) fold = undefined;
+      }
+      if (!fold) { start = 0; bytes = await range(path, 0, signature.size, target); }
+    } else jsonl = await this.io.read(path, target);
     // Only the main transcript holds the first-level Task rows; a nested subagent's Task rows
     // sit in another subagent's file, which this scan does not read — those fall back to the
     // ending and freshness rules.
-    const scan = subagentDir && !agent && resolved.agent === 'claude' ? new ParentScan() : undefined;
+    const scan = fold ? fold.scan : subagentDir && !agent && resolved.agent === 'claude' ? new ParentScan() : undefined;
     let piLinks: Map<string, string> | undefined;
     if (resolved.agent === 'pi' || resolved.agent === 'omp') {
       if (agent) list = this.piAgents.get(paneKey)?.list ?? []; // the parent's tree rides the child view
@@ -1031,16 +1091,17 @@ export class ChatLens {
         piLinks = pi.scan.links;
       }
     }
-    const images: TranscriptImage[] = [];
-    const previews: string[] = [];
-    const previewFiles = new Map<number, string>();
-    const outputs = new Map<string, string>();
-    const details = new Map<string, string>();
-    const queued: Queued[] = [];
-    const subagentIds = piLinks ?? new Map<string, string>();
-    if (!piLinks) for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
-    const opts: ParseOpts = { images, previews, previewFiles, outputs, details, subagentIds, ...(agent ? { sidechain: true } : { queued }), ...(scan ? { onEntry: scan.entry } : {}) };
-    const parsed = resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
+    const opts: Opts = fold?.opts ?? { images: [], previews: [], previewFiles: new Map(), outputs: new Map(), details: new Map(), subagentIds: piLinks ?? new Map(), ...(agent ? { sidechain: true } : { queued: [] }), ...(scan ? { onEntry: scan.entry } : {}) };
+    // A Task row fed before its subagent was listed gains the link now, as a whole parse would.
+    const linked = new Set<string>();
+    if (!piLinks) for (const item of list) if (item.toolUseId && opts.subagentIds.get(item.toolUseId) !== item.id) { opts.subagentIds.set(item.toolUseId, item.id); linked.add(item.toolUseId); }
+    if (fold && linked.size) for (const turn of fold.parser.turns) for (const tool of turn.tools) if (tool.id !== undefined && linked.has(tool.id) && (tool.name === 'Task' || tool.name === 'Agent')) tool.subagentId = opts.subagentIds.get(tool.id);
+    if (bytes) {
+      fold ??= { parser: new TranscriptParser(opts), opts, scan, offset: 0, remainder: new Uint8Array(0), mark: new Uint8Array(0), restored: new Set() };
+      consume(fold, bytes, start);
+    }
+    // ponytail: whole-file re-parse; Codex takes the TranscriptParser shape, pi a parsed-entry memo, when a file past ~20 MB shows
+    const parsed = fold ? fold.parser.turns : resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
       : (resolved.agent === 'pi' || resolved.agent === 'omp' ? parsePiTranscript : parseTranscript)(jsonl, opts);
     // A Codex parse without stable identity (Wave 12.1) is no Chat: the Pane keeps its Screen.
     if (!parsed) { this.cache.delete(cacheKey); return; }
@@ -1048,17 +1109,21 @@ export class ChatLens {
     if (scan) this.parents.set(paneKey, { sessionId: session, parent: scan.done() });
     if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
     // The amendment: every pending tool's whole detail rides inline, so each approval row shows
-    // the whole command or diff with no fetch — the lens restores what the parser cut.
-    for (const pending of pendingTools(parsed)) {
-      const tool = parsed[pending.turn]!.tools[pending.tool]!;
-      const whole = tool.id !== undefined ? details.get(tool.id) : undefined;
+    // the whole command or diff with no fetch — the lens restores what the parser cut. A fold
+    // keeps its Turns, so a tool restored while pending is cut again once it is not.
+    const pending = new Set(pendingTools(parsed).map(item => parsed[item.turn]!.tools[item.tool]!));
+    if (fold) for (const tool of fold.restored) if (!pending.has(tool)) { cutDetail(tool, opts); fold.restored.delete(tool); }
+    for (const tool of pending) {
+      const whole = tool.id !== undefined ? opts.details.get(tool.id) : undefined;
       if (whole !== undefined) {
         tool.detail = whole;
         delete tool.detailTruncated;
         delete tool.detailLines;
+        fold?.restored.add(tool);
       }
     }
-    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images, previews, previewFiles, outputs, details, queued, subagents: list, at: Date.now() };
+    const queued = !opts.queued ? [] : fold ? fold.parser.queued() : opts.queued;
+    const value: Cached = { sessionId: session, agentKind: resolved.agent, signature, cursor: cursorOf(session, agent, signature), turns: parsed, images: opts.images, previews: opts.previews, previewFiles: opts.previewFiles, outputs: opts.outputs, details: opts.details, queued, subagents: list, at: Date.now(), ...(fold ? { fold } : {}) };
     this.cache.set(cacheKey, value);
     this.remember(paneKey, agent, cacheKey, value);
     return value;

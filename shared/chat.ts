@@ -492,7 +492,7 @@ export const CHAT_PAGE_TURNS = 100;
 /** Keep a tool row's detail inline only as its head, mirroring `attachResult`'s tail slice:
  *  the whole text lands in `opts.details`, keyed by the row's native id. Rows without an id
  *  (z.ai's, id-less transcripts) keep their whole detail — nothing serves them out of band. */
-function cutDetail(tool: Tool, opts?: ParseOpts): void {
+export function cutDetail(tool: Tool, opts?: ParseOpts): void {
   if (tool.id === undefined || tool.detail.length <= DETAIL_CHARS) return;
   const whole = tool.detail; // already capped at 4 000 by detail()/customDetail
   const lines = whole.split('\n');
