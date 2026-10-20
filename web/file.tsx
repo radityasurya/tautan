@@ -5,7 +5,7 @@
 // tree's root, the branch chip's and the Diff link's checkout.
 import { lazy, Suspense, useEffect, useState } from 'react';
 import type { State, StateHost, StatePane } from '../shared/types.ts';
-import { Link, useDesktop } from './app.tsx';
+import { Link, navigate, useDesktop } from './app.tsx';
 import { BranchChip } from './diff.tsx';
 import { Back, Download, External, Folder, Lock } from './icons.tsx';
 import { SegmentedControl, Skeleton } from './halaska-kit';
@@ -35,7 +35,10 @@ let autoEdit = (params.has('mock') || import.meta.env.VITE_MOCK === '1') && para
 
 const ACTION = 'flex min-h-11 shrink-0 items-center text-accent outline-none focus-visible:shadow-[inset_0_-2px_0_var(--accent)]';
 
-function BackLink() {
+/** Back one screen. With `leave` (desktop Files) it leaves Files in one press, past every file
+ *  and folder opened in it, to the screen Files was opened from; a Files tab opened by its URL
+ *  has none, so it goes to `leave`, its Pane. */
+function BackLink({ leave }: { leave?: string }) {
   return (
     <a
       href="#/"
@@ -58,6 +61,14 @@ export function FileScreen({
   path,
   dir,
   worktree,
+        const state = history.state as { filesFrom?: number; mark?: string } | null;
+        // The editor's own entry: its guard asks about unsaved changes before anything leaves.
+        if (leave && !state?.mark) {
+          event.preventDefault();
+          if (state?.filesFrom) history.go(-state.filesFrom);
+          else navigate(`#/pane/${encodeURIComponent(leave)}`, { replace: true });
+          return;
+        }
   state,
 }: {
   paneKey: string;
@@ -87,7 +98,7 @@ export function FileScreen({
   return (
     <div className="flex h-dvh w-full flex-col pt-[env(safe-area-inset-top)]">
       <header className="flex h-11 shrink-0 items-center gap-1 pr-2 pl-1 lg:h-14 lg:border-b lg:border-border lg:pr-4">
-        <BackLink />
+        <BackLink leave={desktop ? paneKey : undefined} />
         <div className="flex min-w-0 flex-1 flex-col">
           <h1 className="truncate text-title tracking-tight">{ws?.label ?? 'Files'}</h1>
           <p className="truncate text-caption text-muted">
@@ -110,7 +121,8 @@ export function FileScreen({
         )}
         <main className={`min-w-0 flex-1 ${path ? 'flex flex-col' : 'overflow-y-auto overscroll-contain'}`}>
           {path ? (
-            <FileView paneKey={paneKey} path={path} worktree={worktree} pane={pane} host={host} desktop />
+            // Keyed by file: an open editor or a Source choice belongs to the file it was made on.
+            <FileView key={path} paneKey={paneKey} path={path} worktree={worktree} pane={pane} host={host} desktop />
           ) : host ? (
             <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 px-4 pt-1 pb-[max(env(safe-area-inset-bottom),16px)] lg:px-8 lg:pt-5">
               {!desktop && goTo}

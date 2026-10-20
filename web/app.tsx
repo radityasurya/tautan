@@ -302,6 +302,9 @@ let apply: ((route: string) => void) | null = null;
 /** The last screen outside Settings and Hosts: the Pane, in its lens, that closing them returns to. */
 let before = '#/';
 
+/** The encoded Pane key of a Files route (`#/file/<key>[?…]`), else undefined. */
+const filesOf = (hash: string) => /^#\/file\/([^?]+)/.exec(hash)?.[1];
+
 /** `pane` for `#/pane/<key>`, `` for `#/`: what kind of screen a hash route is. */
 const screenOf = (hash: string) => hash.replace(/^#?\/?/, '').split('/')[0];
 
@@ -316,9 +319,17 @@ export function navigate(to: string, { transition = screenOf(to) !== screenOf(lo
   // the screen they were opened from. Browser back already lands there.
   if (to === '#/' && screenRoute(path())) to = before;
   if (to === location.hash) return;
+  // Files counts its own entries, so its Back leaves in one step (BackLink in web/file.tsx):
+  // `filesFrom` is how far back the screen it was opened from is. Unknown (opened by URL) stays
+  // unknown.
+  const files = filesOf(to);
+  const prev = (history.state as { filesFrom?: number } | null)?.filesFrom;
+  const state = !files ? null
+    : filesOf(location.hash) !== files ? (replace ? null : { filesFrom: 1 })
+    : prev === undefined ? null : { filesFrom: prev + (replace ? 0 : 1) };
   const run = () => {
-    if (replace) history.replaceState(null, '', to);
-    else history.pushState(null, '', to);
+    if (replace) history.replaceState(state, '', to);
+    else history.pushState(state, '', to);
     flushSync(() => apply?.(path()));
   };
   const start = (document as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
@@ -706,7 +717,8 @@ export function App() {
   // A Pane route is keyed by its Tab, so a focus move between a split's cells keeps the
   // view mounted: no re-fetched Chat, no re-measured grid, no lost scroll.
   const openPane = paneKey ? state?.panes.find((p) => p.key === paneKey) : undefined;
-  const screenKey = openPane ? `tab:${openPane.muxKey}/${openPane.tabId}` : route;
+  // Files is keyed by its Pane for the same reason: a tree click swaps the file, not the tree.
+  const screenKey = openPane ? `tab:${openPane.muxKey}/${openPane.tabId}` : fileKey ? `file:${fileKey}` : route;
   const screens = paneKey ? (
         <PaneScreen paneKey={paneKey} state={state} screen={screen} screens={paneScreens} streamId={streamId} />
       ) : diffKey ? (

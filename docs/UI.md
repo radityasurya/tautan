@@ -781,7 +781,12 @@ laid out like a code host:
   type; ↑/↓, Enter, Esc. It sits above the table on the phone. A worktree has none, because
   the list is the Pane's own checkout.
 
-Every row is a link, so Back walks back through the folders and files you opened.
+Every row is a link, so the browser's back walks back through the folders and files you opened,
+and so does the header's Back on the phone, where a folder and a file are separate screens. On
+desktop, where the tree and the file are one screen, the header's Back leaves Files in one press,
+to the screen it was opened from: `navigate()` stores `filesFrom`, how many entries back that
+screen is, in each Files entry. Files opened by its URL has no screen behind it, and goes to its
+Pane.
 
 ### The branch chip and sheet
 
