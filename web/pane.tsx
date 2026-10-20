@@ -1524,8 +1524,23 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
   };
   useEffect(() => {
     if (pane?.status === 'blocked') {
-      loadExplain();
-      return;
+      // herdr can turn a Claude blocked before its box is drawn (`legacy_no_prompt_blocker`
+      // fires once the input box goes), and raw output moves no revision: a read that finds
+      // no box asks again until one does, or the Pane said "needs you" with nothing to answer.
+      // ponytail: a 1.5 s poll while a blocked Pane shows no card; a Screen event would do.
+      const asked = paneKey;
+      let live = true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const ask = (): Promise<void> => fetchExplain(asked).then(
+        (e) => {
+          if (!live || openKey.current !== asked) return;
+          setExplain(e);
+          if (!e) timer = setTimeout(ask, 1_500);
+        },
+        () => { if (live) timer = setTimeout(ask, 3_000); },
+      );
+      void ask();
+      return () => { live = false; clearTimeout(timer); };
     }
     if (!explain) return;
     const t = setTimeout(() => setExplain(null), 150);
