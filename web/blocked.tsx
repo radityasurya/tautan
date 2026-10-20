@@ -24,7 +24,9 @@ export const fetchExplain = (paneKey: string): Promise<ExplainResponse | null> =
  * screen moved on, and the caller must see that, so the outcome comes back instead of being
  * swallowed the way `post` does.
  */
-export async function sendBlocked(paneKey: string, keys: string[], promptId?: string): Promise<'sent' | 'changed'> {
+export type SendOutcome = 'sent' | 'changed' | 'failed';
+
+export async function sendBlocked(paneKey: string, keys: string[], promptId?: string): Promise<SendOutcome> {
   haptic();
   try {
     const response = await fetch(`/api/panes/${encodeURIComponent(paneKey)}/input`, {
@@ -32,9 +34,12 @@ export async function sendBlocked(paneKey: string, keys: string[], promptId?: st
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ keys, ...(promptId !== undefined ? { promptId } : {}) } satisfies InputBody),
     });
-    return response.status === 409 ? 'changed' : 'sent';
+    if (response.status === 409) return 'changed';
+    // A Hub that is down (Vite's proxy answers 5xx) or a Mux that refused the keys sent
+    // nothing: the card says so and keeps its choices, rather than reading "Sent".
+    return response.ok ? 'sent' : 'failed';
   } catch {
-    return 'sent'; // offline: the reconnect bar owns the error, and the card stays honest
+    return 'failed';
   }
 }
 
@@ -52,15 +57,15 @@ const choicesOf = (explain: Explain, menu: ReturnType<typeof readBox>['menu']): 
 
 /**
  * The prompt as one line, for a surface with no room for the card (the Pane list).
- * Claude Code heads its box `Bash command` and prints the command under it; any other box
- * leads with its question.
+ * Claude Code heads its box `Bash command` and prints the command under it, and `Create file`
+ * or `Edit file` over the path; any other box leads with its question.
  */
-// ponytail: only the `… command` head is special-cased; add a head per App profile when a
-// second agent's box reads wrong here.
+// ponytail: only the `… command` and `… file` heads are special-cased; add a head per App
+// profile when a second agent's box reads wrong here.
 export function promptLine(explain: Explain): string {
   const { head, rest } = readBox(explain.detection);
   const next = rest[0] && plain(rest[0]).trim();
-  return /command$/i.test(plain(head)) && next ? next : plain(head).trim();
+  return /(?:command|file)$/i.test(plain(head)) && next ? next : plain(head).trim();
 }
 
 /** The dark ink on a warning fill, as the header's Yes uses it. */
@@ -81,11 +86,12 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
   stale?: boolean;
   layout?: 'rows' | 'row';
   bare?: boolean;
-  onSend: (keys: string[], promptId?: string) => Promise<'sent' | 'changed'>;
+  onSend: (keys: string[], promptId?: string) => Promise<SendOutcome>;
   onReread: () => void;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [changed, setChanged] = useState(false);
+  const [failed, setFailed] = useState(false);
   const [sending, setSending] = useState(false);
   const { head, rest, menu } = readBox(explain.detection);
   const options = choicesOf(explain, menu);
@@ -95,8 +101,11 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
     const choice = options.find((option) => option.id === id);
     if (!choice) return;
     setSending(true);
+    setFailed(false);
     try {
-      if (await onSend(choice.keys, explain.promptId) === 'changed') setChanged(true);
+      const outcome = await onSend(choice.keys, explain.promptId);
+      if (outcome === 'changed') setChanged(true);
+      if (outcome === 'failed') setFailed(true);
     } finally {
       setSending(false);
     }
@@ -109,6 +118,9 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
         Re-read
       </button>
     </>
+  );
+  const failure = failed && !moved && (
+    <p role="alert" className="text-caption text-danger">Not sent: tautan could not reach the Hub. Try again.</p>
   );
   const asks = (
     <p className="flex items-center gap-2 truncate text-[12px] font-semibold text-warn">
@@ -123,11 +135,18 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
       <div className="flex items-center gap-3">{refusal}</div>
     ) : (
       // A numbered menu keeps the Agent's own numbers; a menu row goes out as arrows to it,
-      // then enter. Without a menu, each choice is labelled with the key it sends.
-      <div role="group" aria-label="Options" className="flex flex-wrap items-center gap-2">
+      // then enter. Without a menu, each choice is labelled with the key it sends. In the Chat
+      // view's approval row (`bare`) the choices stack as the Agent's own menu does, number
+      // first, so a long label never pushes the others around.
+      <div role="group" aria-label="Options" className={bare ? 'flex flex-col items-stretch gap-1' : 'flex flex-wrap items-center gap-2'}>
         {options.map((option, i) => {
           const yes = i === 0 && (menu.length ? /^(yes|allow|accept|approve)\b/i.test(option.label) : option.id === 'enter');
           const no = option.id === 'esc' || /^no\b/i.test(option.label);
+          const glyph = (
+            <kbd className={`shrink-0 rounded-[4px] border px-[5px] font-mono text-[10.5px] font-normal ${yes ? 'border-current/25' : 'border-border text-muted'}`}>
+              {option.glyph}
+            </kbd>
+          );
           return (
             <button
               key={option.id}
@@ -136,26 +155,23 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
               aria-label={menu.length ? `${option.glyph}. ${option.label}` : `${option.label}, key ${option.id}`}
               disabled={sending}
               onClick={() => void send(option.id)}
-              className={`press flex min-h-9 max-w-full shrink-0 items-center gap-2 rounded-composer px-3.5 py-1.5 text-left text-[13px] disabled:opacity-50 ${
-                yes ? 'bg-warn font-semibold' : no ? 'border border-border text-danger' : 'bg-surface text-fg'
+              className={`press flex max-w-full shrink-0 cursor-pointer items-center gap-2 rounded-composer text-left text-[13px] transition-colors duration-100 outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-default disabled:opacity-50 ${
+                bare ? 'min-h-8 px-2.5 py-1' : 'min-h-9 px-3.5 py-1.5'
+              } ${
+                yes ? 'bg-warn font-semibold hover:bg-warn/85' : no ? 'border border-border text-danger hover:border-danger/40 hover:bg-danger/8' : 'bg-surface text-fg hover:bg-elevated'
               }`}
               style={yes ? { color: ON_WARN } : undefined}
             >
+              {bare && glyph}
               {/* A label can carry a path with no spaces ("always allow access to /tmp/…"). */}
               <span className="min-w-0 [overflow-wrap:anywhere]">{option.label}</span>
-              <kbd
-                className={`shrink-0 rounded-[4px] border px-[5px] font-mono text-[10.5px] font-normal ${
-                  yes ? 'border-current/25' : 'border-border text-muted'
-                }`}
-              >
-                {option.glyph}
-              </kbd>
+              {!bare && glyph}
             </button>
           );
         })}
       </div>
     );
-    if (bare) return choices;
+    if (bare) return failure ? <div className="flex flex-col gap-1.5">{choices}{failure}</div> : choices;
     return (
       <section
         role="region"
@@ -167,6 +183,23 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
           <code title={line} className="truncate font-mono text-[13px] text-fg">{line}</code>
         </div>
         {choices}
+        {failure && <div className="w-full">{failure}</div>}
+        {/* One line cannot hold a file's content or a long command: the whole box opens under
+            the choices, as the phone's card shows it. */}
+        {rest.length > 1 && (
+          <details className="group w-full">
+            <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-chip text-caption text-muted outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/60 [&::-webkit-details-marker]:hidden">
+              <span aria-hidden className="transition-transform duration-100 group-open:rotate-90">›</span>
+              Show the whole prompt · {rest.length} lines
+            </summary>
+            <pre
+              aria-label="Detection"
+              className="mt-1.5 max-h-72 overflow-auto overscroll-contain rounded-chip bg-bg px-2.5 py-1.5 font-mono text-caption whitespace-pre-wrap text-muted"
+            >
+              <Ansi text={rest.join('\n')} />
+            </pre>
+          </details>
+        )}
       </section>
     );
   }
@@ -208,7 +241,8 @@ export function Blocked({ explain, agent, stale, layout = 'rows', bare, onSend, 
   const footer = moved ? (
     <div className="flex shrink-0 items-center justify-between gap-2 pt-0.5">{refusal}</div>
   ) : (
-    <div className="flex shrink-0 justify-end pt-0.5">
+    <div className="flex shrink-0 items-center justify-end gap-3 pt-0.5">
+      {failure && <div className="min-w-0 flex-1">{failure}</div>}
       <button
         type="button"
         onClick={() => void send()}

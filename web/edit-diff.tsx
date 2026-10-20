@@ -49,7 +49,7 @@ function Span({ oldText = '', newText, ext }: { oldText?: string; newText: strin
  * view does on a phone. `copy` is the raw input for the Copy button; `tall` off fits the
  * approval row, whose choices sit under the box.
  */
-export function EditDiff({ edit, copy, tall = true }: { edit: Edit; copy: string; tall?: boolean }) {
+export function EditDiff({ edit, copy, tall = true, height }: { edit: Edit; copy: string; tall?: boolean; /** Overrides `tall`'s height class. */ height?: string }) {
   const cut = edit.path.lastIndexOf('/') + 1;
   const ext = edit.path.match(/\.([^./]+)$/)?.[1] ?? '';
   return (
@@ -63,7 +63,7 @@ export function EditDiff({ edit, copy, tall = true }: { edit: Edit; copy: string
         </span>
         <CopyButton text={copy} className="min-h-8 shrink-0 rounded-chip border border-border bg-bg px-2 text-caption text-muted active:text-fg" />
       </div>
-      <div tabIndex={0} aria-label={`Changes to ${edit.path.slice(cut)}`} className={`${tall ? 'max-h-80' : 'max-h-48'} overflow-auto overscroll-contain rounded-[6px] border border-border bg-bg py-1`}>
+      <div tabIndex={0} aria-label={`Changes to ${edit.path.slice(cut)}`} className={`${height ?? (tall ? 'max-h-80' : 'max-h-48')} overflow-auto overscroll-contain rounded-[6px] border border-border bg-bg py-1`}>
         <div className="w-max min-w-full">
           {edit.spans.map((span, n) => (
             <Fragment key={n}>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
-import { Blocked, ON_WARN, type ExplainResponse } from './blocked.tsx';
+import { Blocked, ON_WARN, type ExplainResponse, type SendOutcome } from './blocked.tsx';
+import { readBox } from '../shared/blocked.ts';
 import { Dot } from './home.tsx';
 import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown, ShellRun } from './markdown.tsx';
@@ -615,7 +616,7 @@ export interface Approval {
   stale: boolean;
   desktop: boolean;
   /** The Pane's one answer path (`sendBlocked` with the 409 guard). */
-  onAnswer: (keys: string[], promptId?: string) => Promise<'sent' | 'changed'>;
+  onAnswer: (keys: string[], promptId?: string) => Promise<SendOutcome>;
   onReread: () => void;
   /** The row on screen, so Review can bring it into view. */
   ref: RefObject<HTMLLIElement | null>;
@@ -666,33 +667,52 @@ function ApprovalItem({ approval, agent, tool, at, kind, queued }: { approval: A
       />
     );
 
-  if (!tool) {
-    return (
-      <li ref={ref} data-approval className="flex scroll-my-4 flex-col items-start">
-        <div className="w-[min(92%,42rem)]">{card(false)}</div>
-      </li>
-    );
-  }
-  const input = tool.detail || tool.brief;
-  const edit = editOf(tool, input, false);
+  // No call in the transcript to hang the prompt on (Claude logs a call once it is answered,
+  // and a subagent's call lives in its own file): the same row, drawn from the box on Screen.
+  // A `Bash command`, `Create file` or `Edit file` box names its chip; a question takes the
+  // Agent's name and leads the box. The key hints stay out: the choices say them.
+  const box = tool ? undefined : readBox(explain.detection);
+  const titled = box && /(?:command|file)$/i.test(box.head);
+  const label = tool ? toolLabel(tool.name, kind) : titled ? box!.head.replace(/\s+command$/i, '') : capital(agent);
+  const input = tool
+    ? tool.detail || tool.brief
+    : [...(titled ? [] : [box!.head]), ...box!.rest].filter((line) => !/esc to cancel|enter to (?:confirm|select)/i.test(line)).join('\n');
+  const edit = tool ? editOf(tool, input, false) : undefined;
+  // The preview opens at about four lines, so an approval never pushes the conversation off
+  // the screen; Show all lets it grow, and it scrolls inside its box either way.
+  const [open, setOpen] = useState(false);
+  const long = (input?.split('\n').length ?? 0) > 4;
+  const height = open ? 'max-h-72' : 'max-h-[5.25rem]';
   return (
-    <li ref={queued ? undefined : ref} data-approval aria-label={`${toolLabel(tool.name, kind)} ${queued ? 'also needs your approval' : 'needs your approval'}`} className="min-w-0 scroll-my-4 rounded-chip border border-warn/40 bg-warn/8">
+    <li ref={queued ? undefined : ref} data-approval aria-label={`${label} ${queued ? 'also needs your approval' : 'needs your approval'}`} className="min-w-0 scroll-my-4 rounded-chip border border-warn/40 bg-warn/8">
+      {/* What it asks leads on the left; which tool asks sits with the time on the right. */}
       <div className="flex min-h-11 items-center gap-2 px-2 py-1 lg:min-h-8">
-        <span className="max-w-32 shrink-0 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] leading-none text-fg">
-          {toolLabel(tool.name, kind)}
-        </span>
         <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold text-warn">
           <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-warn" />
           <span className="truncate">{queued ? 'Also needs your approval' : 'Needs your approval'}</span>
         </span>
+        <span className="max-w-40 shrink-0 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] leading-none text-fg">
+          {label}
+        </span>
         <Stamp at={at} />
       </div>
       {edit ? (
-        <div className="px-2"><EditDiff edit={edit} copy={input} tall={false} /></div>
+        <div className="px-2"><EditDiff edit={edit} copy={input} height={height} /></div>
       ) : input && (
-        <pre className="mx-2 max-h-48 overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded-[6px] border border-border bg-bg px-2 py-1.5 font-mono text-caption text-fg">
+        <pre className={`mx-2 ${height} overflow-auto overscroll-contain whitespace-pre-wrap break-words rounded-[6px] border border-border bg-bg px-2 py-1.5 font-mono text-caption text-fg`}>
           {input}
         </pre>
+      )}
+      {long && (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((was) => !was)}
+          className="mx-2 mt-1 flex min-h-8 cursor-pointer items-center gap-1 rounded-chip px-1 text-caption text-muted outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/60 lg:min-h-7"
+        >
+          <span aria-hidden className={`transition-transform duration-100 ${open ? 'rotate-90' : ''}`}>›</span>
+          {open ? 'Show less' : `Show all ${input.split('\n').length} lines`}
+        </button>
       )}
       {queued ? (
         <p className="flex min-h-9 items-center gap-2 px-2 pb-1 text-caption text-muted">

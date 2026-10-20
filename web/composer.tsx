@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEv
 import type { Affordance, InputBody, Span, StatePane } from '../shared/types.ts';
 import { hintPills } from './affordances.tsx';
 import { haptic, post, reducedMotion } from './app.tsx';
-import { Blocked, type ExplainResponse } from './blocked.tsx';
+import { Blocked, type ExplainResponse, type SendOutcome } from './blocked.tsx';
 import { Attach, Keyboard, Mic, ScreenLens, Send } from './icons.tsx';
 import { applyKeyPrefs, capInput, directKey, editableCaps, enterAction, modified, MODIFIERS, moveRow, moveRowTo, parseKeyPrefs, pastedFiles, toKeyPrefs, trayGroups, type Cap, type KeyPrefs, type Modifier } from './keys.ts';
 import { applyPick, Picker, tokenAt, useComplete, type Item } from './complete.tsx';
@@ -284,7 +284,7 @@ export function Composer({
   explain: ExplainResponse | null;
   /** The last answer to this prompt came back 409, from the card or the header. */
   stale: boolean;
-  onAnswer: (keys: string[], promptId?: string) => Promise<'sent' | 'changed'>;
+  onAnswer: (keys: string[], promptId?: string) => Promise<SendOutcome>;
   onReread: () => void;
   /** The card's live region, so the header's Review can bring it into view. */
   cardRef: RefObject<HTMLDivElement | null>;

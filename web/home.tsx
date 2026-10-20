@@ -400,7 +400,7 @@ function NeedsYouCard({ pane, where, compact, paneDrag }: { pane: StatePane; whe
     try {
       const outcome = await sendBlocked(pane.key, [key], explain?.promptId);
       if (outcome === 'changed') setChanged(true);
-      else setSent(true);
+      else if (outcome === 'sent') setSent(true); // a failed send leaves the answers live
     } finally {
       setSending(false);
     }
