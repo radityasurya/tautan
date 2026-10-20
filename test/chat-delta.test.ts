@@ -20,13 +20,18 @@ const chatHub = (): ChatHub => ({
   paneHost: async () => 'local', host: () => undefined, watchedPaneKeys: () => new Set(),
 });
 
+const enc = new TextEncoder();
+
 /** One mutable conversation: main and subagent texts plus the subagents tree, re-stat per call. */
 function fixture(main = '', sub: string | undefined = undefined, agents: { id: string; meta: string }[] = []) {
   const state = { main, sub, agents };
-  const text = (path: string) => path.includes('/subagents/') ? state.sub : state.main;
+  // Claude ends every line with \n, and the fold waits for it: a fixture's last line gets one.
+  const nl = (value: string | undefined) => value && !value.endsWith('\n') ? `${value}\n` : value;
+  const text = (path: string) => nl(path.includes('/subagents/') ? state.sub : state.main);
   const io: TranscriptIo = {
-    stat: async path => { const value = text(path); return value === undefined ? undefined : { inode: '1', size: value.length, mtime: Bun.hash(value).toString(36) }; },
+    stat: async path => { const value = text(path); return value === undefined ? undefined : { inode: '1', size: enc.encode(value).length, mtime: Bun.hash(value).toString(36) }; },
     read: async path => text(path)!,
+    range: async (path, start, end) => enc.encode(text(path) ?? '').slice(start, end),
     subagents: async () => ({ mtime: Bun.hash(JSON.stringify(state.agents)).toString(36), agents: state.agents.map(agent => ({ ...agent })) }),
   };
   const events: ChatEvent[] = [];

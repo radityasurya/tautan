@@ -347,7 +347,7 @@ describe('the lens resumes a growing Claude transcript', () => {
     const rand = prng(7);
     for (let round = 0; round < 8; round++) {
       const g = growing();
-      const cuts = [...new Set(Array.from({ length: 12 }, () => 1 + Math.floor(rand() * bytes.length)))].sort((a, b) => a - b);
+      const cuts = [...new Set(Array.from({ length: 12 }, () => 1 + Math.floor(rand() * (bytes.length - 1))))].sort((a, b) => a - b);
       for (const cut of [...cuts, bytes.length]) {
         g.state.bytes = bytes.slice(0, cut);
         expect(await seen(g.lens)).toEqual(await reference(g.state.bytes));

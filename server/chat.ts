@@ -470,6 +470,7 @@ const utf8 = new TextDecoder();
 
 /** Feed a fold the bytes read from `start` (its mark, then the new bytes). Only complete lines
  *  decode; the partial last line waits as bytes, so a torn UTF-8 character never decodes. */
+// ponytail: a valid last line with no trailing newline waits for one (every Claude transcript on this host ends with \n); upgrade: after N quiet ticks feed a remainder that parses as JSON, flag it, and parse fresh if the next byte is not \n.
 function consume(fold: Fold, bytes: Uint8Array, start: number): void {
   const fresh = bytes.subarray(fold.offset - start);
   const joined = fold.remainder.length ? Buffer.concat([fold.remainder, fresh]) : fresh;
@@ -1098,7 +1099,7 @@ export class ChatLens {
     if (fold && linked.size) for (const turn of fold.parser.turns) for (const tool of turn.tools) if (tool.id !== undefined && linked.has(tool.id) && (tool.name === 'Task' || tool.name === 'Agent')) tool.subagentId = opts.subagentIds.get(tool.id);
     if (bytes) {
       fold ??= { parser: new TranscriptParser(opts), opts, scan, offset: 0, remainder: new Uint8Array(0), mark: new Uint8Array(0), restored: new Set() };
-      consume(fold, bytes, start);
+      try { consume(fold, bytes, start); } catch (e) { this.cache.delete(cacheKey); throw e; } // a throw leaves the fold half-fed: Turns grew, offset did not
     }
     // ponytail: whole-file re-parse; Codex takes the TranscriptParser shape, pi a parsed-entry memo, when a file past ~20 MB shows
     const parsed = fold ? fold.parser.turns : resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
