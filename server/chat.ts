@@ -498,37 +498,35 @@ function launched(content: unknown): boolean {
     (block as { text: string }).text.trimStart().startsWith('Async agent launched'));
 }
 
-export function parentFinished(jsonl: string): ParentDone {
-  const calls = new Map<string, boolean>(); // Task tool_use id → started with run_in_background
-  const results = new Set<string>();
-  const notified = new Map<string, string>();
-  const notification = (value: unknown): string | undefined => {
+/** The parent-transcript scan as a fold over parsed records, so the lens can fuse it into the
+ *  Claude parse (`onEntry`) and JSON-parse each line once. */
+export class ParentScan {
+  private calls = new Map<string, boolean>(); // Task tool_use id → started with run_in_background
+  private results = new Set<string>();
+  private notified = new Map<string, string>();
+
+  private notification(value: unknown): string | undefined {
     if (typeof value === 'string') return value.includes('<task-notification>') && value.includes('<tool-use-id>') ? value : undefined;
     if (!value || typeof value !== 'object') return undefined;
     for (const item of Array.isArray(value) ? value : Object.values(value as Record<string, unknown>)) {
-      const found = notification(item);
+      const found = this.notification(item);
       if (found) return found;
     }
-  };
-  for (const line of jsonl.split(/\r?\n/)) {
-    if (!line.includes('"tool_use"') && !line.includes('"tool_result"') && !line.includes('<task-notification>')) continue;
-    let entry: Record<string, unknown>;
-    try {
-      const value: unknown = JSON.parse(line);
-      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
-      entry = value as Record<string, unknown>;
-    } catch { continue; }
-    const note = notification(entry);
+  }
+
+  entry = (record: unknown): void => {
+    const entry = record as Record<string, unknown>;
+    const note = this.notification(entry);
     if (note) {
       const toolUseId = note.match(/<tool-use-id>([^<]+)<\/tool-use-id>/)?.[1];
       const taskId = note.match(/<task-id>([^<]+)<\/task-id>/)?.[1];
       const status = note.match(/<status>([^<]+)<\/status>/)?.[1] ?? 'completed';
-      if (toolUseId) notified.set(toolUseId, status);
-      if (taskId) notified.set(taskId, status); // a background subagent's task id is its agent id
-      continue;
+      if (toolUseId) this.notified.set(toolUseId, status);
+      if (taskId) this.notified.set(taskId, status); // a background subagent's task id is its agent id
+      return;
     }
     const content = (entry.message as Record<string, unknown> | undefined)?.content;
-    if (!Array.isArray(content)) continue;
+    if (!Array.isArray(content)) return;
     for (const item of content) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
       const block = item as Record<string, unknown>;
@@ -536,14 +534,28 @@ export function parentFinished(jsonl: string): ParentDone {
         // Claude writes run_in_background as the string "true" in many transcripts; both spell
         // the same background launch, and only the string form was reading as foreground.
         const background = (block.input as Record<string, unknown> | undefined)?.run_in_background;
-        calls.set(block.id, background === true || background === 'true');
+        this.calls.set(block.id, background === true || background === 'true');
       }
-      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string' && !launched(block.content)) results.add(block.tool_use_id);
+      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string' && !launched(block.content)) this.results.add(block.tool_use_id);
     }
+  };
+
+  done(): ParentDone {
+    const finished = new Set<string>();
+    for (const [id, background] of this.calls) if (background ? this.notified.has(id) : this.results.has(id)) finished.add(id);
+    return { finished, notified: this.notified };
   }
-  const finished = new Set<string>();
-  for (const [id, background] of calls) if (background ? notified.has(id) : results.has(id)) finished.add(id);
-  return { finished, notified };
+}
+
+export function parentFinished(jsonl: string): ParentDone {
+  const scan = new ParentScan();
+  for (const line of jsonl.split(/\r?\n/)) {
+    if (!line.includes('"tool_use"') && !line.includes('"tool_result"') && !line.includes('<task-notification>')) continue;
+    let entry: unknown;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) scan.entry(entry);
+  }
+  return scan.done();
 }
 
 /** The stop reasons of a final message: a subagent may end on a stop sequence, not end_turn. */
@@ -1009,7 +1021,7 @@ export class ChatLens {
     // Only the main transcript holds the first-level Task rows; a nested subagent's Task rows
     // sit in another subagent's file, which this scan does not read — those fall back to the
     // ending and freshness rules.
-    if (subagentDir && !agent) this.parents.set(paneKey, { sessionId: session, parent: parentFinished(jsonl) });
+    const scan = subagentDir && !agent && resolved.agent === 'claude' ? new ParentScan() : undefined;
     let piLinks: Map<string, string> | undefined;
     if (resolved.agent === 'pi' || resolved.agent === 'omp') {
       if (agent) list = this.piAgents.get(paneKey)?.list ?? []; // the parent's tree rides the child view
@@ -1027,12 +1039,14 @@ export class ChatLens {
     const queued: Queued[] = [];
     const subagentIds = piLinks ?? new Map<string, string>();
     if (!piLinks) for (const item of list) if (item.toolUseId) subagentIds.set(item.toolUseId, item.id);
-    const opts: ParseOpts = { images, previews, previewFiles, outputs, details, subagentIds, ...(agent ? { sidechain: true } : { queued }) };
-    if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
+    const opts: ParseOpts = { images, previews, previewFiles, outputs, details, subagentIds, ...(agent ? { sidechain: true } : { queued }), ...(scan ? { onEntry: scan.entry } : {}) };
     const parsed = resolved.agent === 'codex' ? parseCodexRollout(jsonl, opts)
       : (resolved.agent === 'pi' || resolved.agent === 'omp' ? parsePiTranscript : parseTranscript)(jsonl, opts);
     // A Codex parse without stable identity (Wave 12.1) is no Chat: the Pane keeps its Screen.
     if (!parsed) { this.cache.delete(cacheKey); return; }
+    // The scan rode the parse; `states` reads its result, so it runs after.
+    if (scan) this.parents.set(paneKey, { sessionId: session, parent: scan.done() });
+    if (subagentDir) list = await this.states(paneKey, subagentDir, target, session, list);
     // The amendment: every pending tool's whole detail rides inline, so each approval row shows
     // the whole command or diff with no fetch — the lens restores what the parser cut.
     for (const pending of pendingTools(parsed)) {

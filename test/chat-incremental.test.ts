@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { ParentScan, parentFinished } from '../server/chat.ts';
 import { parseTranscript, TranscriptParser, type ParseOpts, type Queued, type TranscriptImage } from '../shared/chat.ts';
 
 // A resumable parse must equal the one-shot parse of the same bytes: Turns and every side map.
@@ -147,5 +148,20 @@ describe('a resumable parse equals the one-shot parse', () => {
     const seen: unknown[] = [];
     new TranscriptParser({ onEntry: entry => seen.push(entry) }).feed(`${corpus['a queue with enqueue, dequeue, remove, popAll and a queued attachment']!.join('\n')}\n[1]\nnope\n`);
     expect(seen).toHaveLength(corpus['a queue with enqueue, dequeue, remove, popAll and a queued attachment']!.length);
+  });
+
+  test('the parent scan fused into the parse equals parentFinished', () => {
+    const note = (id: string) => user('n', `<task-notification><task-id>ag-${id}</task-id><tool-use-id>${id}</tool-use-id><status>completed</status></task-notification>`, 5);
+    const text = [
+      assistant('a1', [use('fg', 'Task', { description: 'x' }), use('bg', 'Agent', { run_in_background: 'true' }), use('bg2', 'Agent', { run_in_background: true })], 1),
+      user('u1', [result('fg', 'done'), result('bg', 'Async agent launched: id')], 2),
+      note('bg'),
+      'not json',
+    ].join('\n');
+    const scan = new ParentScan();
+    parseTranscript(text, { onEntry: scan.entry });
+    const fused = scan.done(), whole = parentFinished(text);
+    expect([...fused.finished].sort()).toEqual(['bg', 'fg']);
+    expect(fused).toEqual(whole);
   });
 });
