@@ -10,7 +10,7 @@ import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordan
 
 import { api, haptic, navigate, opensWith, post, reducedMotion, setSplitOn, splitSet, useDesktop, useSplitPref } from './app.tsx';
 import { fetchExplain, sendBlocked, type ExplainResponse } from './blocked.tsx';
-import { Chat, readLens, writeLens, type LensMode } from './chat.tsx';
+import { Chat, readLens, writeLens, type Approval, type LensMode } from './chat.tsx';
 import { Composer, FADE, subscribeTyping, typingSnapshot } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
@@ -1058,14 +1058,65 @@ function useCellSeen(paneKey: string, revision: number | undefined) {
 /** A split cell in the Chat lens. The focused cell passes the route's handlers; any other is
  *  view-only and falls back to its grid for a Pane the Hub serves no Chat for, without
  *  touching the saved lens. One component for both, so a focus move keeps each Chat mounted. */
-function CellChat({ pane, screen, onUnavailable, onReview, approval, onReady }: {
+/**
+ * The approval a split cell answers for itself. The focused cell's comes from the Pane screen
+ * (Review, the dock's card); any other blocked cell read "needs you" in the list with nothing
+ * to answer in its cell. It reads its own box, asking again until one is drawn, as the Pane
+ * screen does, and answers its own Pane.
+ */
+function useCellApproval(paneKey: string, blocked: boolean, revision: number, desktop: boolean): Approval | undefined {
+  const [explain, setExplain] = useState<ExplainResponse | null>(null);
+  const [stale, setStale] = useState<string | null>(null);
+  const [round, setRound] = useState(0);
+  const ref = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    if (!blocked) {
+      setExplain(null);
+      return;
+    }
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = (): Promise<void> => fetchExplain(paneKey).then(
+      (e) => {
+        if (!live) return;
+        setExplain(e);
+        if (!e) timer = setTimeout(ask, 1_500);
+      },
+      () => { if (live) timer = setTimeout(ask, 3_000); },
+    );
+    void ask();
+    return () => { live = false; clearTimeout(timer); };
+  }, [paneKey, blocked, revision, round]);
+  if (!blocked || !explain) return undefined;
+  return {
+    explain,
+    desktop,
+    ref,
+    stale: stale === (explain.promptId ?? ''),
+    onAnswer: async (keys, promptId) => {
+      const outcome = await sendBlocked(paneKey, keys, promptId);
+      if (outcome === 'changed') setStale(promptId ?? '');
+      return outcome;
+    },
+    onReread: () => {
+      setStale(null);
+      setRound((n) => n + 1);
+    },
+  };
+}
+
+function CellChat({ pane, screen, onUnavailable, onReview, approval, onReady, answers }: {
   pane: StatePane;
   screen: ScreenEvent | null;
   onUnavailable?: () => void;
   onReview?: () => void;
   approval?: Parameters<typeof Chat>[0]['approval'];
   onReady?: (shown: boolean) => void;
+  /** A cell beside the focused one: it reads and answers its own prompt. */
+  answers?: boolean;
 }) {
+  const desktop = useDesktop();
+  const own = useCellApproval(pane.key, Boolean(answers) && pane.status === 'blocked', pane.revision, desktop);
   const [noChat, setNoChat] = useState(false);
   const fallback = useCallback(() => setNoChat(true), []);
   const profile = useMemo(() => profileFor(pane), [pane.agent, pane.command]);
@@ -1082,7 +1133,7 @@ function CellChat({ pane, screen, onUnavailable, onReview, approval, onReady }: 
       lines={lines}
       profile={profile}
       onReview={onReview}
-      approval={approval}
+      approval={approval ?? own}
       onReady={onReady}
     />
   );
@@ -2103,7 +2154,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
                 screens={screens}
                 held={last}
                 focusedContent={cellChat || undefined}
-                cellChat={(p) => <CellChat pane={p} screen={screens[p.key] ?? null} />}
+                cellChat={(p) => <CellChat pane={p} screen={screens[p.key] ?? null} answers />}
                 onZoom={zooming ? undefined : (key) => void zoomTo(key, true)}
                 onResize={(key, direction, amount) =>
                   editing ? undefined : void edit('Resize', () => api<void>(`/api/panes/${encodeURIComponent(key)}/resize`, { direction, amount } satisfies ResizeBody))}
