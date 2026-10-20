@@ -360,3 +360,45 @@ describe('the lens resumes a growing Claude transcript', () => {
     }
   });
 });
+
+// Opt-in: TAUTAN_TRANSCRIPT=<a real Claude .jsonl> checks the resumable parse against a whole file.
+describe('a real transcript', () => {
+  test.skipIf(!process.env.TAUTAN_TRANSCRIPT)('the incremental parse equals the one-shot parse at every cut', async () => {
+    const bytes = new Uint8Array(await Bun.file(process.env.TAUTAN_TRANSCRIPT!).arrayBuffer());
+    const decoder = new TextDecoder();
+    const whole = oneShot(decoder.decode(bytes));
+
+    // Line by line.
+    const s = sides();
+    const parser = new TranscriptParser(opts(s));
+    const all = decoder.decode(bytes);
+    for (let at = 0; at < all.length;) {
+      const nl = all.indexOf('\n', at);
+      const end = nl < 0 ? all.length : nl + 1;
+      parser.feed(all.slice(at, end));
+      at = end;
+    }
+    s.queued.push(...parser.queued());
+    expect(snap(parser.turns, s)).toEqual(whole);
+
+    // 50 seeded byte cuts; the partial line waits as bytes, as the lens holds it.
+    const rand = prng(2026);
+    const cuts = Array.from({ length: 50 }, () => 1 + Math.floor(rand() * bytes.length)).sort((a, b) => a - b);
+    const t = sides();
+    const inc = new TranscriptParser(opts(t));
+    let held = new Uint8Array(0), at = 0;
+    for (const cut of cuts) {
+      const joined = new Uint8Array(held.length + cut - at);
+      joined.set(held);
+      joined.set(bytes.subarray(at, cut), held.length);
+      at = cut;
+      const end = joined.lastIndexOf(0x0a) + 1;
+      if (end) inc.feed(decoder.decode(joined.subarray(0, end)));
+      held = joined.slice(end);
+      const complete = bytes.subarray(0, at - held.length);
+      const reference = oneShot(decoder.decode(complete));
+      const u = { ...t, queued: inc.queued() };
+      expect(snap(inc.turns, u)).toEqual(reference);
+    }
+  }, 600_000);
+});
