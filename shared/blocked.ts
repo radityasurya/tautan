@@ -157,10 +157,13 @@ export function readBox(detection: string): { head: string; rest: string[]; menu
     } else if (menu.length && text.trim() && text.length - text.trimStart().length > column) {
       const last = menu.at(-1)!;
       const above = plain(lines[i - 1]!).replace(frame, '').trimEnd();
-      if (width > 0 && (i === last.at + 1 || last.wrapped) && above.length >= width - 1) {
-        // ponytail: a deeper line under a row that fills the width is a wrap of the label, not a
-        // description; a wrap that ends short of the edge by more than one column still reads as
-        // one — tell them apart by indent alone is not possible.
+      // A deeper line is a wrap of the label when its first word would not have fitted on the
+      // row above, as a word wrap decides: Claude breaks before a long path, short of the edge.
+      // Otherwise it is a description. A row that fills the width wraps whatever follows.
+      // ponytail: a description whose first word is too long for the row above reads as a wrap;
+      // tell them apart by indent alone is not possible.
+      const word = text.trim().split(/\s/, 1)[0]!;
+      if (width > 0 && (i === last.at + 1 || last.wrapped) && above.length + 1 + word.length > width) {
         last.label += above.length === width ? text.trim() : ` ${text.trim()}`;
         last.wrapped = true;
       } else {

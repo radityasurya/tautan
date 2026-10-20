@@ -31,4 +31,11 @@ describe('readBox on Claude Code 2.1.303 file previews', () => {
     expect(box.rest[0]).toBe('../outside/memo.md');
     expect(box.menu.length).toBe(3);
   });
+
+  test('2.1.303: a label Claude broke before a long path, short of the edge, stays one label', () => {
+    // Row 2 ends at column 138 of 160: the 95-character path did not fit, so it went below.
+    const option = readBox(read('edit-short')).menu[1]!;
+    expect(option.label).toMatch(/always allow access to \/tmp\/\S+\/outside for this session \(shift\+tab\)$/);
+    expect(option.detail).toBeUndefined();
+  });
 });
