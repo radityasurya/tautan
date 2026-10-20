@@ -472,6 +472,8 @@ export interface ParseOpts {
   sidechain?: boolean;
   /** Claude's queue as the file leaves it: the user's own queued messages, oldest first. */
   queued?: Queued[];
+  /** Called once per JSON object parsed, before any filter or early return. */
+  onEntry?: (entry: unknown) => void;
 }
 // ADR 0007: a result past this many lines keeps only its tail inline; the whole text moves
 // out of band to /chat/output/:id, so no large result rides in the turns.
@@ -554,64 +556,87 @@ const joins = (previous: Turn | undefined, role: Turn['role'], words: string): p
   previous?.role === role && !previous.from && !(role === 'assistant' && previous.tools.length > 0 && !!words)
   && !(role === 'user' && (isCommand(words) || isCommand(previous.text)));
 
-export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
-  const turns: Turn[] = [];
-  const pending: Tool[] = [];
-  const toolUses = new Map<string, Tool>();
-  let imageSeq = 0; // result and pasted images number together, in file order
-  let previewCount = 0;
-  const written = new Map<string, { previewId: number; html: string }>(); // file_path → its preview slot
-  const edited = new Map<string, number>(); // file_path → its disk-backed preview slot
-  const diskSlot = (filePath: string): number => {
-    let slot = edited.get(filePath);
-    if (slot === undefined) { slot = previewCount++; edited.set(filePath, slot); }
-    opts?.previewFiles?.set(slot, filePath);
-    return slot;
-  };
-  const artifactHtml = new Map<string, string>(); // Artifact tool_use id → the source its file_path matched
-  const queuedText = new Set<string>(); // queued prompts already shown; a flushed copy is dropped below
+/** Claude's JSONL as a left fold: every local the parse carries lives on the instance, so a
+ *  caller can `feed` it more complete lines later and read the Turns a one-shot parse of all
+ *  the bytes would give. The `opts` side maps stay the caller's. */
+export class TranscriptParser {
+  readonly turns: Turn[] = [];
+  private pending: Tool[] = [];
+  private toolUses = new Map<string, Tool>();
+  private imageSeq = 0; // result and pasted images number together, in file order
+  private previewCount = 0;
+  private written = new Map<string, { previewId: number; html: string }>(); // file_path → its preview slot
+  private edited = new Map<string, number>(); // file_path → its disk-backed preview slot
+  private artifactHtml = new Map<string, string>(); // Artifact tool_use id → the source its file_path matched
+  private queuedText = new Set<string>(); // queued prompts already shown; a flushed copy is dropped below
   // Claude's queue, replayed. An entry keeps its place without content (a `!` line is
   // enqueued bare), so a later `dequeue` still takes the right head.
-  let queue: { text?: string; at?: number }[] = [];
+  private queue: { text?: string; at?: number }[] = [];
   // Claude closes every turn with a `turn_duration` record. A reply after it is a new bubble,
   // even when what woke Claude (an agent's message, a task notification) is not shown.
-  let ended = false;
-  for (const line of jsonl.split(/\r?\n/)) {
-    if (!line) continue;
+  private ended = false;
+
+  constructor(private readonly opts?: ParseOpts) {}
+
+  private diskSlot(filePath: string): number {
+    let slot = this.edited.get(filePath);
+    if (slot === undefined) { slot = this.previewCount++; this.edited.set(filePath, slot); }
+    this.opts?.previewFiles?.set(slot, filePath);
+    return slot;
+  }
+
+  /** Feed complete lines. A caller that feeds in pieces cuts at a newline; a torn line fails
+   *  JSON.parse and is skipped. */
+  feed(text: string): void {
+    for (const line of text.split(/\r?\n/)) this.entry(line);
+  }
+
+  /** The queue as the file leaves it, computed from the carried state. Task notifications and
+   *  hook prompts queue too; only the user's own words are shown. */
+  queued(): Queued[] {
+    const shown: Queued[] = [];
+    for (const item of this.queue) if (item.text?.trim() && !wrapper(item.text)) shown.push({ text: capTurn(item.text), ...(item.at !== undefined ? { at: item.at } : {}) });
+    return shown;
+  }
+
+  /** One transcript line. */
+  entry(line: string): void {
+    if (!line) return;
     let entry: Record<string, unknown>;
     try {
       const value: unknown = JSON.parse(line);
-      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
       entry = value as Record<string, unknown>;
-    } catch { continue; }
-    if (entry.type === 'system' && entry.subtype === 'turn_duration') { ended = true; continue; }
+    } catch { return; }
+    this.opts?.onEntry?.(entry);
+    if (entry.type === 'system' && entry.subtype === 'turn_duration') { this.ended = true; return; }
     if (entry.type === 'queue-operation') {
       const content = str(entry.content);
-      if (entry.operation === 'enqueue') queue.push({ text: content, at: time(entry.timestamp) });
-      else if (entry.operation === 'dequeue') queue.shift();
-      else if (entry.operation === 'popAll') queue = [];
+      if (entry.operation === 'enqueue') this.queue.push({ text: content, at: time(entry.timestamp) });
+      else if (entry.operation === 'dequeue') this.queue.shift();
+      else if (entry.operation === 'popAll') this.queue = [];
       else if (entry.operation === 'remove') {
-        const at = queue.findIndex(item => item.text === content);
-        if (at >= 0) queue.splice(at, 1);
+        const at = this.queue.findIndex(item => item.text === content);
+        if (at >= 0) this.queue.splice(at, 1);
       }
-      continue;
+      return;
     }
     // A queued prompt exists only as its attachment entry; when the queue flushes, Claude
-    // also writes it as a user entry, which `queuedText` then keeps from showing twice.
+    // also writes it as a user entry, which `this.queuedText` then keeps from showing twice.
     const peer = entry.type === 'attachment' ? peerMessage(entry) : undefined;
-    if (peer && (opts?.sidechain || !entry.isSidechain)) {
+    if (peer && (this.opts?.sidechain || !entry.isSidechain)) {
       const at = time(entry.timestamp);
-      turns.push({ role: 'assistant', from: peer.from, text: capTurn(peer.text), tools: [], ...(typeof entry.uuid === 'string' ? { id: entry.uuid } : {}), ...(at !== undefined ? { at } : {}) });
-      continue;
+      this.turns.push({ role: 'assistant', from: peer.from, text: capTurn(peer.text), tools: [], ...(typeof entry.uuid === 'string' ? { id: entry.uuid } : {}), ...(at !== undefined ? { at } : {}) });
+      return;
     }
     const queued = entry.type === 'attachment' ? queuedPrompt(entry) : undefined;
-    if (queued !== undefined) { queuedText.add(queued); entry = { type: 'user', message: { role: 'user', content: queued }, timestamp: entry.timestamp, uuid: entry.uuid, isSidechain: entry.isSidechain }; }
-    if ((!opts?.sidechain && entry.isSidechain) || (entry.type !== 'user' && entry.type !== 'assistant')) continue;
-    if (entry.type === 'user' && entry.isMeta === true) continue; // skill bodies, placeholders, injected agent messages
+    if (queued !== undefined) { this.queuedText.add(queued); entry = { type: 'user', message: { role: 'user', content: queued }, timestamp: entry.timestamp, uuid: entry.uuid, isSidechain: entry.isSidechain }; }
+    if ((!this.opts?.sidechain && entry.isSidechain) || (entry.type !== 'user' && entry.type !== 'assistant')) return;
+    if (entry.type === 'user' && entry.isMeta === true) return; // skill bodies, placeholders, injected agent messages
     if (entry.type === 'user' && entry.isCompactSummary === true)
       entry = { type: 'assistant', message: { role: 'assistant', content: '_Conversation compacted._' }, timestamp: entry.timestamp, uuid: entry.uuid };
     const message = entry.message;
-    if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
+    if (!message || typeof message !== 'object' || Array.isArray(message)) return;
     const content = (message as Record<string, unknown>).content;
     const role = entry.type === 'user' ? 'user' : 'assistant'; // transforms above may have rewritten it
     let text = capTurn(turnText(content));
@@ -624,7 +649,7 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       const block = item as Block;
       if (block.type === 'text' && typeof block.text === 'string') {
         // ponytail: lifted z.ai rows join the turn's tool list after its text, like tool_use rows; split the turn into segments if their position matters.
-        const lifted = role === 'assistant' ? liftZai(block.text, pending) : { text: block.text, tools: [] };
+        const lifted = role === 'assistant' ? liftZai(block.text, this.pending) : { text: block.text, tools: [] };
         text += capTurn(lifted.text);
         tools.push(...lifted.tools);
       }
@@ -639,42 +664,42 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
         if (block.name === 'Write' && filePath && HTML_FILE.test(filePath)) {
           const content = typeof input.content === 'string' ? input.content : undefined;
           if (content && content.length <= PREVIEW_MAX) {
-            let slot = written.get(filePath);
-            if (!slot) { slot = { previewId: previewCount++, html: content }; written.set(filePath, slot); }
+            let slot = this.written.get(filePath);
+            if (!slot) { slot = { previewId: this.previewCount++, html: content }; this.written.set(filePath, slot); }
             else slot.html = content; // a later Write of the same path reuses its slot with the newest source
-            if (opts?.previews) opts.previews[slot.previewId] = content;
+            if (this.opts?.previews) this.opts.previews[slot.previewId] = content;
             tool.previewId = slot.previewId;
           } else if (content) {
-            tool.previewId = diskSlot(filePath); // past PREVIEW_MAX: the file on disk serves by id
+            tool.previewId = this.diskSlot(filePath); // past PREVIEW_MAX: the file on disk serves by id
           }
         }
         // An Edit's input holds only the changed spans, so the file on disk is its preview's
         // source; the Hub reads it at the Pane's cwd when the route asks.
         if ((block.name === 'Edit' || block.name === 'MultiEdit') && filePath && HTML_FILE.test(filePath)) {
-          tool.previewId = diskSlot(filePath);
+          tool.previewId = this.diskSlot(filePath);
         }
         if (block.name === 'Artifact') {
-          const slot = str(input.file_path) ? written.get(str(input.file_path)!) : undefined;
+          const slot = str(input.file_path) ? this.written.get(str(input.file_path)!) : undefined;
           if (slot) {
             tool.previewId = slot.previewId;
-            if (typeof block.id === 'string') artifactHtml.set(block.id, slot.html);
+            if (typeof block.id === 'string') this.artifactHtml.set(block.id, slot.html);
           }
         }
         if ((block.name === 'Task' || block.name === 'Agent') && typeof block.id === 'string') {
-          const subagent = opts?.subagentIds?.get(block.id);
+          const subagent = this.opts?.subagentIds?.get(block.id);
           if (subagent) tool.subagentId = subagent;
         }
-        if (typeof block.id === 'string') toolUses.set(block.id, tool);
-        cutDetail(tool, opts);
+        if (typeof block.id === 'string') this.toolUses.set(block.id, tool);
+        cutDetail(tool, this.opts);
         tools.push(tool);
       }
       if (block.type === 'tool_result') {
-        const tool = typeof block.tool_use_id === 'string' ? toolUses.get(block.tool_use_id) : undefined;
-        attachResult(tool, block.content, block.is_error, opts?.outputs);
+        const tool = typeof block.tool_use_id === 'string' ? this.toolUses.get(block.tool_use_id) : undefined;
+        attachResult(tool, block.content, block.is_error, this.opts?.outputs);
         if (tool?.name === 'Artifact' && tool.link === undefined) {
           const url = resultText(block.content).match(ARTIFACT_URL)?.[0];
           if (url) {
-            const title = (typeof block.tool_use_id === 'string' ? artifactHtml.get(block.tool_use_id) : undefined)?.match(TITLE_TAG)?.[1];
+            const title = (typeof block.tool_use_id === 'string' ? this.artifactHtml.get(block.tool_use_id) : undefined)?.match(TITLE_TAG)?.[1];
             tool.link = title ? { url, title } : { url };
           }
         }
@@ -682,14 +707,14 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
           if (!item || typeof item !== 'object' || Array.isArray(item) || (item as Block).type !== 'image') continue;
           const found = imageSource((item as Block).source);
           if (!found) continue;
-          const imageId = imageSeq++;
-          opts?.images?.push(found);
+          const imageId = this.imageSeq++;
+          this.opts?.images?.push(found);
           if (tool && tool.imageId === undefined) tool.imageId = imageId; // the first image only when a result carries several
         }
       }
       if (block.type === 'image' && role === 'user') {
         const found = imageSource(block.source);
-        if (found) { opts?.images?.push(found); images.push({ imageId: imageSeq++ }); }
+        if (found) { this.opts?.images?.push(found); images.push({ imageId: this.imageSeq++ }); }
         else images.push({}); // malformed or over the memory bound: a placeholder, no id consumed
       }
     }
@@ -698,32 +723,36 @@ export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
       if (command === undefined) {
         // A `!` line's output and a slash command's report are the next entry; each shows
         // under its line, as Claude prints it.
-        const previous = turns.at(-1);
+        const previous = this.turns.at(-1);
         const last = previous?.role === 'user' ? previous.text.split('\n\n').at(-1) : undefined;
         const output = last?.startsWith('!')
           ? shellOutput([...text.matchAll(BASH_OUTPUT)].map(match => match[2]!).filter(part => part.trim()).join('\n'))
           : last?.startsWith('/') ? commandOutput([...text.matchAll(COMMAND_OUTPUT)].map(match => match[1]!).join('\n')) : undefined;
         if (output) previous!.text += `\n\n${output}`;
-        continue; // caveats, task notifications, output with no line above it: control records
+        return; // caveats, task notifications, output with no line above it: control records
       }
       text = command;
     }
     // ponytail: only the first later copy of a queued prompt is swallowed — a user who retypes the same words on purpose loses that repeat
-    if (role === 'user' && queued === undefined && text && queuedText.delete(text)) continue;
-    if (!text && !tools.length && !images.length && !thinking) continue;
+    if (role === 'user' && queued === undefined && text && this.queuedText.delete(text)) return;
+    if (!text && !tools.length && !images.length && !thinking) return;
     const uuid = typeof entry.uuid === 'string' ? entry.uuid : undefined;
-    const previous = turns.at(-1);
-    if (!ended && joins(previous, role, text || thinking)) {
+    const previous = this.turns.at(-1);
+    if (!this.ended && joins(previous, role, text || thinking)) {
       previous.text = previous.text && text ? `${previous.text}\n\n${text}` : previous.text || text;
       if (thinking) previous.thinking = previous.thinking ? `${previous.thinking}\n\n${thinking}` : thinking;
       previous.tools.push(...tools);
       if (images.length) previous.images = [...previous.images ?? [], ...images];
-    } else turns.push({ role, text, tools, ...(thinking ? { thinking } : {}), ...(uuid ? { id: uuid } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
-    ended = false;
+    } else this.turns.push({ role, text, tools, ...(thinking ? { thinking } : {}), ...(uuid ? { id: uuid } : {}), ...(images.length ? { images } : {}), ...(at !== undefined ? { at } : {}) });
+    this.ended = false;
   }
-  // Task notifications and hook prompts queue too; only the user's own words are shown.
-  for (const item of queue) if (item.text?.trim() && !wrapper(item.text)) opts?.queued?.push({ text: capTurn(item.text), ...(item.at !== undefined ? { at: item.at } : {}) });
-  return turns;
+}
+
+export function parseTranscript(jsonl: string, opts?: ParseOpts): Turn[] {
+  const parser = new TranscriptParser(opts);
+  parser.feed(jsonl);
+  opts?.queued?.push(...parser.queued());
+  return parser.turns;
 }
 
 /** pi logs `/skill:name args` as the whole SKILL.md in a `<skill>` block with the args after
