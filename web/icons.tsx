@@ -72,7 +72,16 @@ export const FoldAll = (p: Props) => (
   </Icon>
 );
 
-/** A frame with its left column ruled off: hides or shows the Explorer. */
+/** Unfold every group: FoldAll's boxes, the minus crossed into a plus. */
+export const UnfoldAll = (p: Props) => (
+  <Icon {...p}>
+    <path d="M8 4h10a2 2 0 0 1 2 2v10" />
+    <rect x="4" y="8" width="12" height="12" rx="2" />
+    <path d="M7.5 14h5M10 11.5v5" />
+  </Icon>
+);
+
+/** A frame with its left column ruled off: hides or shows the Explorer and the sidebar. */
 export const PanelLeft = (p: Props) => (
   <Icon {...p}>
     <rect x="3.5" y="4.5" width="17" height="15" rx="2" />

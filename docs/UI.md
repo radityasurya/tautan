@@ -65,6 +65,14 @@ The screen title is `tautan`, with `<hosts> · <panes>` counts, a collapse/expan
 toggle, a `+` that opens New Workspace, and the search field under them. Host chips appear
 under the header only when there is more than one Host.
 
+In the desktop sidebar the same parts sit in two rows, in the grammar of the Files
+Explorer's header. The first row is 56 px, level with the Pane and Files headers: **Hide
+sidebar**, then `tautan` over its counts, then `+` at the end. The second row is the search
+band, 47 px, level with the Tab strip: the field, then the list switch and **Collapse all**.
+Every control is a quiet icon button, and the tooltip names the action. On desktop,
+Collapse all and Expand all draw the Explorer's Fold all glyph (a box with a minus or a plus),
+because the phone's converging chevrons read as a close beside a mouse pointer.
+
 Unseen `blocked` and `done` Panes lift out into a **Needs you** section; `working`
 Panes lift out into a **Running** section under it, most recently changed first. Both headers
 fold like a group header — chevron, count, persisted — and a search forces them open.
@@ -131,7 +139,8 @@ the Agent and the Tab give way first. On the right: the lens as two icons (Chat 
 agent Panes only), then ⋯. **Read aloud** is a row in the ⋯ sheet. Wrap, Fit and Theme colors are
 rows there too; no setting lives in the header.
 
-**Header, desktop.** A 64 px row: back, then the `host / workspace / tab` path over the
+**Header, desktop.** A 56 px row, the height of every desktop top bar and of the sidebar's
+title row beside it: back, then the `host / workspace / tab` path over the
 title, then the Status chip (`● status · agent ⌄`, tinted with its Status colour, one button
 that opens Switch), then the lens as a labelled control and ⋯. The Status
 word for `blocked` reads `needs you`.
@@ -247,8 +256,8 @@ no Screen/Recent switch: tautan only ever shows the visible grid, and Wrap (in
 More) reflows it client-side.
 
 **Width.** The Pane fills the space it is given. Below 1024 px that is the window. From
-1024 px up it is the space beside the sidebar, or the whole window while ⌘B has hidden
-the sidebar. The Pane's root element carries a `ResizeObserver` that reads its own
+1024 px up it is the space beside the sidebar, or beside its 48 px rail while the sidebar
+is hidden. The Pane's root element carries a `ResizeObserver` that reads its own
 `clientWidth` and measures the grid again, so Fit and Wrap follow a sidebar toggle and a
 window resize with no reload. The grid width is the `<pre>`'s `scrollWidth`, measured after
 every screen update and once `document.fonts.ready` resolves, because the mono subset swaps
@@ -937,26 +946,32 @@ whole text for the system Copy. **Reload** before a copy asks `Discard your edit
 
 ## Hosts (`#/hosts`) — `web/hosts.tsx`
 
-Hosts is the first section of Settings, so `#/hosts` opens Settings on it. On the phone
+Hosts is its own screen, a tab beside Panes and Settings. On the phone
 each Host is a row: an online Dot, the label, the SSH target in mono (or `this machine`),
 the Workspace count, and the Mux kinds with their versions. An offline Host replaces those
 with its error — the Hub's last ssh stderr line, `unreachable` when there is none — and the
-time of the next retry, and never shows a Pane count, because it has none to show. From
-1024 px up, each Host is a card with a Mux × Workspace table that scrolls sideways when
-narrow. Order is the one `GET /api/state` sends: this machine, then the discovered Hosts,
-then the ones in `hosts.json`. The last item is a dashed **Add Host** button.
+time of the next retry, and never shows a Pane count, because it has none to show. The `+`
+in the header opens **Add Host**. Order is the one `GET /api/state` sends: this machine,
+then the discovered Hosts, then the ones in `hosts.json`.
 
-The actions under a card follow `StateHost.source`, so the screen never offers
+From 1024 px up, Hosts uses the layout it shares with Settings (see Frame). The content
+runs full bleed. A first bar, level with the sidebar's header row, stays on top: one line
+on what a Host holds, then **Add Host**. Under it, each Host is a bar over its Mux ×
+Workspace table, which scrolls sideways when narrow. The bar holds the Host's Dot, its
+label (a link to Host detail), its target, then its actions. A Host that is down tints its
+bar `--danger` and puts its error and next retry in place of the target.
+
+The actions in a Host's bar follow `StateHost.source`, so the screen never offers
 a write that the Hub would refuse:
 
 | The Host | Actions | Caption |
 |---|---|---|
-| `local` | none | — |
+| `local` | none | `not editable` |
 | `machines`, from `herdr machine list` | **Retry now** while it is down | `from herdr machine list` |
 | `config`, from `hosts.json` | **Retry now** while it is down, **Edit**, **Remove** | — |
 
 **Retry now** POSTs `/api/hosts/:id/retry`, reads `Retrying…` and is disabled
-until the Hub answers; the SSE `state` event repaints the card. **Remove** PUTs
+until the Hub answers; the SSE `state` event repaints the bar. **Remove** PUTs
 `/api/settings` with the same `hosts` array minus that entry, and has no confirm
 dialog: it deletes one line of configuration, not a running Pane, and **Add
 Host** puts it back. A failed write prints one `--danger` line under the list.
@@ -967,8 +982,14 @@ Tap a Host row to open its detail. The screen lists each Mux with its kind and v
 its socket path, and its Workspaces with their Tab and Pane counts and their Status. A Host
 that is down shows its error and the time of the next retry, and keeps **Retry now**. A
 hash with an id that does not decode, or a Host the Hub does not list, falls back to the
-Hosts section instead of an error screen. The Hub supplies the data: `StateMux` carries
+Hosts list instead of an error screen. The Hub supplies the data: `StateMux` carries
 `socket` and `version` (tmux's `-V`, probed once per Mux), and `StateHost` carries `retryAt`.
+
+From 1024 px up, the sidebar's Host link opens the detail, and the detail opens on the same
+bar as the Hosts list, with **Edit** and **Remove** in it; a down Host's error and **Retry
+now** stay in the bar. Under it each Mux is a ruled head (the kind chip, the label, the
+socket, the Workspace count) over its Workspace rows, then the **Connection** bar and its
+rows, all full bleed.
 
 ### Add Host sheet
 
@@ -1028,15 +1049,20 @@ The forwarder flags and the socket paths are in
 
 ## Settings (`#/settings`) — `web/settings.tsx`
 
-**Hosts is the first section.** Settings has six sections, each at `#/settings/<id>`:
-Hosts, Appearance, Notifications, Replies, Access and About. `#/settings` and `#/hosts`
-both open Hosts. On the phone the sections scroll as one screen, and the bottom bar has two
-tabs, **Panes** and **Settings**. From 1024 px up, a 240 px section nav on the left lists
-the sections and shows `N down` beside Hosts while a Host is offline. The nav marks the
-section from the route, not from scroll position.
+Settings has five sections, each at `#/settings/<id>`: Appearance, Notifications, Replies,
+Access and About. `#/settings` opens the top, and `#/settings/hosts`, an older link, opens
+Hosts. On the phone the sections scroll as one screen under the bottom bar's three tabs,
+**Panes**, **Hosts** and **Settings**.
 
-The Hosts section is described under Hosts below. The other
-sections hold the theme picker (`ThemePicker`: the Halaska Kit `Select`, offering System,
+From 1024 px up, Settings uses the layout it shares with Hosts (see Frame). The sidebar
+lists the sections and marks the one in the route (`#/settings` marks Appearance), not the
+one in view. A section link scrolls the page, which stays mounted, so the link lands on a
+page the Hub has already filled; pressing the same link again scrolls back to it. Each
+section's title is a bar that stays on top while its rows scroll under it, and the rows run
+full bleed. The theme picker is a row like the others there, named **Theme**. The last
+section is at least the column's height, so every link can bring its section to the top.
+
+The sections hold the theme picker (`ThemePicker`: the Halaska Kit `Select`, offering System,
 Light, Dark and the five named palettes, with the chosen theme's colours as a swatch
 beside it; the Pane's ⋯ sheet shows the same picker), a push toggle, a Haptics toggle on
 Android only, the iOS install hint, a **Smart replies** toggle, and the **Access** rows.
@@ -1175,8 +1201,8 @@ window resize, so a window dragged across 1024 px changes layout with no reload.
 | Part | Phone, below 1024 px | Desktop, 1024 px and up |
 |---|---|---|
 | Pane list | the `#/` screen | a 300 px sidebar beside the route; `#/` shows `Pick a Pane from the list.` |
-| Root navigation | the floating tab bar, **Panes** and **Settings** | the sidebar footer, **Settings** and **Hosts** links |
-| Settings and Host detail | one scrolling screen | a 240 px section nav replaces the sidebar |
+| Root navigation | the floating tab bar, **Panes**, **Hosts** and **Settings** | the sidebar footer, **Settings** and **Hosts** links |
+| Hosts, Host detail and Settings | one scrolling screen | a top bar, then the screen's own sidebar and its content, full bleed; the Pane list steps aside |
 | Pane | one column, the window wide | fills the space beside the sidebar |
 
 The sidebar is the same `Home` list in its `compact` form: two-line rows with no preview, at
@@ -1184,17 +1210,32 @@ least 44 px tall, and a Yes-only Needs you card. A row's first line is the title
 Status dot. The second is muted: the Agent by name (`Claude`, `Codex`, `pi`), then its
 Workspace and Host when no heading above the row names them; the Host shows only when there
 are several. In the herdr list a Space row carries its Workspace path under the label, with
-the home directory as `~`; a long path gives up its start, so the project name stays. Press ⌘B to hide or show it. Press Ctrl+B for the same, except
-inside an input, a textarea or an editable field, so the tmux prefix still reaches the
-terminal. The state is remembered in `tautan.sidebar` (`open` or `closed`). With the sidebar
-hidden, `#/` shows the full Pane list.
+the home directory as `~`; a long path gives up its start, so the project name stays.
+
+To hide the sidebar, press **Hide sidebar** at the left of its title row, or press ⌘B. Ctrl+B
+does the same, except inside an input, a textarea or an editable field, so the tmux prefix
+still reaches the terminal. The hidden sidebar leaves a 48 px rail, as the Files Explorer
+does: **Show sidebar** sits where **Hide sidebar** was, and the footer's **Settings** and
+**Hosts** sit at its foot as icons. The tooltips name the shortcut. The state is remembered
+in `tautan.sidebar` (`open` or `closed`). With the sidebar hidden, `#/` shows the full Pane
+list beside the rail.
 
 The sidebar footer holds two links. **Settings** opens `#/settings`. **Hosts** opens
-`#/hosts`, which lands on the Hosts section of Settings. Above them sits the usage strip
-described under Settings, whenever a provider runs low.
+`#/hosts`. Above them sits the usage strip described under Settings, whenever a provider
+runs low.
+
+Hosts and Settings share one desktop layout, laid out as Files is. A 56 px top bar runs
+across the window: Back (labelled **All panes**), then the title over a caption (`3 Hosts ·
+1 down`, the count of down Hosts in `--danger`; `This browser and the Hub` for Settings).
+Under it sit the screen's own sidebar, 256 px (288 px from 1280 px), and the content. The
+sidebar's 44 px header row, level with the content's first bar, is a two-way switch between
+**Hosts** and **Settings**, in the tab bar's order. Under it, Hosts lists **All Hosts** with
+the count, then each Host with its Dot and `down` while it is offline; Settings lists its
+sections. The current link is tinted with the accent. The content runs edge to edge under
+full-bleed bars, with no centred column and no cards.
 
 Closing Settings or Hosts returns to the screen they were opened from, not to `#/`. **All
-panes** in the section nav and **Panes** in the phone tab bar both go back to that screen, so
+panes** in their top bar and **Panes** in the phone tab bar both go back to that screen, so
 an open Pane comes back in the same lens. Browser back does the same through history.
 
 Hash routes use `history.pushState`, so the iOS edge swipe and the Android back button

@@ -1,10 +1,10 @@
 import { TopBar } from './header.tsx';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, getTheme, setTheme, THEMES, useDesktop } from './app.tsx';
 import { SegmentedControl, Select } from './halaska-kit';
 import { getPaneList, setPaneList, usePref, type PaneList } from './spaces.ts';
 import type { Theme } from './app.tsx';
-import { GROUP, InstallHint, SectionTitle, Toggle, useHubSettings } from './hosts.tsx';
+import { GROUP, InstallHint, SECTION_END, SectionTitle, Toggle, useHubSettings } from './hosts.tsx';
 import { UsageMeters } from './usage.tsx';
 import { PALETTES } from './palettes.ts';
 import { disablePush, enablePush, pushOn } from './push.ts';
@@ -74,7 +74,7 @@ const PANE_LISTS: Record<PaneList, string> = {
 function PaneListChoice() {
   const list = usePref(getPaneList);
   return (
-    <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2.5 px-4 lg:px-0">
+    <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2.5 px-4 lg:mt-0 lg:min-h-14 lg:py-2">
       <span className="min-w-0 flex-1 basis-48">
         <span id="pane-list-label" className="block text-body">Pane list</span>
         <span className="mt-px block text-caption text-muted">{PANE_LISTS[list]}</span>
@@ -92,7 +92,7 @@ function PaneListChoice() {
 
 export function Settings({ section }: { section?: string }) {
   const desktop = useDesktop();
-  const { prefs, setPrefs, read } = useHubSettings();
+  const { prefs, setPrefs, read, ready } = useHubSettings();
   const [access, setAccess] = useState('');
   const [haptics, setHaptics] = useState(() => store.get('tautan.haptics') !== 'off');
   // Push state is the browser's, not the Hub's: the intent in localStorage plus a live
@@ -103,12 +103,22 @@ export function Settings({ section }: { section?: string }) {
   // decides whether to show the drafts. On means both, and the switch writes both.
   const [smart, setSmart] = useState(() => store.get('tautan.smart') === 'on');
 
-  // `#/settings/<section>` lands on that section; plain `#/settings` on the top.
+  // `#/settings/<section>` lands on that section; plain `#/settings` on the top. At `lg` the
+  // page scrolls in the frame's column, not the window.
+  const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = section && document.getElementById(`settings-${section}`);
     if (el) el.scrollIntoView({ block: 'start' });
-    else scrollTo(0, 0);
+    else {
+      scrollTo(0, 0);
+      root.current?.closest('main')?.scrollTo(0, 0);
+    }
   }, [section]);
+  // The Hub's first answer grows the sections above (the Smart replies hint, the versions),
+  // so a linked section lands once more.
+  useEffect(() => {
+    if (ready && section) document.getElementById(`settings-${section}`)?.scrollIntoView({ block: 'start' });
+  }, [ready]);
 
   // Locking and unlocking are the same write. The row is repainted from a fresh read, not
   // from what was sent: only the Hub knows whether the header it saw matched.
@@ -127,12 +137,17 @@ export function Settings({ section }: { section?: string }) {
   const provider = suggest.provider && [suggest.provider, suggest.model].filter(Boolean).join(' · ');
 
   return (
-    <div className="mx-auto max-w-2xl pb-28 lg:max-w-[880px] lg:px-6 lg:pt-8 lg:pb-10">
-      {/* At `lg` the section nav carries the "Settings" title. */}
+    <div ref={root} className="mx-auto max-w-2xl pb-28 lg:max-w-none lg:pb-0">
+      {/* At `lg` the frame's top bar carries the "Settings" title. */}
       {!desktop && <TopBar title="Settings" />}
 
       <Section id="appearance" title="Appearance">
-        <div className="px-4 lg:px-0">
+        {/* At `lg` the picker is a row like the others, its name on the left. */}
+        <div className="flex items-center gap-4 px-4 lg:min-h-14 lg:border-b lg:border-border lg:py-2">
+          <span className="hidden min-w-0 flex-1 lg:block">
+            <span className="block text-body">Theme</span>
+            <span className="mt-px block text-caption text-muted">System follows this device's light or dark mode</span>
+          </span>
           <ThemePicker />
         </div>
         <PaneListChoice />
@@ -258,10 +273,17 @@ export function Settings({ section }: { section?: string }) {
   );
 }
 
-/** One Settings section: an anchor the section nav scrolls to, its title, then its rows. */
+/** One Settings section: an anchor the section nav scrolls to, its title, then its rows.
+ *  At `lg` its title is a bar and its rows run full bleed under it. The last one is at least
+ *  the column's height (the window under the 56 px top bar), so every section link can bring
+ *  its section to the top. */
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
-    <section id={`settings-${id}`} aria-labelledby={`settings-${id}-title`} className="scroll-mt-16 pt-6 lg:pt-10 lg:first:pt-0">
+    <section
+      id={`settings-${id}`}
+      aria-labelledby={`settings-${id}-title`}
+      className={`scroll-mt-16 pt-6 lg:scroll-mt-0 lg:pt-0 lg:last:min-h-[calc(100dvh-3.5rem)] lg:last:border-b-0 ${SECTION_END}`}
+    >
       <SectionTitle id={`settings-${id}-title`}>{title}</SectionTitle>
       {children}
     </section>
@@ -284,16 +306,16 @@ function Integrations({ list }: { list: HostIntegrations[] }) {
   // The Mux label only when two herdr Muxes share a Host.
   const name = (e: HostIntegrations) => (list.filter((o) => host(o) === host(e)).length > 1 ? `${host(e)} · ${e.label}` : host(e));
   return (
-    <section aria-labelledby="settings-integrations" className="pt-5">
-      <h3 id="settings-integrations" className="px-5 text-[13px] font-semibold lg:px-1">
+    <section aria-labelledby="settings-integrations" className="pt-5 lg:border-t lg:border-border lg:pt-3">
+      <h3 id="settings-integrations" className="px-5 text-[13px] font-semibold lg:px-4">
         Agent integrations
       </h3>
-      <p className="px-5 pt-0.5 text-caption text-muted lg:px-1">To install or update one, run its command on that Host.</p>
+      <p className="px-5 pt-0.5 text-caption text-muted lg:px-4">To install or update one, run its command on that Host.</p>
       {list.map((e) => (
         <section key={e.muxKey} aria-label={`Agent integrations on ${name(e)}`} className="flex flex-col gap-1.5 pt-3">
-          <p className="px-5 text-caption font-medium text-muted lg:px-1">{name(e)}</p>
+          <p className="px-5 text-caption font-medium text-muted lg:px-4">{name(e)}</p>
           {e.error ? (
-            <p className="px-5 text-caption text-muted lg:px-1">Not available · {e.error}</p>
+            <p className="px-5 text-caption text-muted lg:px-4 lg:pb-3">Not available · {e.error}</p>
           ) : (
             <ul className={`${GROUP} divide-y divide-border`}>
               {integrationOrder(e.integrations ?? []).map((i) => {

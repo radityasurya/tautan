@@ -13,13 +13,14 @@ const count = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
 // ---- shared Settings parts ----
 
-/** A Settings section heading: small caps on the phone, a sentence-case title at `lg`. */
+/** A Settings section heading: small caps on the phone; at `lg` a full-bleed bar that stays
+ *  on top while its section scrolls under it, as a Files folder's path bar does. */
 export function SectionTitle({ id, children, action }: { id: string; children: ReactNode; action?: ReactNode }) {
   return (
-    <div className="flex items-center gap-3 px-5 pb-2 lg:px-0 lg:pb-3">
+    <div className="flex items-center gap-3 px-5 pb-2 lg:sticky lg:top-0 lg:z-10 lg:min-h-11 lg:border-b lg:border-border lg:bg-surface lg:px-4 lg:pb-0">
       <h2
         id={id}
-        className="flex-1 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase lg:text-[15px] lg:tracking-normal lg:text-fg lg:normal-case"
+        className="flex-1 text-[11px] font-semibold tracking-[0.06em] text-muted uppercase lg:text-[13px] lg:tracking-normal lg:text-fg lg:normal-case"
       >
         {children}
       </h2>
@@ -28,20 +29,29 @@ export function SectionTitle({ id, children, action }: { id: string; children: R
   );
 }
 
-/** A grouped card of rows: filled on the phone, outlined at `lg`. */
-export const GROUP = 'mx-4 overflow-hidden rounded-card bg-surface lg:mx-0 lg:border lg:border-border lg:bg-transparent';
+/** A grouped card of rows on the phone; at `lg` the rows run full bleed under their bar. */
+export const GROUP = 'mx-4 overflow-hidden rounded-card bg-surface lg:mx-0 lg:rounded-none lg:bg-transparent';
+
+/** A section at `lg` ends on a hairline, so the next one's bar starts on a line of its own. */
+export const SECTION_END = 'lg:border-b lg:border-border';
+
+/** A bar's one labelled action at `lg`, compact as a Files file bar's Edit. */
+const BAR_BUTTON =
+  'flex h-7 shrink-0 items-center gap-1.5 rounded-chip border border-border bg-bg px-2.5 text-[13px] font-medium text-fg outline-none hover:bg-fg/5 focus-visible:ring-2 focus-visible:ring-accent/60';
 
 /** `/api/settings` as the Hub holds it: `hosts.json`, the herdr versions, and the rest. */
 export function useHubSettings() {
   const [prefs, setPrefs] = useState<Settings>({ hosts: [], suggest: { enabled: false } });
-  const read = () => api<Settings>('/api/settings', undefined, 'GET').then(setPrefs).catch(() => {});
+  /** The first read has answered, either way. */
+  const [ready, setReady] = useState(false);
+  const read = () => api<Settings>('/api/settings', undefined, 'GET').then(setPrefs).catch(() => {}).finally(() => setReady(true));
   useEffect(() => void read(), []);
   // Every write sends the whole array back. The reply carries no versions, so they are kept.
   const writeHosts = async (next: HostConfig[]) => {
     const saved = await api<Settings>('/api/settings', { hosts: next }, 'PUT');
     setPrefs((p) => ({ ...p, hosts: saved.hosts ?? next }));
   };
-  return { prefs, setPrefs, read, writeHosts };
+  return { prefs, setPrefs, read, writeHosts, ready };
 }
 
 // ---- Host data, derived from the state stream ----
@@ -207,7 +217,76 @@ function HostRow({ host, state, prefs }: { host: StateHost; state: State; prefs:
   );
 }
 
-/** One desktop card: the Host header, then every Mux × Workspace in one table. */
+/**
+ * A Host's bar at `lg`, on the Hosts list and atop Host detail: its Dot, its label, its target
+ * (or why it is down and when it is dialled next), then what may be done to it.
+ */
+function HostBar({
+  host,
+  config,
+  link,
+  onEdit,
+  onRemove,
+}: {
+  host: StateHost;
+  /** The `hosts.json` entry this Host came from, when it came from one. */
+  config?: HostConfig;
+  /** The label opens Host detail. */
+  link?: boolean;
+  onEdit: (entry: HostConfig) => void;
+  onRemove: (entry: HostConfig) => void;
+}) {
+  const [retrying, retry] = useRetry(host.id);
+  const retryIn = useRetryIn(host);
+  const pal = usePal();
+  return (
+    <div
+      className={`flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-4 py-1.5 last:border-b-0 ${
+        host.online ? 'bg-surface' : 'bg-danger/6'
+      }`}
+    >
+      <StatusDot status={host.online ? 'online' : 'error'} />
+      {link ? (
+        <Link to={hostLink(host.id)} className="text-[14px] font-semibold text-fg outline-none hover:underline focus-visible:underline">
+          {host.label}
+        </Link>
+      ) : (
+        <h2 className="text-[14px] font-semibold">{host.label}</h2>
+      )}
+      <span
+        className={`min-w-0 truncate text-caption ${host.online ? 'text-muted' : 'text-danger'} ${
+          host.online && host.target ? 'font-mono' : ''
+        }`}
+      >
+        {host.online
+          ? (host.target ?? 'this machine')
+          : `unreachable${host.error ? ` — ${host.error}` : ''}${retryIn ? ` · ${retryIn}` : ''}`}
+      </span>
+      <span className="flex-1" />
+      {!host.online && (
+        <Button variant="secondary" size="sm" onClick={retry} loading={retrying}>
+          {retrying ? 'Retrying…' : 'Retry now'}
+        </Button>
+      )}
+      {config ? (
+        <>
+          <Button variant="outline" size="sm" onClick={() => onEdit(config)}>
+            Edit
+          </Button>
+          <LinkButton size="sm" onClick={() => onRemove(config)} style={{ color: pal.danger }}>
+            Remove
+          </LinkButton>
+        </>
+      ) : (
+        <span className="text-caption text-muted">
+          {host.source === 'machines' ? 'from herdr machine list' : 'not editable'}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** One Host on the desktop list, full bleed: its bar, then every Mux × Workspace in one table. */
 function HostCard({
   host,
   state,
@@ -219,75 +298,34 @@ function HostCard({
   host: StateHost;
   state: State;
   prefs: Settings;
-  /** The `hosts.json` entry this Host came from, when it came from one. */
   config?: HostConfig;
   onEdit: (entry: HostConfig) => void;
   onRemove: (entry: HostConfig) => void;
 }) {
-  const [retrying, retry] = useRetry(host.id);
-  const pal = usePal();
   const muxes = state.muxes.filter((m) => m.hostId === host.id);
-  const retryIn = useRetryIn(host);
 
   return (
-    <section
-      aria-label={host.label}
-      className={`overflow-hidden rounded-[14px] border ${host.online ? 'border-border' : 'border-danger/40'}`}
-    >
-      <div className={`flex flex-wrap items-center gap-3 px-4.5 py-3.5 ${host.online ? 'bg-surface' : 'bg-danger/6'}`}>
-        <StatusDot status={host.online ? 'online' : 'error'} />
-        <Link to={hostLink(host.id)} className="text-[15px] font-semibold text-fg hover:underline">
-          {host.label}
-        </Link>
-        <span
-          className={`min-w-0 truncate text-caption ${host.online ? 'text-muted' : 'text-danger'} ${
-            host.online && host.target ? 'font-mono' : ''
-          }`}
-        >
-          {host.online
-            ? (host.target ?? 'this machine')
-            : `unreachable${host.error ? ` — ${host.error}` : ''}${retryIn ? ` · ${retryIn}` : ''}`}
-        </span>
-        <span className="flex-1" />
-        {!host.online && (
-          <Button variant="secondary" size="sm" onClick={retry} loading={retrying}>
-            {retrying ? 'Retrying…' : 'Retry now'}
-          </Button>
-        )}
-        {config ? (
-          <>
-            <Button variant="outline" size="sm" onClick={() => onEdit(config)}>
-              Edit
-            </Button>
-            <LinkButton size="sm" onClick={() => onRemove(config)} style={{ color: pal.danger }}>
-              Remove
-            </LinkButton>
-          </>
-        ) : (
-          <span className="text-caption text-muted">
-            {host.source === 'machines' ? 'from herdr machine list' : 'not editable'}
-          </span>
-        )}
-      </div>
+    <section aria-label={host.label} className="border-b border-border">
+      <HostBar host={host} config={config} link onEdit={onEdit} onRemove={onRemove} />
 
       {host.online && muxes.length > 0 && (
         // Narrow windows scroll the table sideways rather than squeezing its columns.
-        <div className="overflow-x-auto border-t border-border">
+        <div className="overflow-x-auto">
           <table className="w-full min-w-[620px] border-collapse text-[13px]">
             <thead>
               <tr className="text-caption text-muted">
-                <th className="px-4.5 py-2.5 text-left font-medium">Mux</th>
+                <th className="px-4 py-2.5 text-left font-medium">Mux</th>
                 <th className="px-3 py-2.5 text-left font-medium">Workspace</th>
                 <th className="px-3 py-2.5 text-left font-medium">Tabs</th>
                 <th className="px-3 py-2.5 text-left font-medium">Panes</th>
-                <th className="px-4.5 py-2.5 text-left font-medium">Status</th>
+                <th className="px-4 py-2.5 text-left font-medium">Status</th>
               </tr>
             </thead>
             <tbody>
               {muxes.flatMap((m) => {
                 const rows = workspacesOf(state, m);
                 const head = (
-                  <td rowSpan={Math.max(1, rows.length)} className="px-4.5 py-2.5 align-top">
+                  <td rowSpan={Math.max(1, rows.length)} className="px-4 py-2.5 align-top">
                     <span className="flex items-center gap-2">
                       <MuxChip mux={m} prefs={prefs} />
                       <span className="text-fg">{m.label}</span>
@@ -318,7 +356,7 @@ function HostCard({
                     </td>
                     <td className="px-3 py-2.5 tabular-nums">{tabs}</td>
                     <td className="px-3 py-2.5 tabular-nums">{panes.length}</td>
-                    <td className="px-4.5 py-2.5">
+                    <td className="px-4 py-2.5">
                       <WorkspaceStatus panes={panes} status={status} kind={m.kind} />
                     </td>
                   </tr>
@@ -334,7 +372,7 @@ function HostCard({
 
 /**
  * The Hosts screen, `#/hosts`. The phone lists one row per Host that opens Host detail; at
- * `lg` each Host is a card with its Mux × Workspace table.
+ * `lg` each Host is a bar over its Mux × Workspace table, full bleed under the list's own bar.
  */
 export function Hosts({ state }: { state: State | null }) {
   const desktop = useDesktop();
@@ -354,16 +392,16 @@ export function Hosts({ state }: { state: State | null }) {
   const counts = state && count(state.hosts.length, 'Host');
 
   return (
-    <div className="mx-auto max-w-2xl pb-28 lg:max-w-[880px] lg:px-6 lg:pt-8 lg:pb-10">
+    <div className="mx-auto max-w-2xl pb-28 lg:max-w-none lg:pb-10">
       {desktop ? (
-        <div className="flex flex-wrap items-center gap-3 pb-5">
-          <span className="flex flex-1 flex-col gap-1">
-            <h1 className="text-[20px] font-semibold">Hosts</h1>
-            <span className="text-[13px] text-muted">Each Host runs one or more Muxes. Each Mux holds Workspaces.</span>
-          </span>
-          <Button variant="primary" size="md" onClick={() => setAdd(true)}>
-            + Add Host
-          </Button>
+        // The frame's top bar names the screen; this bar, level with the sidebar's header row,
+        // says what the list is and holds its one labelled action, as a Files folder's bar does.
+        <div className="sticky top-0 z-10 flex min-h-11 items-center gap-3 border-b border-border bg-bg px-4">
+          <p className="min-w-0 flex-1 truncate text-caption text-muted">Each Host runs one or more Muxes. Each Mux holds Workspaces.</p>
+          <button type="button" onClick={() => setAdd(true)} className={BAR_BUTTON}>
+            <Plus size={14} />
+            Add Host
+          </button>
         </div>
       ) : (
         <TopBar
@@ -378,11 +416,11 @@ export function Hosts({ state }: { state: State | null }) {
       )}
 
       {!state ? (
-        <p className="px-5 py-3 text-caption text-muted lg:px-0">Reading Hosts…</p>
+        <p className="px-5 py-3 text-caption text-muted lg:px-4">Reading Hosts…</p>
       ) : state.hosts.length === 0 ? (
-        <p className="px-5 py-3 text-body text-muted lg:px-0">No Hosts yet. Add one to see its Muxes here.</p>
+        <p className="px-5 py-3 text-body text-muted lg:px-4">No Hosts yet. Add one to see its Muxes here.</p>
       ) : desktop ? (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col">
           {state.hosts.map((h) => (
             <HostCard
               key={h.id}
@@ -404,7 +442,7 @@ export function Hosts({ state }: { state: State | null }) {
       )}
 
       {note && (
-        <p role="alert" className="px-5 pt-2 text-[13px] text-danger lg:px-0">
+        <p role="alert" className="px-5 pt-2 text-[13px] text-danger lg:px-4 lg:py-2">
           Could not save the Host list · {note}
         </p>
       )}
@@ -428,15 +466,17 @@ export function Hosts({ state }: { state: State | null }) {
 /** One label and value row in Host detail's Connection group. */
 function Fact({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex min-h-11 items-center gap-3 px-3.5 py-2 text-[14px]">
+    <div className="flex min-h-11 items-center gap-3 px-3.5 py-2 text-[14px] lg:px-4">
       <span className="shrink-0">{label}</span>
       <span className={`ml-auto min-w-0 truncate text-muted ${mono ? 'font-mono text-caption' : 'text-[13px]'}`}>{value}</span>
     </div>
   );
 }
 
-/** Each Mux on one Host, with its Workspaces, their Tab and Pane counts, and their Status. */
+/** Each Mux on one Host, with its Workspaces, their Tab and Pane counts, and their Status.
+ *  At `lg` it opens on the Host's bar from the Hosts list, then runs full bleed. */
 export function HostDetail({ hostId, state }: { hostId: string; state: State | null }) {
+  const desktop = useDesktop();
   const { prefs, writeHosts } = useHubSettings();
   const [retrying, retry] = useRetry(hostId);
   // The entry is kept as clicked: a fresh object each state event would reset the open sheet.
@@ -460,7 +500,10 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
   };
 
   return (
-    <div className="mx-auto max-w-2xl pb-28 lg:pb-10">
+    <div className="mx-auto max-w-2xl pb-28 lg:max-w-none lg:pb-10">
+      {desktop ? (
+        host && <HostBar host={host} config={config} onEdit={setEditing} onRemove={remove} />
+      ) : (
       <header className="sticky top-0 z-30 bg-bg/90 pt-[env(safe-area-inset-top)] backdrop-blur-md">
         <div className="flex h-14 items-center gap-1 pr-4 pl-1">
           <Link to="#/hosts" aria-label="Hosts" className="flex size-11 shrink-0 items-center justify-center text-accent">
@@ -483,12 +526,14 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
           )}
         </div>
       </header>
+      )}
 
       {/* An unknown id never gets here: App falls back to the Hosts list once state arrives. */}
       {!state || !host ? (
-        <p className="px-5 pt-4 text-caption text-muted">Reading Hosts…</p>
+        <p className="px-5 pt-4 text-caption text-muted lg:px-4 lg:pt-3">Reading Hosts…</p>
       ) : !host.online ? (
-        <div className="mx-4 mt-2 flex flex-col items-start gap-3 rounded-card border border-danger/40 bg-danger/6 p-3.5">
+        // At `lg` the Host's bar already says why and offers Retry now.
+        !desktop && <div className="mx-4 mt-2 flex flex-col items-start gap-3 rounded-card border border-danger/40 bg-danger/6 p-3.5">
           <p className="text-[13px] break-words text-danger">
             {host.error ?? 'The Hub cannot reach this Host.'}
             {retryIn && ` · ${retryIn}`}
@@ -498,26 +543,29 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
           </Button>
         </div>
       ) : muxes.length === 0 ? (
-        <p className="px-5 pt-4 text-body text-muted">No Muxes on this Host.</p>
+        <p className="px-5 pt-4 text-body text-muted lg:px-4 lg:pt-3">No Muxes on this Host.</p>
       ) : (
         muxes.map((m) => {
           const rows = workspacesOf(state, m);
           return (
-            <section key={m.key} aria-label={`${m.kind} ${m.label}`} className="flex flex-col gap-2 pt-4">
-              <div className="flex items-center gap-2 px-5 lg:px-1">
-                <MuxChip mux={m} prefs={prefs} />
-                <span className="truncate text-[13px] font-semibold">{m.label}</span>
-                <span className={`ml-auto shrink-0 text-[11px] ${m.online ? 'text-muted' : 'text-danger'}`}>
-                  {!m.online ? 'offline' : m.kind === 'tmux' ? 'Status not reported' : count(rows.length, 'Workspace')}
-                </span>
+            <section key={m.key} aria-label={`${m.kind} ${m.label}`} className={`flex flex-col gap-2 pt-4 lg:gap-0 lg:pt-0 ${SECTION_END}`}>
+              {/* At `lg` the Mux and its socket are one ruled head over its Workspace rows. */}
+              <div className="flex flex-col gap-2 lg:gap-0.5 lg:border-b lg:border-border lg:px-4 lg:py-2.5">
+                <div className="flex items-center gap-2 px-5 lg:px-0">
+                  <MuxChip mux={m} prefs={prefs} />
+                  <span className="truncate text-[13px] font-semibold">{m.label}</span>
+                  <span className={`ml-auto shrink-0 text-[11px] ${m.online ? 'text-muted' : 'text-danger'}`}>
+                    {!m.online ? 'offline' : m.kind === 'tmux' ? 'Status not reported' : count(rows.length, 'Workspace')}
+                  </span>
+                </div>
+                {m.socket && (
+                  <p className="px-5 font-mono text-caption text-muted lg:px-0" title={m.socket}>
+                    {middle(m.socket)}
+                  </p>
+                )}
               </div>
-              {m.socket && (
-                <p className="px-5 font-mono text-caption text-muted lg:px-1" title={m.socket}>
-                  {middle(m.socket)}
-                </p>
-              )}
               <ul className={`${GROUP} divide-y divide-border`}>
-                {rows.length === 0 && <li className="px-3.5 py-3 text-[14px] text-muted">No Workspaces</li>}
+                {rows.length === 0 && <li className="px-3.5 py-3 text-[14px] text-muted lg:px-4">No Workspaces</li>}
                 {rows.map(({ w, panes, tabs, status, to }) => {
                   const body = (
                     <>
@@ -532,11 +580,11 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
                       </span>
                     </>
                   );
-                  const row = 'flex min-h-13 items-center gap-3 px-3.5 py-2';
+                  const row = 'flex min-h-13 items-center gap-3 px-3.5 py-2 lg:min-h-12 lg:px-4';
                   return (
                     <li key={w.key}>
                       {to ? (
-                        <Link to={to} className={`${row} active:bg-elevated`}>
+                        <Link to={to} className={`${row} active:bg-elevated lg:hover:bg-fg/5`}>
                           {body}
                         </Link>
                       ) : (
@@ -552,7 +600,7 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
       )}
 
       {host && (
-        <section aria-labelledby="host-connection" className="pt-6">
+        <section aria-labelledby="host-connection" className={`pt-6 lg:pt-0 ${SECTION_END}`}>
           <SectionTitle id="host-connection">Connection</SectionTitle>
           <div className={`${GROUP} divide-y divide-border`}>
             <Fact label="Target" value={host.target ?? 'this machine'} mono={Boolean(host.target)} />
@@ -562,15 +610,16 @@ export function HostDetail({ hostId, state }: { hostId: string; state: State | n
             />
             {config && <Fact label="herdr Mux" value={config.session ?? 'discover all'} mono={Boolean(config.session)} />}
           </div>
-          {config && (
-            <div className="px-4 pt-3 lg:px-0">
+          {/* At `lg` Remove sits in the Host's bar, beside Edit. */}
+          {config && !desktop && (
+            <div className="px-4 pt-3">
               <LinkButton size="sm" onClick={() => remove(config)} style={{ color: pal.danger }}>
                 Remove Host
               </LinkButton>
             </div>
           )}
           {note && (
-            <p role="alert" className="px-5 pt-2 text-[13px] text-danger lg:px-0">
+            <p role="alert" className="px-5 pt-2 text-[13px] text-danger lg:px-4 lg:py-2">
               Could not save the Host list · {note}
             </p>
           )}
@@ -982,7 +1031,7 @@ export function InstallHint() {
   if (!ios || installed) return null;
 
   return (
-    <p className="mx-4 mt-2 flex gap-2.5 rounded-card bg-elevated lg:mx-0 px-3 py-2.5 text-caption leading-relaxed text-muted">
+    <p className="mx-4 mt-2 flex gap-2.5 rounded-card bg-elevated px-3 py-2.5 text-caption leading-relaxed text-muted lg:mx-0 lg:mt-0 lg:rounded-none lg:border-t lg:border-border lg:bg-transparent lg:px-4">
       <Install className="mt-px shrink-0" />
       On iPhone, add tautan to the Home Screen from the Share menu to receive notifications.
     </p>

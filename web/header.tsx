@@ -12,7 +12,6 @@ import { paneKind, statusWord as paneStatusWord } from './pane-label.ts';
  * document scrolls past a few pixels it shrinks to the 44 px bar and gains a hairline.
  * `compact` is the Pane's: the 17 px title from the start and no scroll listener, because
  * the Pane's grid scrolls in its own box. `leading` sits before the title (the back chevron).
- * `tall` is the desktop sidebar's: 64 px, the Pane header's height, so the two line up.
  */
 export function TopBar({
   title,
@@ -20,14 +19,12 @@ export function TopBar({
   right,
   below,
   size = 'large',
-  tall,
 }: {
   title: string;
   leading?: ReactNode;
   right?: ReactNode;
   below?: ReactNode;
   size?: 'large' | 'compact';
-  tall?: boolean;
 }) {
   const shrinks = size === 'large';
   const [scrolled, setScrolled] = useState(() => shrinks && scrollY > 24);
@@ -50,7 +47,7 @@ export function TopBar({
       {/* `@container`, so a caller can cap an item at a share of the row (`45cqw`). */}
       <div
         className={`@container flex items-center justify-between px-4 transition-[height] duration-200 motion-reduce:transition-none ${
-          tall ? 'h-16' : scrolled ? 'h-11' : 'h-14'
+          scrolled ? 'h-11' : 'h-14'
         }`}
       >
         {leading}
@@ -165,7 +162,7 @@ export function PaneHeader({
       }`}
     >
       {desktop ? (
-        <div className="flex h-16 items-center gap-3 pr-4 pl-2">
+        <div className="flex h-14 items-center gap-3 pr-4 pl-2">
           {back}
           <div className="flex min-w-0 flex-1 flex-col">
             <h1 className="truncate text-[17px] leading-[22px] font-semibold tracking-tight">{heading}</h1>

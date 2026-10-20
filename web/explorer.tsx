@@ -18,7 +18,8 @@ export async function fetchListing(o: { host: string; path: string; pane?: strin
 }
 
 const FOCUS = 'outline-none focus-visible:shadow-[inset_2px_0_0_var(--accent)]';
-const TOOL = 'flex size-8 shrink-0 items-center justify-center rounded-chip text-muted outline-none hover:bg-fg/5 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/60';
+/** A quiet icon button: the Explorer's header tools, and every sidebar's. */
+export const TOOL = 'flex size-8 shrink-0 items-center justify-center rounded-chip text-muted outline-none hover:bg-fg/5 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/60';
 
 /** A folder's or a file's glyph: folders in the accent, files muted. */
 export const EntryIcon = ({ dir }: { dir: boolean }) =>

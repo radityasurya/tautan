@@ -4,9 +4,10 @@ import type { CSSProperties, DragEvent, HTMLAttributes, PointerEvent as ReactPoi
 import type {
   MoveBody, NewTabBody, NewTabResult, NewWorkspaceBody, NewWorkspaceResult, PluginAction, RenameBody, State, StatePane, StateWorkspace, Status,
 } from '../shared/types.ts';
-import { api, haptic, Link, navigate, opensWith, reducedMotion, useDesktop } from './app.tsx';
+import { api, haptic, Link, navigate, opensWith, reducedMotion, SIDEBAR_KEYS, useDesktop } from './app.tsx';
 import { dropMuxOrders, moveWorkspace, muxOrders, orderWorkspaces, readOrder, spliceIndex, writeOrder, type WorkspaceOrder } from './order.ts';
-import { Check, ChevronDown, ChevronRight, CollapseAll, ExpandAll, ListHerdr, ListTautan, More, Plus, Sliders } from './icons.tsx';
+import { Check, ChevronDown, ChevronRight, CollapseAll, ExpandAll, FoldAll, ListHerdr, ListTautan, More, PanelLeft, Plus, Sliders, UnfoldAll } from './icons.tsx';
+import { TOOL } from './explorer.tsx';
 import { Chip, EmptyState, IconButton, SearchInput, Skeleton, usePal } from './halaska-kit';
 import {
   agentRows, bySpace, getAgentGroup, getAgentSort, getPaneList, getShowShells, getSpaceAgentsOnly, getSpaceSort, leavesMenu,
@@ -828,7 +829,7 @@ function PaneListSwitch({ compact }: { compact?: boolean }) {
           onClick={() => setPaneList(value)}
           className={`press relative flex items-center justify-center rounded-lg transition-colors ${RING} ${
             compact ? 'h-7 w-8' : "h-9 w-11 after:absolute after:-inset-y-1 after:inset-x-0 after:content-['']"
-          } ${list === value ? 'bg-elevated text-fg shadow-elevated' : 'text-muted hover:text-fg'}`}
+          } ${list === value ? `bg-elevated text-fg ${compact ? 'shadow-sm' : 'shadow-elevated'}` : 'text-muted hover:text-fg'}`}
         >
           <Icon size={compact ? 16 : 18} />
         </button>
@@ -1181,7 +1182,12 @@ let hostFilter: string | null = null;
 /** The selected Space in the herdr list, kept the same way and for the same reason. */
 let spaceFilter: string | null = null;
 
-export function Home({ state, compact }: { state: State | null; compact?: boolean }) {
+export function Home({ state, compact, onHide }: {
+  state: State | null;
+  compact?: boolean;
+  /** The desktop sidebar's Hide sidebar button. */
+  onHide?: () => void;
+}) {
   const [host, setHostState] = useState<string | null>(hostFilter);
   const setHost = (h: string | null) => { hostFilter = h; setHostState(h); };
   const [collapsed, setCollapsed] = useState(readCollapsed);
@@ -1398,30 +1404,80 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
     writable(p.muxKey) ? { onMenu: openPaneMenu, onRename: setPaneRename, onClose: setPaneClose } : undefined;
 
   const listed = state && (needsYou.length > 0 || running.length > 0 || groups.length > 0);
+  const foldAll = () => write(allShut ? collapsed.filter((k) => !keys.includes(k)) : [...new Set([...collapsed, ...keys])]);
+  // Desktop draws the Files Explorer's Fold all glyph: the phone's converging chevrons read as
+  // a close there, beside the mouse.
+  const FoldIcon = desktop ? (allShut ? UnfoldAll : FoldAll) : allShut ? ExpandAll : CollapseAll;
+  const moveLine = moveFailed && (
+    // The Pane strip's `<verb> failed` line, here because the sticky top is the one place a
+    // phone always shows; the menu that asked has closed by the time the Hub answers.
+    <p role="status" title={moveFailed} className={`truncate px-4 text-[12px] text-danger ${compact ? 'py-2' : 'pb-2'}`}>
+      Move failed · {moveFailed}
+    </p>
+  );
   // The top: title and search. In the sidebar it stays put while only the list under it
-  // scrolls, and it lines up with the Pane beside it: the title row is the Pane header's
-  // 64 px and the search band the Tab strip's 47 px, so the Host chips scroll with the
-  // list there. On the phone the window scrolls and the TopBar is sticky, so neither part
-  // may be wrapped there.
-  const top = (
+  // scrolls, and it lines up with the screen beside it, as the Files Explorer's header does:
+  // the title row is the 56 px of the Pane and Files headers, the search band the Tab strip's
+  // 47 px, so the Host chips scroll with the list there. Two rows, two jobs: the sidebar
+  // itself (hide it, what it holds, add to it), then finding and arranging the list. On the
+  // phone the window scrolls and the TopBar is sticky, so neither part may be wrapped there.
+  const top = compact ? (
+    <header className="shrink-0 border-b border-border">
+      <div className="flex h-14 items-center gap-1 border-b border-border px-2">
+        {onHide && (
+          <button type="button" aria-label="Hide sidebar" title={`Hide sidebar · ${SIDEBAR_KEYS}`} onClick={onHide} className={TOOL}>
+            <PanelLeft size={16} />
+          </button>
+        )}
+        <div className="flex min-w-0 flex-1 flex-col px-1">
+          <h1 className="truncate text-title tracking-tight">tautan</h1>
+          {counts && <p className="truncate text-caption text-muted">{counts}</p>}
+        </div>
+        {beside && (
+          <button type="button" aria-label="New Workspace" title="New Workspace" onClick={() => setNewWorkspace(true)} className={TOOL}>
+            <Plus size={18} />
+          </button>
+        )}
+      </div>
+      {state && (
+        // The band is the field: flat, edge to edge, with an accent line like the open Tab's
+        // while it has focus; the list's own controls sit at its end.
+        <div className="relative flex items-center gap-1 pr-2 after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-accent after:opacity-0 after:transition-opacity focus-within:after:opacity-100">
+          <div className="min-w-0 flex-1">
+            <SearchInput
+              value={q}
+              onChange={setQ}
+              placeholder="Search panes"
+              shortcut={null}
+              style={{ width: '100%', height: 46, padding: '0 8px 0 16px', gap: 10, border: 'none', borderRadius: 0, background: 'transparent' }}
+            />
+          </div>
+          <PaneListSwitch compact />
+          {keys.length > 0 && (
+            <button type="button" aria-label={allShut ? 'Expand all' : 'Collapse all'} title={allShut ? 'Expand all' : 'Collapse all'} onClick={foldAll} className={TOOL}>
+              <FoldIcon size={15} />
+            </button>
+          )}
+        </div>
+      )}
+      {moveLine}
+    </header>
+  ) : (
       <TopBar
-        tall={compact}
         title="tautan"
         right={
           <>
             {/* A 390 px phone cannot hold the counts beside the switch and Collapse all; they come back from 412 px. */}
-            {!compact && (
-              <span className={`mr-1.5 text-caption tabular-nums text-muted ${keys.length > 0 ? 'hidden @min-[380px]:inline' : ''}`}>
-                {counts}
-              </span>
-            )}
-            <PaneListSwitch compact={compact} />
+            <span className={`mr-1.5 text-caption tabular-nums text-muted ${keys.length > 0 ? 'hidden @min-[380px]:inline' : ''}`}>
+              {counts}
+            </span>
+            <PaneListSwitch />
             {state && keys.length > 0 && (
               <IconButton
                 size={40}
                 label={allShut ? 'Expand all' : 'Collapse all'}
-                onClick={() => write(allShut ? collapsed.filter((k) => !keys.includes(k)) : [...new Set([...collapsed, ...keys])])}
-                icon={allShut ? <ExpandAll size={18} /> : <CollapseAll size={18} />}
+                onClick={foldAll}
+                icon={<FoldIcon size={18} />}
               />
             )}
             {beside && (
@@ -1438,31 +1494,10 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
         below={
           state ? (
             <>
-              {compact ? (
-                // The sidebar's band is the field: flat, edge to edge, on the Tab strip's surface so
-                // it reads as the same second layer; the band's hairline is its bottom edge, and it
-                // shows an accent line like the open Tab's when it has focus.
-                <div className="relative bg-surface after:pointer-events-none after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-accent after:opacity-0 after:transition-opacity focus-within:after:opacity-100">
-                  <SearchInput
-                    value={q}
-                    onChange={setQ}
-                    placeholder="Search panes"
-                    shortcut={null}
-                    style={{ width: '100%', height: 46, padding: '0 16px', gap: 10, border: 'none', borderRadius: 0, background: 'transparent' }}
-                  />
-                </div>
-              ) : (
-                <div className="px-4 pb-2">
-                  <SearchInput value={q} onChange={setQ} placeholder="Search panes" shortcut={null} style={{ width: '100%', height: 40 }} />
-                </div>
-              )}
-              {/* The Pane strip's `<verb> failed` line, here because the sticky top is the one place
-                  a phone always shows; the menu that asked has closed by the time the Hub answers. */}
-              {moveFailed && (
-                <p role="status" title={moveFailed} className={`truncate px-4 text-[12px] text-danger ${compact ? 'py-2' : 'pb-2'}`}>
-                  Move failed · {moveFailed}
-                </p>
-              )}
+              <div className="px-4 pb-2">
+                <SearchInput value={q} onChange={setQ} placeholder="Search panes" shortcut={null} style={{ width: '100%', height: 40 }} />
+              </div>
+              {moveLine}
             </>
           ) : undefined
         }
@@ -1639,7 +1674,7 @@ export function Home({ state, compact }: { state: State | null; compact?: boolea
         : 'mx-auto max-w-2xl pb-28'
       }
     >
-      {compact ? <div className="shrink-0 border-b border-border">{top}</div> : top}
+      {top}
       {(!compact || herdr) && hostChips}
       {herdr ? (
         herdrBody

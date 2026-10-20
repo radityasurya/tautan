@@ -7,7 +7,8 @@ import { Diff } from './diff.tsx';
 import { FileScreen } from './file.tsx';
 import { Home, seedSeen, unseen } from './home.tsx';
 import { HostDetail, Hosts } from './hosts.tsx';
-import { AgentsTab, HostsTab, SettingsTab } from './icons.tsx';
+import { TOOL } from './explorer.tsx';
+import { AgentsTab, Back, HostsTab, PanelLeft, SettingsTab } from './icons.tsx';
 import { PaneScreen } from './pane.tsx';
 import { CHAT_EVENT } from '../shared/chat-merge.ts';
 import { autoDeliver } from './pending.ts';
@@ -473,11 +474,19 @@ export function useDesktop() {
 
 const SIDEBAR = 'tautan.sidebar';
 
-/** The sidebar's open state, and the `⌘B` / `Ctrl+B` toggle. Remembered in localStorage. */
+/** The sidebar toggle's shortcut as this keyboard writes it, for the button's tooltip. */
+export const SIDEBAR_KEYS = /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘B' : 'Ctrl+B';
+
+/** The sidebar's open state and its toggle: `⌘B` / `Ctrl+B`, or the button. Remembered in localStorage. */
 function useSidebar(enabled: boolean) {
   const [open, setOpen] = useState(() => {
     try { return store.get(SIDEBAR) !== 'closed'; } catch { return true; }
   });
+  const toggle = () =>
+    setOpen((was) => {
+      try { store.set(SIDEBAR, was ? 'closed' : 'open'); } catch {}
+      return !was;
+    });
   useEffect(() => {
     if (!enabled) return;
     const on = (e: KeyboardEvent) => {
@@ -487,18 +496,15 @@ function useSidebar(enabled: boolean) {
       const typing = t instanceof HTMLElement && (t.isContentEditable || t.matches('input, textarea'));
       if (!(e.metaKey || (e.ctrlKey && !typing))) return;
       e.preventDefault();
-      setOpen((was) => {
-        try { store.set(SIDEBAR, was ? 'closed' : 'open'); } catch {}
-        return !was;
-      });
+      toggle();
     };
     addEventListener('keydown', on);
     return () => removeEventListener('keydown', on);
   }, [enabled]);
-  return open;
+  return [open, toggle] as const;
 }
 
-/** The sidebar footer, and the cross-link at the foot of each screen's own nav. */
+/** The sidebar footer: the two screens outside the Pane list. */
 const FOOTER = [
   { to: '#/settings', label: 'Settings', Icon: SettingsTab },
   { to: '#/hosts', label: 'Hosts', Icon: HostsTab },
@@ -513,73 +519,121 @@ const SECTIONS = [
   ['about', 'About'],
 ] as const;
 
-const NAV_LINK = 'flex min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-[14px] focus-visible:outline-2 focus-visible:outline-accent';
-const navLink = (on: boolean) => `${NAV_LINK} ${on ? 'bg-elevated text-fg' : 'text-muted hover:bg-elevated/60 hover:text-fg'}`;
+const RING = 'outline-none focus-visible:ring-2 focus-visible:ring-accent/60';
+const NAV_LINK = `flex h-8 min-w-0 shrink-0 items-center gap-2.5 rounded-chip px-2.5 text-[13px] ${RING}`;
+const navLink = (on: boolean) => `${NAV_LINK} ${on ? 'bg-accent/12 font-medium text-fg' : 'text-fg hover:bg-fg/5'}`;
 
 /**
- * The left column of Settings and of Hosts at `lg`: back to the Panes, the screen's title,
- * its own links, and the other screen at the foot. Settings lists its sections; Hosts lists
- * every Host, each with its reachability dot.
+ * Settings and Hosts at `lg`, one layout laid out as Files is: a top bar across the window
+ * (back to the Panes, the screen's title over a caption), then the screen's own sidebar and
+ * its content, full bleed. The sidebar's header row, level with the content's first bar, is
+ * the switch between the two screens; under it Settings lists its sections and Hosts every
+ * Host, each with its reachability dot.
  */
 // ponytail: the current section is the route, not a scroll-spy; scrolling by hand does not
 // move the highlight. Add an IntersectionObserver if that reads wrong.
-function ScreenNav({ hosts, current, state }: { hosts: boolean; current: string; state: State | null }) {
-  const other = FOOTER.find((f) => f.to !== (hosts ? '#/hosts' : '#/settings'))!;
+function ScreenFrame({ hosts, current, state, screen, children }: {
+  hosts: boolean;
+  current: string;
+  state: State | null;
+  /** The screen's key: the column starts at the top for each new one. */
+  screen: string;
+  children: ReactNode;
+}) {
+  const down = state?.hosts.filter((h) => !h.online).length ?? 0;
   return (
-    <nav
-      aria-label={hosts ? 'Hosts' : 'Settings sections'}
-      className="sticky top-0 flex h-dvh w-[240px] shrink-0 flex-col gap-0.5 border-r border-border bg-surface px-4 py-6"
-    >
-      <Link to="#/" className="flex items-center gap-2 px-2 pb-4 text-[13px] text-muted hover:text-fg">
-        <span aria-hidden>‹</span>All panes
-      </Link>
-      <span className="px-2 pb-3 text-[22px] font-semibold tracking-tight">{hosts ? 'Hosts' : 'Settings'}</span>
-      {hosts ? (
-        <>
-          <Link to="#/hosts" aria-current={current === '' ? 'true' : undefined} className={navLink(current === '')}>
-            All Hosts
-            <span className="ml-auto text-caption tabular-nums text-muted">{state?.hosts.length ?? ''}</span>
-          </Link>
-          {state?.hosts.map((h) => {
-            const on = h.id === current;
-            return (
-              <Link
-                key={h.id}
-                to={`#/hosts/${encodeURIComponent(h.id)}`}
-                aria-current={on ? 'true' : undefined}
-                className={navLink(on)}
-              >
-                <span aria-hidden className={`size-2 shrink-0 rounded-full ${h.online ? 'bg-ok' : 'bg-danger'}`} />
-                <span className="min-w-0 truncate">{h.label}</span>
-                {!h.online && <span className="ml-auto shrink-0 text-caption text-danger">down</span>}
-              </Link>
-            );
-          })}
-        </>
-      ) : (
-        SECTIONS.map(([id, label]) => {
-          const to = `#/settings/${id}`;
-          const on = id === current;
-          return (
-            <Link
-              key={id}
-              to={to}
-              aria-current={on ? 'true' : undefined}
-              // The same link twice is no route change, so scroll back to the section by hand.
-              onClick={() => location.hash === to && document.getElementById(`settings-${id}`)?.scrollIntoView({ block: 'start' })}
-              className={navLink(on)}
-            >
-              {label}
-            </Link>
-          );
-        })
-      )}
-      <span className="flex-1" />
-      <Link to={other.to} className={`${NAV_LINK} text-muted hover:bg-elevated/60 hover:text-fg`}>
-        <other.Icon size={16} />
-        {other.label}
-      </Link>
-    </nav>
+    <div className="flex h-dvh min-w-0 flex-1 flex-col">
+      <header className="flex h-14 shrink-0 items-center gap-1 border-b border-border pr-4 pl-1">
+        <Link to="#/" aria-label="All panes" title="All panes" className="flex size-11 shrink-0 items-center justify-center text-accent">
+          <Back />
+        </Link>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <h1 className="truncate text-title tracking-tight">{hosts ? 'Hosts' : 'Settings'}</h1>
+          <p className="truncate text-caption text-muted">
+            {!hosts ? (
+              'This browser and the Hub'
+            ) : state ? (
+              <>
+                {state.hosts.length} Host{state.hosts.length === 1 ? '' : 's'}
+                {down > 0 && <span className="text-danger"> · {down} down</span>}
+              </>
+            ) : (
+              'Reading Hosts…'
+            )}
+          </p>
+        </div>
+      </header>
+      <div className="flex min-h-0 flex-1">
+        <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-surface xl:w-72">
+          <nav aria-label="Hosts and Settings" className="flex h-11 shrink-0 items-center border-b border-border px-2">
+            {/* The Pane list's segmented look (Home's list switch), in the tab bar's order. */}
+            <div className="flex w-full rounded-[10px] bg-fg/6 p-0.5">
+              {TABS.slice(1).map(({ to, label, Icon }) => {
+                const on = to === (hosts ? '#/hosts' : '#/settings');
+                return (
+                  <Link
+                    key={to}
+                    to={to}
+                    aria-current={on ? 'page' : undefined}
+                    className={`flex h-7 flex-1 items-center justify-center gap-1.5 rounded-lg text-[13px] ${RING} ${
+                      on ? 'bg-elevated font-medium text-fg shadow-sm' : 'text-muted hover:text-fg'
+                    }`}
+                  >
+                    <Icon size={15} />
+                    {label}
+                  </Link>
+                );
+              })}
+            </div>
+          </nav>
+          <nav aria-label={hosts ? 'Hosts' : 'Settings sections'} className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain p-2">
+            {hosts ? (
+              <>
+                <Link to="#/hosts" aria-current={current === '' ? 'page' : undefined} className={navLink(current === '')}>
+                  All Hosts
+                  <span className="ml-auto text-caption font-normal tabular-nums text-muted">{state?.hosts.length ?? ''}</span>
+                </Link>
+                {state?.hosts.map((h) => {
+                  const on = h.id === current;
+                  return (
+                    <Link
+                      key={h.id}
+                      to={`#/hosts/${encodeURIComponent(h.id)}`}
+                      aria-current={on ? 'page' : undefined}
+                      className={navLink(on)}
+                    >
+                      <span aria-hidden className={`size-2 shrink-0 rounded-full ${h.online ? 'bg-ok' : 'bg-danger'}`} />
+                      <span className="min-w-0 truncate">{h.label}</span>
+                      {!h.online && <span className="ml-auto shrink-0 text-caption font-normal text-danger">down</span>}
+                    </Link>
+                  );
+                })}
+              </>
+            ) : (
+              SECTIONS.map(([id, label]) => {
+                const to = `#/settings/${id}`;
+                // Plain `#/settings` is the page's top, which is the first section.
+                const on = id === (current || SECTIONS[0][0]);
+                return (
+                  <Link
+                    key={id}
+                    to={to}
+                    aria-current={on ? 'page' : undefined}
+                    // The same link twice is no route change, so scroll back to the section by hand.
+                    onClick={() => location.hash === to && document.getElementById(`settings-${id}`)?.scrollIntoView({ block: 'start' })}
+                    className={navLink(on)}
+                  >
+                    {label}
+                  </Link>
+                );
+              })
+            )}
+          </nav>
+        </aside>
+        {/* Keyed by the screen: another Host never opens where the last one was scrolled. */}
+        <main key={screen} className="min-w-0 flex-1 overflow-y-auto overscroll-contain">{children}</main>
+      </div>
+    </div>
   );
 }
 
@@ -634,7 +688,7 @@ export function App() {
   const { state, screen, screens: paneScreens, streamId, connected } = useEvents(
     (s) => (paneKey ? watchKeys(s, paneKey, desktop && splitPref) : []),
   );
-  const sidebar = useSidebar(desktop);
+  const [sidebar, toggleSidebar] = useSidebar(desktop);
   const needsYou = state?.panes.filter((p) => p.status === 'blocked' && unseen(p)).length ?? 0;
   const wakeLock = useRef<{ release(): Promise<void> } | null>(null);
   const wakeLockToken = useRef(0);
@@ -718,7 +772,8 @@ export function App() {
   // view mounted: no re-fetched Chat, no re-measured grid, no lost scroll.
   const openPane = paneKey ? state?.panes.find((p) => p.key === paneKey) : undefined;
   // Files is keyed by its Pane for the same reason: a tree click swaps the file, not the tree.
-  const screenKey = openPane ? `tab:${openPane.muxKey}/${openPane.tabId}` : fileKey ? `file:${fileKey}` : route;
+  // Settings is one page whatever its section, so a section link scrolls the loaded page.
+  const screenKey = openPane ? `tab:${openPane.muxKey}/${openPane.tabId}` : fileKey ? `file:${fileKey}` : settingsAt !== undefined ? 'settings' : route;
   const screens = paneKey ? (
         <PaneScreen paneKey={paneKey} state={state} screen={screen} screens={paneScreens} streamId={streamId} />
       ) : diffKey ? (
@@ -759,33 +814,54 @@ export function App() {
         // document itself never does (a tall Settings page used to put a scrollbar on <html>).
         <div className="flex h-dvh overflow-hidden">
           {section ? (
-            <ScreenNav hosts={!!hostsAt} current={hostsAt ? (hostId ?? '') : (settingsAt ?? '')} state={state} />
+            <ScreenFrame hosts={!!hostsAt} current={hostsAt ? (hostId ?? '') : (settingsAt ?? '')} state={state} screen={screenKey}>
+              <ScreenBoundary key={screenKey} where={route}>{screens}</ScreenBoundary>
+            </ScreenFrame>
           ) : (
-            sidebar && (
-              // Not sticky: the frame never scrolls, and a sticky box is a stacking context that
-              // held Home's sheets and Close dialog (z 10000) under the Pane column beside it.
-              <aside
-                aria-label="All panes"
-                onScrollCapture={flagScrolling}
-                className="scroll-autohide flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface"
-              >
-                {/* Home scrolls its own list, under a top that stays put. */}
-                <div className="min-h-0 flex-1">
-                  <ScreenBoundary key="sidebar" where="Pane list"><Home state={state} compact /></ScreenBoundary>
-                </div>
-                <UsageStrip />
-                <nav aria-label="Sections" className="flex shrink-0 gap-1 border-t border-border p-2">
-                  {FOOTER.map(({ to, label, Icon }) => (
-                    <Link key={to} to={to} className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg text-[13px] text-muted hover:bg-elevated/60 hover:text-fg">
-                      <Icon size={16} />
-                      {label}
-                    </Link>
-                  ))}
-                </nav>
-              </aside>
-            )
+            <>
+              {sidebar ? (
+                // Not sticky: the frame never scrolls, and a sticky box is a stacking context that
+                // held Home's sheets and Close dialog (z 10000) under the Pane column beside it.
+                <aside
+                  aria-label="All panes"
+                  onScrollCapture={flagScrolling}
+                  className="scroll-autohide flex h-dvh w-[300px] shrink-0 flex-col border-r border-border bg-surface"
+                >
+                  {/* Home scrolls its own list, under a top that stays put. */}
+                  <div className="min-h-0 flex-1">
+                    <ScreenBoundary key="sidebar" where="Pane list"><Home state={state} compact onHide={toggleSidebar} /></ScreenBoundary>
+                  </div>
+                  <UsageStrip />
+                  <nav aria-label="Sections" className="flex shrink-0 gap-1 border-t border-border p-2">
+                    {FOOTER.map(({ to, label, Icon }) => (
+                      <Link key={to} to={to} className={`flex h-9 flex-1 items-center justify-center gap-2 rounded-lg text-[13px] text-muted hover:bg-fg/5 hover:text-fg ${RING}`}>
+                        <Icon size={16} />
+                        {label}
+                      </Link>
+                    ))}
+                  </nav>
+                </aside>
+              ) : (
+                // Hidden, the sidebar leaves a rail, as the Files Explorer does: Show sidebar where
+                // Hide sidebar was, and the footer's two screens as icons.
+                <aside aria-label="All panes" className="flex h-dvh w-12 shrink-0 flex-col border-r border-border bg-surface">
+                  <div className="flex h-14 shrink-0 items-center border-b border-border px-2">
+                    <button type="button" aria-label="Show sidebar" title={`Show sidebar · ${SIDEBAR_KEYS}`} onClick={toggleSidebar} className={TOOL}>
+                      <PanelLeft size={16} />
+                    </button>
+                  </div>
+                  <nav aria-label="Sections" className="mt-auto flex flex-col gap-1 border-t border-border p-2">
+                    {FOOTER.map(({ to, label, Icon }) => (
+                      <Link key={to} to={to} aria-label={label} title={label} className={TOOL}>
+                        <Icon size={16} />
+                      </Link>
+                    ))}
+                  </nav>
+                </aside>
+              )}
+              <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain"><ScreenBoundary key={screenKey} where={route}>{screens}</ScreenBoundary></div>
+            </>
           )}
-          <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain"><ScreenBoundary key={screenKey} where={route}>{screens}</ScreenBoundary></div>
         </div>
       ) : (
         <>
