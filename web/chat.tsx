@@ -1176,12 +1176,17 @@ export function Chat({
           cursor = '';
           if (first && !loaded) show({ sessionId: '', cursor: '', reset: true, upserts: [] });
           if (!waited) retryIn = 1_000;
-        } else if (gone || (!loaded && ++misses > RETRIES)) {
-          // A transcript that went away, or one that never loaded through every retry: a
-          // subagent's falls back to Main, Main's to Screen.
+        } else if (gone) {
+          // A transcript that went away: a subagent's falls back to Main, Main's to Screen.
           return fallBack();
         } else if (!loaded) {
-          retryIn = 500 * 2 ** misses;
+          // One that never loaded through every retry falls back too, but an unreachable Hub
+          // (a restart: the dev proxy answers 5xx, or the fetch fails) is no Pane without a
+          // Chat. It keeps asking, backing off to 8 s: a view that gave up there stayed on
+          // the Screen, its card in the dock, after the Hub was back.
+          misses++;
+          if (code !== undefined && code < 500 && misses > RETRIES) return fallBack();
+          retryIn = Math.min(8_000, 500 * 2 ** misses);
         }
         // A blip on a loaded view only waits for the next poll.
       } finally { busy = false; }

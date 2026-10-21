@@ -9,7 +9,7 @@ import type {
 import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordances.tsx';
 
 import { api, haptic, navigate, opensWith, post, reducedMotion, setSplitOn, splitSet, useDesktop, useSplitPref } from './app.tsx';
-import { fetchExplain, sendBlocked, type ExplainResponse } from './blocked.tsx';
+import { Blocked, fetchExplain, sendBlocked, type ExplainResponse } from './blocked.tsx';
 import { Chat, readLens, writeLens, type Approval, type LensMode } from './chat.tsx';
 import { Composer, FADE, subscribeTyping, typingSnapshot } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
@@ -1119,9 +1119,26 @@ function CellChat({ pane, screen, onUnavailable, onReview, approval, onReady, an
   const own = useCellApproval(pane.key, Boolean(answers) && pane.status === 'blocked', pane.revision, desktop);
   const [noChat, setNoChat] = useState(false);
   const fallback = useCallback(() => setNoChat(true), []);
+  // A Chat that gave up while the Hub was away (a restart answers 404, then nothing) left the
+  // cell on its Screen for good; a Pane that turns blocked tries its Chat again.
+  useEffect(() => {
+    if (pane.status === 'blocked') setNoChat(false);
+  }, [pane.status]);
   const profile = useMemo(() => profileFor(pane), [pane.agent, pane.command]);
   const lines = useMemo(() => (screen?.key === pane.key ? parseAnsi(screen.text) : null), [screen, pane.key]);
-  if (noChat) return <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={false} split />;
+  if (noChat) {
+    const grid = <PaneGrid paneKey={pane.key} pane={pane} screen={screen} interactive={false} split />;
+    // A cell on its Screen draws the box as text: the card under it is what answers.
+    if (!own) return grid;
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">{grid}</div>
+        <div className="shrink-0 border-t border-border p-2">
+          <Blocked explain={own.explain} agent={pane.agent} stale={own.stale} layout="row" onSend={own.onAnswer} onReread={own.onReread} />
+        </div>
+      </div>
+    );
+  }
   return (
     <Chat
       key={pane.key}
