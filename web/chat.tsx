@@ -1480,17 +1480,8 @@ export function Chat({
                   const tool = tools[toolIndex]!;
                   const pending = targets.find(item => item.turn === turnIndex && item.tool === toolIndex);
                   const subagent = tool.subagentId ? byId.get(tool.subagentId) : undefined;
-                  return pending && approval ? (
-                    <ApprovalItem
-                      key={rowKey(toolIndex)}
-                      approval={approval}
-                      agent={agent}
-                      tool={tool}
-                      kind={view?.agentKind}
-                      at={pending === targets[0] ? tool.at ?? turn.at : undefined}
-                      queued={pending !== targets[0]}
-                    />
-                  ) : (
+                  // A call the prompt asks about is drawn at the end, as its approval row.
+                  return pending && approval ? null : (
                     <ToolRow
                       key={rowKey(toolIndex)}
                       paneKey={paneKey}
@@ -1575,7 +1566,24 @@ export function Chat({
                 />
               ))}
               {pendingShown.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} agent={agent} working={status === 'working'} />)}
-              {approval && !targets.length && <ApprovalItem approval={approval} agent={agent} />}
+              {/* The prompt is the last thing on the conversation, as Claude Code draws it: under
+                  the queue and the replies on their way, so the pinned scroll lands on it. A
+                  long queued message once pushed the row out of view above it. */}
+              {approval && (targets.length ? targets.map((target, n) => {
+                const turn = view!.turns[target.turn]!;
+                const tool = turn.tools[target.tool]!;
+                return (
+                  <ApprovalItem
+                    key={tool.id ?? `${tool.name}-${target.turn}-${target.tool}`}
+                    approval={approval}
+                    agent={agent}
+                    tool={tool}
+                    kind={view?.agentKind}
+                    at={n === 0 ? tool.at ?? turn.at : undefined}
+                    queued={n > 0}
+                  />
+                );
+              }) : <ApprovalItem approval={approval} agent={agent} />)}
             </ol>
             </>
           )}
