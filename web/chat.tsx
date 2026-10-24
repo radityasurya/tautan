@@ -104,7 +104,7 @@ function PendingTurn({ entry, agent, working }: { entry: Pending; agent: string;
         {entry.text}
       </div>
       <span aria-live="polite" className={`mt-1 px-1 text-right text-[11px] ${failed ? 'text-danger' : 'text-muted'}`}>
-        {held ? (entry.reason === 'draft' ? "Waiting: the terminal's box has text" : `Held until ${capital(agent)} is idle`)
+        {held ? (entry.reason === 'draft' ? "Waiting: the terminal's box has text" : entry.reason === 'panel' ? `Waiting for ${capital(agent)}'s input box` : `Held until ${capital(agent)} is idle`)
           // Claude and pi queue a reply typed mid-run and log it when they take it.
           : working && (entry.state === 'sent' || entry.state === 'late') ? `Queued for ${capital(agent)}`
           : CAPTION[entry.state]}

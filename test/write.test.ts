@@ -352,6 +352,12 @@ describe('write routes', () => {
     const refused = await request(path, { text: 'reply', keys: ['enter'], held: true });
     expect(refused.status).toBe(409); expect(await refused.json()).toEqual({ error: 'draft' });
     expect(sent).toEqual([]);
+    // A panel has taken the box's place (Claude 2.1.310's /usage): its Enter would pick a row,
+    // as it once toggled a /config setting. The reply waits for the box.
+    visible = { text: readFileSync(join(import.meta.dir, 'fixtures/claude-2.1.310/usage-panel.ansi.txt'), 'utf8'), ansi: true };
+    const panel = await request(path, { text: 'reply', keys: ['enter'], held: true });
+    expect(panel.status).toBe(409); expect(await panel.json()).toEqual({ error: 'panel' });
+    expect(sent).toEqual([]);
     // The dim placeholder reads as empty, so the reply goes through — stripped of what Claude holds.
     visible = { text: fixture('inputbox-empty.ansi.txt'), ansi: true };
     expect((await request(path, { text: `a​b${emoji}`, keys: ['enter'], held: true })).status).toBe(204);

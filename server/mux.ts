@@ -577,7 +577,15 @@ export class Hub {
     // Claude's box; and Claude holds a message that carries invisible characters, so strip them.
     if (claude && body.held) {
       const screen = await found.entry.mux.read(found.paneId, 'visible');
-      const box = inputBox(screen.text, screen.ansi);
+      let box = inputBox(screen.text, screen.ansi);
+      // No box: a panel (/usage, /config) or a permission prompt has taken its place, where a
+      // reply's Enter picks a row (it once toggled a /config setting) or answers the prompt.
+      // The live bottom first, since `visible` is wherever a herdr client scrolled to.
+      if (box === null) {
+        const live = await found.entry.mux.read(found.paneId, 'visible', { live: true });
+        box = inputBox(live.text, live.ansi);
+        if (box === null) throw new Error('panel');
+      }
       if (box === 'draft' || box === 'bash') throw new Error('draft');
     }
     const text = claude && body.text !== undefined ? stripInvisible(body.text) : body.text;

@@ -1008,7 +1008,7 @@ export function startHttp(hub: Hub, opts: {
         if (message === 'pane not found' || message === 'mux not found' || message === 'workspace not found' || message === 'tab not found') return json({ error: message }, 404);
         if (message === 'unsupported') return json({ error: message }, 501);
         // Wave 20: a held reply met a draft (or bash mode) in Claude's box; the Hub typed nothing.
-        if (message === 'draft') return json({ error: message }, 409);
+        if (message === 'draft' || message === 'panel') return json({ error: message }, 409);
         return json({ error: message.split(': ')[0] || message }, 502);
       }
     },

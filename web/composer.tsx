@@ -339,6 +339,7 @@ export function Composer({
   // Held replies live in web/pending.ts, not here: they outlive this Composer and go out on
   // their own when the Pane is idle again (autoDeliver, driven by the App).
   const heldMessages = heldOf(useSyncExternalStore(subscribePending, pendingSnapshot), paneKey);
+  const panelHeld = heldMessages.some((m) => m.reason === 'panel');
   const sendingHeld = isFlushing(paneKey);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -1567,7 +1568,7 @@ export function Composer({
         <section aria-label="Held messages" className={`overflow-hidden rounded-composer border border-border bg-bg ${desktop ? 'mx-4 mt-3' : 'mx-4'}`}>
           <div className={`flex min-h-9 items-center gap-3 px-3 ${heldFolded ? '' : 'border-b border-border'}`}>
             <span aria-live="polite" className="min-w-0 flex-1 truncate text-caption text-muted">
-              <span className="font-medium text-fg">{heldMessages.length} held</span> · {heldMessages.some((m) => m.reason === 'draft') ? "waiting: the terminal's box has text" : `sends when ${Agent || 'the Agent'} is idle`}
+              <span className="font-medium text-fg">{heldMessages.length} held</span> · {heldMessages.some((m) => m.reason === 'draft') ? "waiting: the terminal's box has text" : heldMessages.some((m) => m.reason === 'panel') ? `waiting: a panel or a prompt is on ${Agent || 'the Agent'}'s Screen` : `sends when ${Agent || 'the Agent'} is idle`}
             </span>
             {status !== 'working' && !heldMessages.some((m) => m.reason === 'draft') && (
               <button
@@ -1576,11 +1577,13 @@ export function Composer({
                 onPointerDown={keepFocus}
                 onClick={() => {
                   haptic();
-                  void flushHeld(paneKey);
+                  // Past a panel hold only on purpose: the box may simply not be read on a
+                  // layout the Hub does not know, and the reply must still be sendable.
+                  void flushHeld(paneKey, panelHeld);
                 }}
                 className="press min-h-9 shrink-0 text-caption font-semibold text-accent disabled:text-muted"
               >
-                {sendingHeld ? 'Sending…' : 'Send now'}
+                {sendingHeld ? 'Sending…' : panelHeld ? 'Send anyway' : 'Send now'}
               </button>
             )}
           </div>

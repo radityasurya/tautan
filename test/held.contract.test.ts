@@ -43,9 +43,9 @@ describe.skipIf(!herdrAvailable)('held reply contract', () => {
   const run = async (command: string) => { await mux.sendText(paneId, command); await mux.sendKeys(paneId, ['enter']); };
   // Wait on the classifier, not on raw text: the shell's echo of the printf command carries the
   // box lines too, before the real box is on screen.
-  const boxIs = (state: 'draft' | null) => eventually(() => mux.read(paneId, 'visible'), screen => inputBox(screen.text, screen.ansi) === state, 5_000);
+  const boxIs = (state: 'draft' | 'empty' | null) => eventually(() => mux.read(paneId, 'visible'), screen => inputBox(screen.text, screen.ansi) === state, 5_000);
 
-  test('a draft in the box refuses a held reply; an empty screen sends it stripped', async () => {
+  test('a draft or no box refuses a held reply; an empty box sends it stripped', async () => {
     // The box holds a draft: the reply must not type over it.
     await run(`clear; printf '%s\\n' ${quoted(box('draft'))}`);
     await boxIs('draft');
@@ -53,9 +53,17 @@ describe.skipIf(!herdrAvailable)('held reply contract', () => {
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ error: 'draft' });
 
-    // No box at all (the user cleared it): the reply goes through, without the zero-width space.
+    // No box at all: a panel (/config) or a prompt has taken its place, where Enter picks a
+    // row or answers. The reply waits (here the user cleared the screen).
     await run('clear');
     await boxIs(null);
+    const held = await input({ text: 'reply', keys: ['enter'], held: true });
+    expect(held.status).toBe(409);
+    expect(await held.json()).toEqual({ error: 'panel' });
+
+    // The box is back, empty: the reply goes through, without the zero-width space.
+    await run(`clear; printf '%s\\n' ${quoted(box(''))}`);
+    await boxIs('empty');
     expect((await input({ text: 'echo held​ok', held: true })).status).toBe(204);
     const screen = await eventually(() => mux.read(paneId, 'visible'), value => value.text.includes('heldok'), 5_000);
     expect(screen.text.includes('​')).toBe(false);

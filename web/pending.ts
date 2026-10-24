@@ -15,8 +15,9 @@ export interface Pending {
   state: PendingState;
   /** When the send landed; the transcript match ignores user turns older than this. */
   at: number;
-  /** Why a held reply waits beyond the Agent working: the terminal's own box has text. */
-  reason?: 'draft';
+  /** Why a held reply waits beyond the Agent working: the terminal's own box has text
+   *  (`draft`), or a panel or a prompt has taken the box's place (`panel`). */
+  reason?: 'draft' | 'panel';
   /** It went out with Claude's Ctrl+Enter, past the queue. */
   now?: true;
 }
@@ -73,22 +74,24 @@ export const heldOf = (list: Pending[], paneKey: string) => list.filter((p) => p
  * the request never landed; the entry then reads "Not sent · Retry". `now` presses Claude's
  * Ctrl+Enter instead: while it works, the reply and everything queued go at once.
  */
-export async function deliver(id: number, now = false): Promise<boolean> {
+export async function deliver(id: number, now = false, force = false): Promise<boolean> {
   const entry = pending.find((p) => p.id === id);
   if (!entry) return false;
   set(id, { state: 'sending' });
-  // `held` asks the Hub to refuse (409 draft) when Claude's own box holds text; it ignores it elsewhere.
+  // `held` asks the Hub to refuse (409 draft, 409 panel) when Claude's own box holds text or is
+  // gone; it ignores it elsewhere. `force` is Send anyway: the user saw why it waits.
   const res = await fetch(`/api/panes/${encodeURIComponent(entry.paneKey)}/input`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text: entry.text, keys: [now ? 'ctrl+enter' : 'enter'], held: true } satisfies InputBody),
+    body: JSON.stringify({ text: entry.text, keys: [now ? 'ctrl+enter' : 'enter'], ...(force ? {} : { held: true as const }) } satisfies InputBody),
   }).catch(() => undefined);
   const ok = !!res?.ok;
   if (!pending.some((p) => p.id === id)) return ok; // the transcript caught up first
-  if (res?.status === 409 && (await res.json().catch(() => undefined) as { error?: string } | undefined)?.error === 'draft') {
+  const refused = res?.status === 409 ? (await res.json().catch(() => undefined) as { error?: string } | undefined)?.error : undefined;
+  if (refused === 'draft' || refused === 'panel') {
     // Not a failure: the reply waits, and the flush retries once the Pane's revision moves.
     if (!pending.some((p) => p.id === id)) return false;
-    set(id, { state: 'held', reason: 'draft' });
+    set(id, { state: 'held', reason: refused });
     ensureDraftTimer();
     return false;
   }
@@ -109,14 +112,15 @@ export const isFlushing = (paneKey: string) => flushing.has(paneKey);
  * Type a Pane's held replies, oldest first. A failure puts that reply back to held and stops,
  * so nothing goes out of order; resolves false then.
  */
-export async function flushHeld(paneKey: string): Promise<boolean> {
+/** `force` sends past a `panel` hold (Send anyway); the Hub's draft guard still applies to the rest. */
+export async function flushHeld(paneKey: string, force = false): Promise<boolean> {
   if (flushing.has(paneKey)) return true;
   flushing.add(paneKey);
   notify();
   try {
     for (const { id } of heldOf(pending, paneKey)) {
       if (!pending.some((p) => p.id === id && p.state === 'held')) continue; // removed meanwhile
-      if (!(await deliver(id))) {
+      if (!(await deliver(id, false, force))) {
         set(id, { state: 'held' });
         return false;
       }
@@ -141,7 +145,7 @@ let draftTimer: ReturnType<typeof setInterval> | undefined;
 function ensureDraftTimer() {
   if (draftTimer) return;
   draftTimer = setInterval(() => {
-    if (!pending.some((p) => p.state === 'held' && p.reason === 'draft')) {
+    if (!pending.some((p) => p.state === 'held' && p.reason)) {
       clearInterval(draftTimer);
       draftTimer = undefined;
       return;
@@ -162,7 +166,7 @@ export function autoDeliver(list?: { key: string; status: Status; revision: numb
     const pane = panes.get(key);
     if (!pane || (pane.status !== 'idle' && pane.status !== 'done')) continue;
     // A draft in the terminal's box clears without moving the revision, so those retry on time.
-    const draft = pending.some((p) => p.paneKey === key && p.state === 'held' && p.reason === 'draft');
+    const draft = pending.some((p) => p.paneKey === key && p.state === 'held' && p.reason);
     if (draft ? Date.now() - (lastTry.get(key) ?? 0) < DRAFT_RETRY_MS / 2 : stuck.get(key) === pane.revision) continue;
     lastTry.set(key, Date.now());
     void flushHeld(key).then((ok) => {

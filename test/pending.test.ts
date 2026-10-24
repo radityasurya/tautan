@@ -150,6 +150,30 @@ describe('held replies', () => {
     expect(pendingSnapshot()[0]).toMatchObject({ state: 'held', reason: 'draft' });
   });
 
+  test('409 panel holds the reply until the box is back; Send anyway posts it unheld', async () => {
+    // A panel (/config) or a prompt has taken the box's place: its Enter would pick a row.
+    refuse = { status: 409, error: 'panel' };
+    autoDeliver(pane('idle', 50));
+    trackPending('h', 'wait', true);
+    await settle();
+    await settle();
+    expect(pendingSnapshot().map((p) => [p.state, p.reason])).toEqual([['held', 'panel']]);
+    refuse = undefined;
+    await new Promise((r) => setTimeout(r, DRAFT_RETRY_MS + 300)); // the panel closed; the timer retries
+    expect(posted).toEqual(['wait', 'wait']);
+    expect(pendingSnapshot()[0]).toMatchObject({ state: 'sent' });
+    dropPending(pendingSnapshot().map((p) => p.id));
+    // Send anyway: the user saw why it waits, so it goes without `held` and the Hub types it.
+    refuse = { status: 409, error: 'panel' };
+    trackPending('h', 'anyway', true);
+    await settle();
+    await settle();
+    refuse = undefined;
+    expect(await flushHeld('h', true)).toBe(true);
+    expect(bodies.at(-1)?.held).toBeUndefined();
+    expect(posted.at(-1)).toBe('anyway');
+  }, 10_000);
+
   test('another 409 fails the reply as before', async () => {
     autoDeliver(pane('working', 30));
     const id = trackPending('h', 'x');
