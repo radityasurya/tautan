@@ -6,7 +6,7 @@ import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown, ShellRun } from './markdown.tsx';
 import { haptic, post } from './app.tsx';
 import { Check, ChevronRight, Down, ScreenLens } from './icons.tsx';
-import { gridRuns } from './pane.tsx';
+import { spanNode, spanStyle } from './pane.tsx';
 import { panelCommand, screenPanel } from './screen-panel.ts';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
 import { CHAT_PAGE_TURNS, editSpans, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type Queued, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
@@ -761,7 +761,6 @@ function PanelItem({ command, paneKey, lines, working, onScreen, onDone }: {
     return found && (found.live || lines !== before) ? found : null;
   }, [lines, command, before]);
   /** The widest row, in cells. */
-  const cols = useMemo(() => Math.max(1, ...(panel?.rows ?? []).map((row) => row.reduce((n, sp) => n + sp.text.length, 0))), [panel]);
   const [seen, setSeen] = useState(false);
   const [late, setLate] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -817,17 +816,15 @@ function PanelItem({ command, paneKey, lines, working, onScreen, onDone }: {
         </span>
       </div>
       {panel ? (
-        // The panel's columns line up, so its rows keep their width. The text shrinks until the
-        // widest row fits the box (a `/usage` meter and its percentage on a phone), down to 9 px;
-        // past that the box scrolls sideways. A mono cell is 0.6 em.
+        // The Chat's mono size, wrapping as the Screen's Wrap does: a phone's box holds about 53
+        // cells and `/usage` is 69 wide. Text scaled to fit read at 9 px, under any phone's floor,
+        // and still scrolled sideways. Plain spans, so a painted meter can break across rows.
         <div
           tabIndex={0}
           aria-label={`${command} panel`}
-          className="mx-2 max-h-[min(26rem,52dvh)] overflow-auto overscroll-contain whitespace-pre rounded-[6px] border border-border bg-bg px-2 py-1.5 font-mono text-caption text-fg outline-none [container-type:inline-size] focus-visible:ring-2 focus-visible:ring-accent/60"
+          className="mx-2 max-h-[min(26rem,52dvh)] overflow-auto overscroll-contain whitespace-pre-wrap rounded-[6px] border border-border bg-bg px-2 py-1.5 font-mono text-caption text-fg outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-accent/60"
         >
-          <div style={{ fontSize: `clamp(9px, calc(100cqw / ${(cols * 0.61).toFixed(1)}), 12px)` }}>
-            {panel.rows.map((row, i) => <span key={i} className="block min-h-[1lh]">{gridRuns(row)}</span>)}
-          </div>
+          {panel.rows.map((row, i) => <span key={i} className="block min-h-[1lh]">{row.map((sp, j) => spanNode(sp, j, spanStyle(sp)))}</span>)}
         </div>
       ) : (
         <div className="mx-2"><Skeleton className="h-16 rounded-[6px]" /></div>

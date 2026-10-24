@@ -660,9 +660,10 @@ approval row stays last), and the view scrolls to it. The card is the command's 
 no pending bubble, no dots. Its header reads **On the Screen** with a pulsing dot and the
 command as a chip; under it, the panel's rows in their own colours, live from the Screen
 (`screenPanel()` in `web/screen-panel.ts`: the rows under the last full-width rule while
-no input box is drawn). The text shrinks to fit the widest row, down to 9 px, so a
-`/usage` meter keeps its percentage on a phone; anything wider scrolls inside the box,
-which stops at 26 rem or half the screen. **Close** (`esc`, or Escape inside the card)
+no input box is drawn). The rows are the Chat's mono size and wrap, as the Screen's Wrap
+does: on a phone a `/usage` meter breaks onto a second row with its percentage (text scaled
+to fit read at 9 px, under any phone's floor). The box stops at 26 rem or half the screen
+and scrolls inside. **Close** (`esc`, or Escape inside the card)
 sends Esc, reads **Closing…**, and the card goes once the panel has left the Screen. Close
 comes back after 2 s if the panel is still there: `/config` spends its first Esc on its
 search. **Open Screen** shows the grid for this visit. Text the command printed above the
@@ -670,8 +671,8 @@ box reads **Printed on the Screen**: its Close only hides the card, and the next
 replaces it. A panel that is not on the Screen 3 s after the send (Claude idle) takes its
 card with it. While the Pane is blocked the card steps aside for the approval row. The
 commands are `SCREEN_COMMAND` less `SCREEN_ONLY` in `web/screen-panel.ts`.
-**Held replies.** A held reply shows at once as a pending
 
+**Held replies.** A held reply shows at once as a pending
 turn marked **Held until Claude is idle** (the Agent's own name), and the composer lists it
 under **1 held · sends when Claude is idle**. Held replies live in `web/pending.ts`, outside
 any one screen, and the App sends them by themselves, oldest first, when that Pane's Status
@@ -679,12 +680,12 @@ turns `idle` or `done` — whichever screen is open. Never while `blocked`: text
 could answer a permission box. Then **Send now**, in the composer or on the pending turn,
 sends them at once, and **Remove** (× in the composer) drops one. A send that fails stays
 held and is tried again when the Pane next changes. A held reply lives as long as the tab.
-A slash command (`/name args`) and a shell line (`!cmd`) are user turns in the transcript,
 A reply to Claude also waits while its input box is gone from the Screen: a panel such as
 `/config`, where Enter picks a row, or a permission prompt, which Enter answers. The Hub
 refuses it (409 `panel`, read at the live bottom), the turn reads **Waiting for Claude's
 input box**, and it goes out once the box is back. **Send anyway** sends it regardless, for
 a Screen whose box the Hub cannot read.
+A slash command (`/name args`) and a shell line (`!cmd`) are user turns in the transcript,
 so their pending turns settle against it like any other reply. Each is a turn of its own,
 never folded into the words around it. A shell line shows its output under it as a code
 block, the last 40 lines (Claude's `<bash-stdout>`/`<bash-stderr>`, pi's `bashExecution`

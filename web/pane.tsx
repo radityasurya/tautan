@@ -293,7 +293,7 @@ function Wrapped({ lines, kinds, joins, fills }: {
  * The grid's spans. A painted background is a cell-tall block, so a run of filled rows
  * (a tool block, an echoed prompt) reads as one band instead of stripes split by the leading.
  */
-export const gridRuns = (spans: Span[]) => spans.map((sp, j) =>
+const gridRuns = (spans: Span[]) => spans.map((sp, j) =>
   spanNode(sp, j, sp.bg !== undefined || sp.inverse ? { ...spanStyle(sp), display: 'inline-block', height: '1lh', verticalAlign: 'top' } : spanStyle(sp)));
 
 /** Styled ANSI text. Shared by the grid and the blocked card's detection excerpt. */
