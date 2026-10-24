@@ -172,6 +172,17 @@ describe('parseTranscript', () => {
     ]);
   });
 
+  test('a report Claude 2.1.310 writes as a system entry shows under its command', () => {
+    // As the real transcripts have it: the command as a user entry, its report as `system`.
+    const jsonl = [
+      { type: 'user', message: { content: '<command-name>/reload-plugins</command-name>\n<command-message>reload-plugins</command-message>\n<command-args></command-args>' } },
+      { type: 'system', subtype: 'local_command', level: 'info', isMeta: false, commandRun: { command: 'reload-plugins', args: '' }, content: '<local-command-stdout>Reloaded: 15 plugins · 57 skills</local-command-stdout>' },
+      { type: 'system', subtype: 'local_command', level: 'info', isMeta: false, content: '<local-command-stdout>Settings dialog dismissed</local-command-stdout>' },
+    ].map(entry => JSON.stringify(entry)).join('\n');
+    // A report with no command line above it is a control record, as before.
+    expect(parseTranscript(jsonl).map(turn => turn.text)).toEqual(['/reload-plugins\n\n> Reloaded: 15 plugins · 57 skills']);
+  });
+
   test("a shell line's long output keeps its last 40 lines, fenced past any backticks inside", () => {
     const out = [...Array.from({ length: 50 }, (_, n) => `line ${n + 1}`), '```done```'].join('\n');
     const jsonl = [

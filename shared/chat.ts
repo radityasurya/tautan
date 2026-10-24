@@ -631,6 +631,11 @@ export class TranscriptParser {
     }
     const queued = entry.type === 'attachment' ? queuedPrompt(entry) : undefined;
     if (queued !== undefined) { this.queuedText.add(queued); entry = { type: 'user', message: { role: 'user', content: queued }, timestamp: entry.timestamp, uuid: entry.uuid, isSidechain: entry.isSidechain }; }
+    // Claude 2.1.310 writes a local command's report (`/context`, `/reload-plugins`, a dismissed
+    // dialog) as a `system` entry; it reads as the user wrapper the earlier versions wrote, and
+    // shows under its command.
+    if (entry.type === 'system' && entry.subtype === 'local_command' && typeof entry.content === 'string')
+      entry = { type: 'user', message: { role: 'user', content: entry.content }, timestamp: entry.timestamp, uuid: entry.uuid, isSidechain: entry.isSidechain };
     if ((!this.opts?.sidechain && entry.isSidechain) || (entry.type !== 'user' && entry.type !== 'assistant')) return;
     if (entry.type === 'user' && entry.isMeta === true) return; // skill bodies, placeholders, injected agent messages
     if (entry.type === 'user' && entry.isCompactSummary === true)
