@@ -18,8 +18,17 @@ const AFFIRMATIVE = /^[^\S\n]*[❯>»]?[^\S\n]*(?:[1-9][.)][^\S\n]*)?(?:yes|allo
  * "esc to cancel · enter to confirm" footer sits after a horizontal rule. So read the box as
  * well as the id — an options list that offers Yes/Allow/Accept first is a yes/no prompt.
  */
-export const asksYesNo = (explain: Explain): boolean =>
-  /permission|approval|approve/i.test(explain.ruleId) || AFFIRMATIVE.test(explain.detection);
+export const asksYesNo = (explain: Explain): boolean => {
+  if (!/permission|approval|approve/i.test(explain.ruleId) && !AFFIRMATIVE.test(explain.detection)) return false;
+  // Enter answers the row under the cursor. Claude's folder trust opens on `❯ No, exit` over
+  // `Yes, I trust this folder`, and a Yes that sent enter quit Claude; so does a permission
+  // box whose cursor was moved to No. Enter is Yes only when the cursor row says so.
+  const at = [...explain.detection.matchAll(CURSOR_ROW)].at(-1)?.[1];
+  return at === undefined || /^(?:[1-9][.)]\s*)?(?:yes|allow|accept|approve)\b/i.test(at);
+};
+
+/** The row a menu cursor is on: `❯ No, exit`, `› 1. Yes`. */
+const CURSOR_ROW = /^[^\S\n]*[❯›][^\S\n]*(\S[^\n]*)$/gm;
 
 /**
  * The keys to offer for a blocked Pane: the Yes/No preset first when the prompt takes one,
@@ -173,10 +182,11 @@ export function readBox(detection: string): { head: string; rest: string[]; menu
       used.add(i);
     } else if (text.trim()) column = Infinity; // a shallower line ends the last row's description
   });
-  const options = menu.length >= 2 ? menu.map(({ at: _at, wrapped: _wrapped, ...option }, i) => ({
+  const numbered = menu.length >= 2 ? menu.map(({ at: _at, wrapped: _wrapped, ...option }, i) => ({
     ...option,
     keys: [...Array<string>(Math.abs(i - cursor)).fill(i > cursor ? 'down' : 'up'), 'enter'],
   })) : [];
+  const options = numbered.length ? numbered : cursorMenu(lines, frame, used);
   const shown = lines
     .filter((_, i) => !options.length || !used.has(i))
     .map((line) => line.replace(frame, '').trim())
@@ -191,4 +201,38 @@ export function readBox(detection: string): { head: string; rest: string[]; menu
   if (at > 0) shown.unshift(...shown.splice(at, 1));
   const [head = 'Blocked', ...rest] = shown;
   return { head, rest, menu: options };
+}
+
+/**
+ * A menu with no numbers (Claude's folder trust: `❯ No, exit` over `Yes, I trust this
+ * folder`): the cursor row and the rows beside it whose text starts at its column, in a box
+ * that names its keys. Each option goes out as arrows from the cursor, then enter; the glyph
+ * is its place in the list. Without it the card fell back to the footer's keys.
+ */
+function cursorMenu(lines: string[], frame: RegExp, used: Set<number>): MenuOption[] {
+  if (!lines.some((line) => HINT.test(plain(line)))) return [];
+  const text = (i: number) => plain(lines[i]!).replace(frame, '').trimEnd();
+  const at = lines.map((_, i) => /^\s*[❯›]\s+\S/.test(text(i))).lastIndexOf(true);
+  if (at < 0) return [];
+  const row = /^(\s*[❯›]\s+)(\S.*)$/.exec(text(at))!;
+  const column = row[1]!.length;
+  const label = (i: number) => {
+    const line = text(i);
+    return line.length > column && !line.slice(0, column).trim() && line[column] !== ' ' ? line.slice(column).trim() : undefined;
+  };
+  let first = at;
+  let last = at;
+  while (first > 0 && label(first - 1)) first--;
+  while (last < lines.length - 1 && label(last + 1)) last++;
+  if (first === last) return [];
+  const out: MenuOption[] = [];
+  for (let i = first; i <= last; i++) {
+    used.add(i);
+    out.push({
+      number: String(i - first + 1),
+      label: i === at ? row[2]!.trim() : label(i)!,
+      keys: [...Array<string>(Math.abs(i - at)).fill(i > at ? 'down' : 'up'), 'enter'],
+    });
+  }
+  return out;
 }

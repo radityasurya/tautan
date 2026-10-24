@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readBox } from '../shared/blocked.ts';
+import { asksYesNo, readBox } from '../shared/blocked.ts';
 
 const rule = '─'.repeat(80);
 
@@ -39,5 +39,43 @@ describe('readBox', () => {
   test('a box without a numbered menu keeps every line and offers no menu', () => {
     const box = readBox([rule, 'Allow this edit?', 'esc to cancel · enter to confirm'].join('\n'));
     expect(box).toEqual({ head: 'Allow this edit?', rest: ['esc to cancel · enter to confirm'], menu: [] });
+  });
+});
+
+describe('a menu the cursor answers', () => {
+  // Claude Code's folder trust, as the user pasted it: no numbers, the cursor on "No, exit".
+  const trust = [
+    ' Accessing workspace:',
+    '',
+    ' /home/tama/projects/internetbox.com/docs/request',
+    '',
+    " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.",
+    '',
+    " Claude Code'll be able to read, edit, and execute files here.",
+    '',
+    ' Security guide',
+    '',
+    ' ❯ No, exit',
+    '   Yes, I trust this folder',
+    '',
+    ' Enter to confirm · Esc to cancel',
+  ].join('\n');
+
+  test('an unnumbered menu reads its rows, and each goes out from the cursor', () => {
+    const box = readBox(trust);
+    expect(box.menu.map(({ number, label, keys }) => ({ number, label, keys }))).toEqual([
+      { number: '1', label: 'No, exit', keys: ['enter'] },
+      { number: '2', label: 'Yes, I trust this folder', keys: ['down', 'enter'] },
+    ]);
+    expect(box.rest.join('\n')).not.toContain('Yes, I trust this folder');
+  });
+
+  test('enter is no Yes when the cursor row is not Yes', () => {
+    // A Yes that sent enter picked "No, exit" and quit Claude.
+    expect(asksYesNo({ ruleId: 'live_blocked_form', state: 'blocked', detection: trust, hintKeys: [] })).toBe(false);
+    const moved = ['Do you want to proceed?', '  1. Yes', '❯ 2. No', 'Esc to cancel'].join('\n');
+    expect(asksYesNo({ ruleId: 'bash_permission_prompt', state: 'blocked', detection: moved, hintKeys: [] })).toBe(false);
+    const fresh = ['Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel'].join('\n');
+    expect(asksYesNo({ ruleId: 'bash_permission_prompt', state: 'blocked', detection: fresh, hintKeys: [] })).toBe(true);
   });
 });
