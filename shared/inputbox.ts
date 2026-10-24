@@ -14,26 +14,32 @@ const RULE = /^─{8,}$/;
 const MARKER = /^[❯!][  ]/;
 
 const plain = (spans: Span[]) => spans.map(span => span.text).join('');
-const isRule = (line: Span[]) => RULE.test(plain(line).trim());
+export const isRule = (line: Span[]) => RULE.test(plain(line).trim());
 // Box body lines between the marker and the bottom rule: blank, or indented two spaces.
 const isContinuation = (line: Span[]) => { const t = plain(line); return t.trim() === '' || t.startsWith('  '); };
 
 /**
- * Read the last input box on the screen. The box is anchored on its two `─` rules and the
- * `❯ `/`! ` marker line directly below the top rule — hint lines above and below change with
- * state and are ignored, and so are transcript `❯ ` echoes, which never sit inside the rules.
- * With `ansi`, dim text (the placeholder and the predicted prompt) counts as empty.
+ * The rows of the last input box on the screen: its top and bottom rule. The box is anchored
+ * on its two `─` rules and the `❯ `/`! ` marker line directly below the top rule — hint lines
+ * above and below change with state and are ignored, and so are transcript `❯ ` echoes,
+ * which never sit inside the rules.
  */
-export function inputBox(screen: string, ansi: boolean): InputBox | null {
-  const lines = parseAnsi(screen);
+export function boxRows(lines: Span[][]): { top: number; bottom: number } | null {
   for (let top = lines.length - 2; top >= 0; top--) {
     if (!isRule(lines[top]!) || !MARKER.test(plain(lines[top + 1]!))) continue;
     let bottom = top + 2;
     while (bottom < lines.length && !isRule(lines[bottom]!) && isContinuation(lines[bottom]!)) bottom++;
-    if (bottom >= lines.length || !isRule(lines[bottom]!)) continue;
-    return classify(lines.slice(top + 1, bottom), ansi);
+    if (bottom < lines.length && isRule(lines[bottom]!)) return { top, bottom };
   }
   return null;
+}
+
+/** Read the last input box on the screen. With `ansi`, dim text (the placeholder and the
+ *  predicted prompt) counts as empty. */
+export function inputBox(screen: string, ansi: boolean): InputBox | null {
+  const lines = parseAnsi(screen);
+  const box = boxRows(lines);
+  return box && classify(lines.slice(box.top + 1, box.bottom), ansi);
 }
 
 /**

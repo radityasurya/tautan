@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent, HTMLAttributes, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react';
 import { findAffordances } from '../shared/affordances.ts';
-import { parseAnsi } from '../shared/ansi.ts';
+import { parseAnsi, sliceSpans } from '../shared/ansi.ts';
 import { boxInner, caretAt, classify, continues, fillOf, fullScreen, hangOf, linksIn, splitAt, type LineKind } from '../shared/layout.ts';
 import type {
   MoveBody, NewTabBody, NewTabResult, RenameBody, ResizeBody, SplitBody, SwapBody, ZoomBody, ScreenEvent, SeenBody, Span, State, StatePane, Status,
@@ -110,19 +110,6 @@ export function spanStyle(s: Span): CSSProperties {
     fontStyle: s.italic ? 'italic' : undefined,
     textDecoration: lines || undefined,
   };
-}
-
-/** The spans of one line between two plain-text offsets, styles kept. */
-export function sliceSpans(spans: Span[], start: number, end: number): Span[] {
-  const out: Span[] = [];
-  let at = 0;
-  for (const sp of spans) {
-    const from = Math.max(start, at);
-    const to = Math.min(end, at + sp.text.length);
-    if (from < to) out.push({ ...sp, text: sp.text.slice(from - at, to - at) });
-    at += sp.text.length;
-  }
-  return out;
 }
 
 /** The caret the Screen draws while the Composer types straight into this Pane. */
@@ -306,7 +293,7 @@ function Wrapped({ lines, kinds, joins, fills }: {
  * The grid's spans. A painted background is a cell-tall block, so a run of filled rows
  * (a tool block, an echoed prompt) reads as one band instead of stripes split by the leading.
  */
-const gridRuns = (spans: Span[]) => spans.map((sp, j) =>
+export const gridRuns = (spans: Span[]) => spans.map((sp, j) =>
   spanNode(sp, j, sp.bg !== undefined || sp.inverse ? { ...spanStyle(sp), display: 'inline-block', height: '1lh', verticalAlign: 'top' } : spanStyle(sp)));
 
 /** Styled ANSI text. Shared by the grid and the blocked card's detection excerpt. */
@@ -1478,7 +1465,8 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
     paneKey,
     mode: readLens(paneKey),
   }));
-  /** A Pane whose Chat the Hub cannot serve (tmux): Screen for now, the saved choice untouched. */
+  /** A Pane whose Chat the Hub cannot serve (tmux), or a Screen command sent from its Chat
+   *  view: Screen for now, the saved choice untouched. */
   const [noChat, setNoChat] = useState<string | null>(null);
   const lens = noChat === paneKey ? 'screen' : lensChoice.paneKey === paneKey ? lensChoice.mode : readLens(paneKey);
   const setLens = useCallback((mode: LensMode) => {
@@ -2206,7 +2194,7 @@ export function PaneScreen({ paneKey, state, screen: last, screens, streamId }: 
         // The Chat view answers the prompt in its transcript once it has one on screen; while
         // it loads (or falls back), the dock's card stays.
         hideCard={chatLens && chatShown === paneKey}
-        onScreenCommand={() => setLens('screen')}
+        onScreenCommand={showScreen}
         // A split holds other Panes' cells: a file dropped on one must not land in this Pane.
         dropZone={chatLens && !showSplit ? slot : undefined}
       />

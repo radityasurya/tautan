@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`/usage` stays in the Chat view.** A Claude command drawn only on the Screen (`/usage`,
+  `/cost`, `/status`, `/config`, `/context`, …) shows its panel live as a card at the end of
+  the conversation, with Close (Esc) and Open Screen. Before, it switched the Pane to its
+  Screen and saved that choice, so the Pane opened on the Screen from then on. `/login`,
+  `/resume` and `/memory` still show the Screen, now for that visit only.
 - **Adding a Host never replaces another.** A label that matches an existing Host, or an
   address that already is one, shows why in the sheet and keeps Save off. Before, saving
   silently dropped the other Host.

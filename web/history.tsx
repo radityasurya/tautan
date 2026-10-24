@@ -6,7 +6,7 @@
 import { Fragment, memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode, RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { parseAnsi } from '../shared/ansi.ts';
+import { parseAnsi, sliceSpans } from '../shared/ansi.ts';
 import type { HistoryResult } from '../shared/types.ts';
 import { useHold } from './affordances.tsx';
 import { api, haptic, navigate, useDesktop } from './app.tsx';
@@ -14,7 +14,7 @@ import { filesHash } from './folders-logic.ts';
 import { blocksOf, hitsIn, pathsIn, step } from './history-logic.ts';
 import { copyText } from './markdown.tsx';
 import { ChevronDown, Plus, Search } from './icons.tsx';
-import { sliceSpans, spanNode, spanStyle, withLinks } from './pane.tsx';
+import { spanNode, spanStyle, withLinks } from './pane.tsx';
 import { why } from './sheets.tsx';
 
 /** The last search per Pane, for this page's life: reopening Find offers it again, selected. */

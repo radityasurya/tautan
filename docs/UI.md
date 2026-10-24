@@ -348,8 +348,11 @@ profile.
 opens it in a new tab (Safari, from the phone app) and a long-press offers Copy. A link the
 terminal wrapped over several rows — Claude's `/login` address is one — is joined back into
 one (`linksIn` in `shared/layout.ts`), so a tap on any of its rows opens the whole address.
-Sending a command whose UI lives only on the Screen (`/login`, `/model`, `/resume`, …) from
-the Chat view switches the Pane to the Screen, where its menu or prompt waits.
+Sending a command whose UI lives only on the Screen from the Chat view keeps you in the Chat
+view: the panel shows as a card at the end of the conversation (see **Screen panels** under
+Chat). Claude's `/login`, `/resume` and `/memory`, and every slash command of the other
+Agents, show the Screen instead — for this visit only. The saved lens stays Chat, and the
+header's **Chat** brings it back.
 
 **Copied chip.** Tapping a path copies it and prints a small
 `Copied` chip above the token for 1.5 s, counter-scaled so it reads at its
@@ -649,6 +652,24 @@ Cmd+Enter) does the same with the typed text, and with an empty field it sends t
 While Claude is idle it is a plain send. On a phone, Send queues the reply and its bubble
 offers Send now. Claude's hint is also a **send now ^↵** pill in the suggestions and a tap
 on the Screen; both send Ctrl+Enter (the hint rule once read it as a plain Enter).
+**Screen panels.** Claude draws some slash commands only on its Screen and logs nothing
+until they close: `/usage`, `/cost`, `/status` and `/config` replace its input box with a
+panel, `/context` prints above the box. Sent from the Chat view, such a command shows as a
+card at the end of the conversation, under the queue and the replies on their way (the
+approval row stays last), and the view scrolls to it. The card is the command's record:
+no pending bubble, no dots. Its header reads **On the Screen** with a pulsing dot and the
+command as a chip; under it, the panel's rows in their own colours, live from the Screen
+(`screenPanel()` in `web/screen-panel.ts`: the rows under the last full-width rule while
+no input box is drawn). The text shrinks to fit the widest row, down to 9 px, so a
+`/usage` meter keeps its percentage on a phone; anything wider scrolls inside the box,
+which stops at 26 rem or half the screen. **Close** (`esc`, or Escape inside the card)
+sends Esc, reads **Closing…**, and the card goes once the panel has left the Screen. Close
+comes back after 2 s if the panel is still there: `/config` spends its first Esc on its
+search. **Open Screen** shows the grid for this visit. Text the command printed above the
+box reads **Printed on the Screen**: its Close only hides the card, and the next prompt
+replaces it. A panel that is not on the Screen 3 s after the send (Claude idle) takes its
+card with it. While the Pane is blocked the card steps aside for the approval row. The
+commands are `SCREEN_COMMAND` less `SCREEN_ONLY` in `web/screen-panel.ts`.
 **Held replies.** A held reply shows at once as a pending
 turn marked **Held until Claude is idle** (the Agent's own name), and the composer lists it
 under **1 held · sends when Claude is idle**. Held replies live in `web/pending.ts`, outside

@@ -101,6 +101,50 @@ const CLAUDE_WORKING = [
   `${DIM}  ⏵⏵ auto mode on · ← 3 agents${RESET}`,
 ].join('\r\n');
 
+/** Claude Code 2.1.310's own colours for the panels below (test/fixtures/claude-2.1.310). */
+const SKY = '\x1b[38;5;153m';
+const GREY = '\x1b[38;5;246m';
+/** A sent prompt as Claude echoes it above its input box. */
+const echo = (text: string) => `${GREY}\x1b[48;5;237m❯ \x1b[38;5;231m${text}${RESET}`;
+/** A `/usage` meter: 50 cells, the empty part drawn in the meter's own background. */
+const meter = (pct: number) => `  ${SKY}\x1b[48;5;102m${'█'.repeat(pct / 2)}${' '.repeat(50 - pct / 2)}${RESET} ${pct}% used`;
+const INPUT_BOX = [`${DIM}${'─'.repeat(80)}${RESET}`, '❯ ', `${DIM}${'─'.repeat(80)}${RESET}`, `${DIM}  ⏵⏵ auto mode on (shift+tab to cycle)${RESET}`];
+
+/** `/usage` (and `/cost`, `/status`): the Settings dialog on its Usage tab, drawn in place of
+ *  the input box until Esc. The Chat view shows it live as the panel card. */
+const USAGE_PANEL = [
+  `${SKY}${'─'.repeat(80)}${RESET}`,
+  `  ${BOLD}${SKY}Settings${RESET}  Status   Config  ${BOLD}\x1b[38;5;16m\x1b[48;5;153m Usage ${RESET}  Stats`,
+  '',
+  `  ${BOLD}Session${RESET}`,
+  `  ${GREY}Total cost:            $1.84${RESET}`,
+  `  ${GREY}Total duration (API):  6m 12s${RESET}`,
+  `  ${GREY}Total code changes:    214 lines added, 37 lines removed${RESET}`,
+  '',
+  `  ${BOLD}Current session${RESET}`,
+  meter(64),
+  `  ${GREY}Resets 4pm (UTC)${RESET}`,
+  '',
+  `  ${BOLD}Current week (all models)${RESET}`,
+  meter(28),
+  `  ${GREY}Resets Oct 29, 10am (UTC)${RESET}`,
+  '',
+  `  ${GREY}Esc to cancel${RESET}`,
+];
+
+/** `/context`: printed above the input box, which comes straight back. */
+const CONTEXT_PRINTED = [
+  `  ⎿  ${BOLD}Context Usage${RESET}`,
+  `     ${GREY}⛁ ⛁ ⛁ ⛁ ⛀ \x1b[38;5;37m⛀ \x1b[38;5;35m⛀ ${GREY}⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶${RESET}   Opus 5.5 · 30.4k/200k tokens (15%)`,
+  `     ${GREY}⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶${RESET}`,
+  '',
+  `     ${GREY}⛁${RESET} System prompt: 2.8k tokens (1.4%)`,
+  `     ${GREY}⛁${RESET} System tools: 23.4k tokens (11.7%)`,
+  `     \x1b[38;5;37m⛁${RESET} Memory files: 3.1k tokens (1.6%)`,
+  `     \x1b[38;5;35m⛁${RESET} Messages: 1.1k tokens (0.6%)`,
+  `     ${GREY}⛶${RESET} Free space: 169.6k (84.8%)`,
+];
+
 /** The same Pane in `recent` mode: reflowed, no styling. */
 const CLAUDE_RECENT = [
   '● Read shared/ansi.ts',
@@ -1108,9 +1152,40 @@ function append(s: Store, key: string, ...lines: string[]): void {
   screens.recent.revision = pane.revision;
 }
 
+/** Claude Panes with a `/usage` panel open: the Screen under it, which Esc brings back. */
+const underPanel = new Map<string, string>();
+
+/** Draw `rows` at the bottom of a Claude Pane's Screen, over its input box if it had one. */
+function redraw(s: Store, pane: StatePane, under: string, rows: string[]): void {
+  const screens = s.screens[pane.key];
+  if (!screens) return;
+  const lines = under.split('\r\n');
+  const box = lines.findIndex((line) => /^(\x1b\[[0-9;]*m)*─{8,}/.test(line));
+  pane.revision += 1;
+  screens.visible.text = clamp([...(box < 0 ? lines : lines.slice(0, box)), ...rows].join('\r\n'), 24);
+  screens.visible.revision = pane.revision;
+  screens.recent.revision = pane.revision;
+}
+
+/** A Claude Screen command, as 2.1.310 runs it: `/usage`, `/cost` and `/status` open the panel
+ *  in place of the input box, `/context` prints above it, and neither reaches the transcript. */
+function screenCommand(s: Store, pane: StatePane, command: string): void {
+  const under = s.screens[pane.key]?.visible.text ?? '';
+  if (command === '/context') return redraw(s, pane, under, [echo(command), ...CONTEXT_PRINTED, '', ...INPUT_BOX]);
+  underPanel.set(pane.key, under);
+  redraw(s, pane, under, [echo(command), '', ...USAGE_PANEL]);
+}
+
 function input(s: Store, key: string, body: InputBody): void {
   const pane = s.state.panes.find((p) => p.key === key);
   if (!pane) return;
+  const typed = body.text?.trim() ?? '';
+  if (pane.agent === 'claude' && /^\/(usage|cost|status|context)$/.test(typed)) return screenCommand(s, pane, typed);
+  const under = underPanel.get(key);
+  if (under !== undefined && body.keys?.[0] === 'esc') {
+    underPanel.delete(key);
+    return redraw(s, pane, under, [echo('/usage'), `  ⎿  ${GREY}Settings dialog dismissed${RESET}`, '', ...INPUT_BOX]);
+  }
   if (body.text) append(s, key, `${BLUE}›${RESET} ${body.text}`, `${DIM}  … thinking${RESET}`);
   // ponytail: one transcript for every Claude Pane, like mockChat itself.
   if (body.text && pane.agent === 'claude') mockSent.push({ role: 'user', text: body.text, tools: [], at: Date.now() + MOCK_LOG_MS });

@@ -5,7 +5,9 @@ import { Dot } from './home.tsx';
 import { Badge, SegmentedControl, Skeleton } from './halaska-kit';
 import { CopyButton, Markdown, ShellRun } from './markdown.tsx';
 import { haptic, post } from './app.tsx';
-import { Check, ChevronRight, Down } from './icons.tsx';
+import { Check, ChevronRight, Down, ScreenLens } from './icons.tsx';
+import { gridRuns } from './pane.tsx';
+import { panelCommand, screenPanel } from './screen-panel.ts';
 import { Gallery, Picture, Thumb, chatImage, fileImage, fileView, safeImage } from './image.tsx';
 import { CHAT_PAGE_TURNS, editSpans, pendingTools, type ChatDelta, type ChatEvent, type ChatResponse, type Queued, type Subagent, type Tool, type Turn } from '../shared/chat.ts';
 import { CHAT_EVENT, mergeTurns } from '../shared/chat-merge.ts';
@@ -726,6 +728,137 @@ function ApprovalItem({ approval, agent, tool, at, kind, queued }: { approval: A
   );
 }
 
+/** How long a Screen command's panel has to show up on the Screen before the card gives up. */
+const DRAW_MS = 3_000;
+/** How long Close waits for the panel to leave the Screen before it is offered again: `/config`
+ *  spends its first Esc on clearing its search. */
+const CLOSE_MS = 2_000;
+
+/**
+ * A Screen command's panel (`/usage`, `/config`) as the last item of the conversation, live
+ * from the Screen: Claude draws it in place of its input box and logs nothing until it closes.
+ * The card waits for the panel, then follows its rows. Close sends Esc, and the card goes once
+ * the panel has left the Screen, so a panel that wants a second Esc is never left behind with
+ * the Composer typing into it. Text a command printed above the box (`/context`) shows the
+ * same way, and there Close only hides the card. Open Screen shows the grid for this visit.
+ */
+function PanelItem({ command, paneKey, lines, working, onScreen, onDone }: {
+  command: string;
+  paneKey: string;
+  /** This Pane's Screen; null while it has not arrived. */
+  lines: Span[][] | null;
+  /** Claude works: the command may wait in its queue, so the card waits too. */
+  working: boolean;
+  onScreen: () => void;
+  /** The panel is gone, or the card was closed: its sends are done with. */
+  onDone: () => void;
+}) {
+  // Printed text counts only on a Screen drawn after the send: the one before may still hold
+  // an earlier run's output.
+  const [before] = useState(lines);
+  const panel = useMemo(() => {
+    const found = lines && screenPanel(lines, command);
+    return found && (found.live || lines !== before) ? found : null;
+  }, [lines, command, before]);
+  /** The widest row, in cells. */
+  const cols = useMemo(() => Math.max(1, ...(panel?.rows ?? []).map((row) => row.reduce((n, sp) => n + sp.text.length, 0))), [panel]);
+  const [seen, setSeen] = useState(false);
+  const [late, setLate] = useState(false);
+  const [closing, setClosing] = useState(false);
+  useEffect(() => { if (panel?.live) setSeen(true); }, [panel]);
+  useEffect(() => {
+    const t = setTimeout(() => setLate(true), DRAW_MS);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    if (!closing) return;
+    const t = setTimeout(() => setClosing(false), CLOSE_MS);
+    return () => clearTimeout(t);
+  }, [closing]);
+  // A live panel that left the Screen is gone, whatever it printed on its way out (`Settings
+  // dialog dismissed`); so is one that never came.
+  const gone = panel ? !panel.live && seen : late && !working;
+  useEffect(() => { if (gone) onDone(); }, [gone]);
+  // The send was the user's own: the card comes into view as it opens and as its panel draws.
+  // The pinned scroll alone missed it when a scroll event landed after the card had grown.
+  const ref = useRef<HTMLLIElement>(null);
+  useLayoutEffect(() => { ref.current?.scrollIntoView({ block: 'nearest' }); }, [!!panel]);
+  if (gone) return null;
+
+  const live = !!panel?.live;
+  const close = () => {
+    haptic();
+    // Printed text, or a panel not drawn yet: nothing to close on the Screen, and an Esc
+    // that reached a working Claude would stop its run.
+    if (!live) return onDone();
+    setClosing(true);
+    void post(paneKey, 'input', { keys: ['esc'] });
+  };
+  const label = !panel ? 'Waiting for the Screen…' : closing ? 'Closing…' : live ? 'On the Screen' : 'Printed on the Screen';
+  return (
+    <li
+      ref={ref}
+      data-panel
+      aria-label={`${command}, on the Screen`}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || closing) return;
+        event.stopPropagation();
+        close();
+      }}
+      className="min-w-0 scroll-my-4 rounded-chip border border-accent/35 bg-accent/5"
+    >
+      <div className="flex min-h-11 items-center gap-2 px-2 py-1 lg:min-h-8">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold text-accent">
+          <span aria-hidden className={`size-[7px] shrink-0 rounded-full bg-accent ${live && !closing ? 'motion-safe:animate-pulse' : 'opacity-50'}`} />
+          <span role="status" className="truncate">{label}</span>
+        </span>
+        <span className="max-w-40 shrink-0 truncate rounded-chip border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] leading-none text-fg">
+          {command}
+        </span>
+      </div>
+      {panel ? (
+        // The panel's columns line up, so its rows keep their width. The text shrinks until the
+        // widest row fits the box (a `/usage` meter and its percentage on a phone), down to 9 px;
+        // past that the box scrolls sideways. A mono cell is 0.6 em.
+        <div
+          tabIndex={0}
+          aria-label={`${command} panel`}
+          className="mx-2 max-h-[min(26rem,52dvh)] overflow-auto overscroll-contain whitespace-pre rounded-[6px] border border-border bg-bg px-2 py-1.5 font-mono text-caption text-fg outline-none [container-type:inline-size] focus-visible:ring-2 focus-visible:ring-accent/60"
+        >
+          <div style={{ fontSize: `clamp(9px, calc(100cqw / ${(cols * 0.61).toFixed(1)}), 12px)` }}>
+            {panel.rows.map((row, i) => <span key={i} className="block min-h-[1lh]">{gridRuns(row)}</span>)}
+          </div>
+        </div>
+      ) : (
+        <div className="mx-2"><Skeleton className="h-16 rounded-[6px]" /></div>
+      )}
+      <div className="flex items-center justify-end gap-1 p-2">
+        <button
+          type="button"
+          onClick={() => {
+            haptic();
+            onScreen();
+          }}
+          className="press inline-flex min-h-11 items-center gap-1.5 rounded-chip px-3 text-caption font-semibold text-accent lg:min-h-8"
+        >
+          <ScreenLens size={14} />
+          Open Screen
+        </button>
+        <button
+          type="button"
+          disabled={closing}
+          onClick={close}
+          aria-label={`Close ${command}`}
+          className="press inline-flex min-h-11 items-center gap-2 rounded-chip border border-border bg-bg px-3 text-caption font-semibold text-fg disabled:text-muted lg:min-h-8"
+        >
+          Close
+          {live && <kbd className="rounded-[4px] border border-border px-[5px] font-mono text-[10.5px] font-normal text-muted">esc</kbd>}
+        </button>
+      </div>
+    </li>
+  );
+}
+
 /**
  * The assistant side's "typing": three dots and what the Agent is doing. Claude's own spinner
  * line, read off the Screen, gives the verb, the time and the rest of its facts; anything else
@@ -1052,6 +1185,10 @@ export function Chat({
   const [recorded, setRecorded] = useState<Queued[]>([]);
   const all = useSyncExternalStore(subscribePending, pendingSnapshot);
   const waiting = all.filter((p) => p.paneKey === paneKey);
+  /** Claude's Screen commands on their way (`/usage`): the panel card stands for them, not a
+   *  pending turn, the queue or the dots, because Claude logs one only once its panel closes. */
+  const screenSends = !selected && /^claude/i.test(agent) ? waiting.filter((p) => p.state !== 'held' && p.state !== 'failed' && panelCommand(p.text.trim())) : [];
+  const replies = screenSends.length ? waiting.filter((p) => !screenSends.includes(p)) : waiting;
   // The Hub re-reads the transcript on a revision, which may come late or not at all for a
   // write; a fresh send asks again soon after, when the Agent has usually logged it.
   const [nudge, setNudge] = useState(0);
@@ -1343,7 +1480,7 @@ export function Chat({
   const [awaiting, setAwaiting] = useState<{ turns: number; session?: string } | null>(null);
   const counted = useRef(new Set<number>());
   useEffect(() => {
-    const fresh = waiting.filter((p) => p.state === 'sent' && !counted.current.has(p.id));
+    const fresh = replies.filter((p) => p.state === 'sent' && !counted.current.has(p.id));
     if (!fresh.length) return;
     fresh.forEach((p) => counted.current.add(p.id));
     setAwaiting({ turns: mainTurns?.length ?? 0, session: mainSession });
@@ -1382,8 +1519,8 @@ export function Chat({
   // taken it all), the Screen's rows, and tautan's own replies sent while Claude works.
   const claude = /^claude/i.test(agent);
   const onScreen = useMemo(() => (claude && lines ? screenQueue(lines) : []), [claude, lines]);
-  const queue = selected || !claude ? { items: [], covered: [] } : queueShown(status === 'idle' || status === 'done' ? [] : recorded, onScreen, waiting, status === 'working');
-  const pendingShown = selected ? [] : waiting.filter((p) => !queue.covered.includes(p.id));
+  const queue = selected || !claude ? { items: [], covered: [] } : queueShown(status === 'idle' || status === 'done' ? [] : recorded, onScreen, replies, status === 'working');
+  const pendingShown = selected ? [] : replies.filter((p) => !queue.covered.includes(p.id));
   const queueKey = queue.items.map((item) => item.text).join('\0');
   /** The queue Send now went out for: its button waits until the queue changes. */
   const [sentNow, setSentNow] = useState<string | null>(null);
@@ -1460,7 +1597,7 @@ export function Chat({
               <Skeleton className="ml-auto h-11 w-2/3 rounded-card" />
               <Skeleton className="h-20 w-5/6 rounded-card" />
             </div>
-          ) : view.turns.length === 0 && !pendingShown.length && !queue.items.length && !approval ? (
+          ) : view.turns.length === 0 && !pendingShown.length && !queue.items.length && !screenSends.length && !approval ? (
             <p className="flex items-center gap-3 text-caption text-muted">
               No turns yet
               <button type="button" onClick={onUnavailable} className="press inline-flex min-h-9 items-center rounded-chip border border-border bg-surface px-3 text-caption text-fg">
@@ -1571,6 +1708,19 @@ export function Chat({
                 />
               ))}
               {pendingShown.map((entry) => <PendingTurn key={`pending-${entry.id}`} entry={entry} agent={agent} working={status === 'working'} />)}
+              {/* The newest Screen command's panel, under the replies. A blocked Pane shows its
+                  prompt instead: the approval row answers it, and Close's Esc would too. */}
+              {screenSends.length > 0 && status !== 'blocked' && (
+                <PanelItem
+                  key={screenSends.at(-1)!.id}
+                  command={screenSends.at(-1)!.text.trim()}
+                  paneKey={paneKey}
+                  lines={lines}
+                  working={status === 'working'}
+                  onScreen={onUnavailable}
+                  onDone={() => dropPending(screenSends.map((p) => p.id))}
+                />
+              )}
               {/* The prompt is the last thing on the conversation, as Claude Code draws it: under
                   the queue and the replies on their way, so the pinned scroll lands on it. A
                   long queued message once pushed the row out of view above it. */}

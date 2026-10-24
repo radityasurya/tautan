@@ -10,6 +10,7 @@ import { toolbarFromScreen, type Profile } from './profiles.ts';
 import { quickReplies, type Pill } from './replies.ts';
 import { deliver, dropPending, flushHeld, heldOf, isFlushing, pendingSnapshot, runsOutside, subscribePending, trackPending } from './pending.ts';
 import { showingSubagent, subscribeShowing } from './subagents.ts';
+import { SCREEN_COMMAND, SCREEN_ONLY } from './screen-panel.ts';
 import { store } from './store.tsx';
 
 /** "Wider than the viewport" is a fade, not a scrollbar. The grid and the Diff screen reuse it. */
@@ -41,11 +42,6 @@ const writeDraft = (paneKey: string, text: string) => {
     else sessionStorage.removeItem(draftKey(paneKey));
   } catch {}
 };
-
-/** Slash commands that open a menu or a prompt on the Screen and write nothing to the
- *  transcript until they finish, so the Chat view would show nothing while they wait.
- *  ponytail: a fixed list of Claude's and pi's; extend it when another one turns up. */
-const SCREEN_COMMAND = /^\/(login|logout|model|config|settings|permissions|resume|agents|mcp|hooks|status|theme|tree|fork|hotkeys|plugin|help|usage|cost|context|skills|tasks|export|effort|memory|ide|add-dir|rewind|workflows)$/;
 
 /** The Pane the Composer types straight into, whether its field has focus, and how to give it
  *  focus: the Screen draws its caret from this, and a tap on the Screen focuses the field. */
@@ -290,7 +286,8 @@ export function Composer({
   cardRef: RefObject<HTMLDivElement | null>;
   /** The Chat view shows the prompt in the transcript: the card stays out, the text box stays. */
   hideCard?: boolean;
-  /** A command whose whole UI is on the Screen (`/login`) went out from the Chat view. */
+  /** A command whose whole UI is on the Screen (`/login`) went out from the Chat view: show
+   *  the Screen for now, the saved lens untouched. */
   onScreenCommand?: () => void;
   /** The Chat view above the box: a file dropped anywhere on it attaches here. */
   dropZone?: RefObject<HTMLElement | null>;
@@ -497,7 +494,8 @@ export function Composer({
     const outside = !!agent && runsOutside(agent, sent) && (status !== 'working' || QUEUES.has(agent));
     if (agent && !outside) say(body, now);
     else void post(paneKey, 'input', { text: body, keys: ['enter'] } satisfies InputBody);
-    if (agent && hideCard && (outside || SCREEN_COMMAND.test(sent))) onScreenCommand?.();
+    // Claude's other Screen commands stay in the Chat view: their panel is a card at its end.
+    if (agent && hideCard && (outside || (/^claude/i.test(agent) ? SCREEN_ONLY : SCREEN_COMMAND).test(sent))) onScreenCommand?.();
     if (!agent && mayRemember(screenText)) setHistory(remember(sent));
     setText('');
     writeDraft(paneKey, '');

@@ -47,6 +47,19 @@ function sgr(style: Style, raw: string): Style {
   return next;
 }
 
+/** The spans of one line between two plain-text offsets, styles kept. */
+export function sliceSpans(spans: Span[], start: number, end: number): Span[] {
+  const out: Span[] = [];
+  let at = 0;
+  for (const sp of spans) {
+    const from = Math.max(start, at);
+    const to = Math.min(end, at + sp.text.length);
+    if (from < to) out.push({ ...sp, text: sp.text.slice(from - at, to - at) });
+    at += sp.text.length;
+  }
+  return out;
+}
+
 export function parseAnsi(text: string): Span[][] {
   const lines: Span[][] = [[]];
   let style: Style = {};
