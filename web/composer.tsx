@@ -243,7 +243,7 @@ const keepFocus = (e: { preventDefault(): void }) => e.preventDefault();
 
 /** A touch screen: Return breaks the line and the Send button sends, because a reply typed on
  *  a phone keyboard is easy to send half-written. */
-const COARSE = matchMedia('(pointer: coarse)').matches;
+export const COARSE = matchMedia('(pointer: coarse)').matches;
 
 /**
  * The dock under the Screen, at both widths. Two toggles, Suggestions and Keys, each open

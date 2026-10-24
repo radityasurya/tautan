@@ -11,7 +11,7 @@ import { AffordanceLayer, useCell, useMouseForward, type Cell } from './affordan
 import { api, haptic, navigate, opensWith, post, reducedMotion, setSplitOn, splitSet, useDesktop, useSplitPref } from './app.tsx';
 import { Blocked, fetchExplain, sendBlocked, type ExplainResponse } from './blocked.tsx';
 import { Chat, readLens, writeLens, type Approval, type LensMode } from './chat.tsx';
-import { Composer, FADE, subscribeTyping, typingSnapshot } from './composer.tsx';
+import { COARSE, Composer, FADE, subscribeTyping, typingSnapshot } from './composer.tsx';
 import { PaneHeader } from './header.tsx';
 import { mouseAllowed, profileFor, setMouseOverride } from './profiles.ts';
 import { commonAgent, Dot, DROP_ON, DropHint, markSeen, unseen } from './home.tsx';
@@ -915,7 +915,11 @@ function PaneGrid({
       <div
         ref={box}
         {...mouse}
-        onClick={typingHere && !forwarding ? () => typingHere.focus() : undefined}
+        // Typing directly, a click puts the keys back in the Pane. A program that reads the mouse
+        // (htop, vim, less) still gets the click, and on desktop the field takes the focus too:
+        // without it the click left the keys nowhere and the arrows did nothing. A touch screen
+        // keeps it out, or every tap in htop would raise the keyboard.
+        onClick={typingHere && (!forwarding || !COARSE) ? () => typingHere.focus() : undefined}
         // ADR 0003: a program that reads the mouse gets the right button, so a forwarding grid
         // has no menu. Shift+right-click, a link and a text selection keep the browser's own
         // menu, with its Copy and Open link.
